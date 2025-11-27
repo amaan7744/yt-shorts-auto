@@ -1,0 +1,168 @@
+name: Auto YouTube Short (Wikipedia + Groq + XTTS + YouTube)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * *"  # Runs daily at 14:00 UTC
+
+jobs:
+  make-video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3 python3-venv jq
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install TTS
+
+      - name: Pick category
+        id: pick_category
+        run: |
+          CATEGORY=$(shuf -e horror crime mystery | head -n1)
+          echo "CATEGORY=$CATEGORY" >> $GITHUB_ENV
+
+      - name: Fetch Wikipedia source
+        id: wiki
+        run: |
+          if [ "${CATEGORY}" = "horror" ]; then
+            TOPIC="List_of_reportedly_haunted_locations_in_the_United_States"
+          elif [ "${CATEGORY}" = "crime" ]; then
+            TOPIC="List_of_unsolved_murder_cases_in_the_United_States"
+          else
+            TOPIC="List_of_missing_persons_cases"
+          fi
+
+          TEXT=$(curl -s "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles=${TOPIC}&format=json" \
+            | jq -r '.query.pages[]?.extract' | head -c 8000)
+
+          echo "source_text<<EOF" >> $GITHUB_ENV
+          echo "$TEXT" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Generate metadata & script with Groq
+        id: script
+        run: |
+          JSON=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+            -H "Authorization: Bearer ${{ secrets.GROQ_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"llama3-8b-8192\",
+              \"response_format\": {\"type\": \"json_object\"},
+              \"messages\": [
+                {
+                  \"role\": \"system\",
+                  \"content\": \"You write YouTube short scripts from Wikipedia factual text. Respond ONLY in JSON: {title, description, tags, script}.\"
+                },
+                {
+                  \"role\": \"user\",
+                  \"content\": \"Using this Wikipedia source text: '''${{ env.source_text }}''', write a 25-35 sec script. American English. Punchy. Paraphrased. Then give title, description, tags.\"
+                }
+              ]
+            }")
+
+          echo "$JSON" > groq_raw.json
+          CONTENT=$(echo "$JSON" | jq -r '.choices[0].message.content')
+
+          echo "TITLE=$(echo "$CONTENT" | jq -r '.title')" >> $GITHUB_ENV
+          echo "DESCRIPTION=$(echo "$CONTENT" | jq -r '.description')" >> $GITHUB_ENV
+          echo "TAGS=$(echo "$CONTENT" | jq -r '.tags | join(\",\")')" >> $GITHUB_ENV
+          echo "script<<EOF" >> $GITHUB_ENV
+          echo "$(echo "$CONTENT" | jq -r '.script')" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Build Subtitles
+        run: |
+          python3 << 'EOF'
+script = """${{ env.script }}"""
+lines = [l.strip() for l in script.split("\n") if l.strip()]
+
+def tc(ms):
+    h = ms//3600000; ms%=3600000
+    m = ms//60000; ms%=60000
+    s = ms//1000; r = ms%1000
+    return f"{h:02}:{m:02}:{s:02},{r:03}"
+
+time = 0
+srt = ""
+index = 1
+
+for line in lines:
+    start = time
+    end = time + 3000
+    srt += f"{index}\n{tc(start)} --> {tc(end)}\n{line}\n\n"
+    index += 1
+    time = end
+
+with open("subtitles.srt", "w") as f:
+    f.write(srt)
+EOF
+
+      - name: Fetch Pexels Video
+        run: |
+          VIDEO_URL=$(curl -s -H "Authorization: ${{ secrets.PEXELS_KEY }}" \
+            "https://api.pexels.com/videos/search?query=${CATEGORY}&per_page=1" \
+            | jq -r '.videos[0].video_files[0].link')
+          curl -L "$VIDEO_URL" -o video.mp4
+
+      - name: Generate Voice (XTTS)
+        run: |
+          source venv/bin/activate
+          python3 << 'EOF'
+from TTS.api import TTS
+script = """${{ env.script }}"""
+tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+tts.tts_to_file(
+    text=script,
+    file_path="tts-audio.wav",
+    speaker_wav="voices/aman.wav",
+    language="en"
+)
+EOF
+
+      - name: Render Final Video
+        run: |
+          ffmpeg -y \
+            -i video.mp4 \
+            -i tts-audio.wav \
+            -vf "scale=1080:-2,crop=1080:1920,subtitles=subtitles.srt" \
+            -map 0:v -map 1:a \
+            -shortest \
+            -c:v libx264 -preset veryfast -crf 23 \
+            -c:a aac \
+            output.mp4
+
+      - name: Generate Thumbnail
+        run: |
+          ffmpeg -y \
+            -ss 00:00:02 -i output.mp4 -vframes 1 \
+            -vf "scale=1280:-2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${TITLE}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h*0.15" \
+            thumbnail.jpg
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short
+          path: |
+            output.mp4
+            thumbnail.jpg
+            subtitles.srt
+            groq_raw.json
+
+      - name: Upload to YouTube
+        if: ${{ secrets.YOUTUBE_CREDENTIAL != '' && secrets.YOUTUBE_TOKEN != '' }}
+        uses: eat-pray-ai/youtube-uploader@main
+        with:
+          credential: ${{ secrets.YOUTUBE_CREDENTIAL }}
+          token: ${{ secrets.YOUTUBE_TOKEN }}
+          file: "./output.mp4"
+          title: "${{ env.TITLE }}"
+          desc: "${{ env.DESCRIPTION }}"
+          tags: "${{ env.TAGS }}"
+          rest-flags: "-p public"
