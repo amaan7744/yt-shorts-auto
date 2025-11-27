@@ -154,15 +154,3 @@ EOF
             thumbnail.jpg
             subtitles.srt
             groq_raw.json
-
-      - name: Upload to YouTube
-        if: ${{ secrets.YOUTUBE_CREDENTIAL != '' && secrets.YOUTUBE_TOKEN != '' }}
-        uses: eat-pray-ai/youtube-uploader@main
-        with:
-          credential: ${{ secrets.YOUTUBE_CREDENTIAL }}
-          token: ${{ secrets.YOUTUBE_TOKEN }}
-          file: "./output.mp4"
-          title: "${{ env.TITLE }}"
-          desc: "${{ env.DESCRIPTION }}"
-          tags: "${{ env.TAGS }}"
-          rest-flags: "-p public"
