@@ -26,6 +26,7 @@ jobs:
           CATEGORY=$(shuf -e horror crime mystery | head -n1)
           echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
 
+      # (Optional) still fetch Wikipedia text, but we don't inject it into JSON yet
       - name: Fetch Wikipedia source
         id: wiki
         run: |
@@ -51,23 +52,23 @@ jobs:
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
         run: |
-          # Build JSON payload in a file (safer for YAML)
-          cat << 'JSON' > payload.json
+          # Build JSON payload safely (no crazy quoting)
+          cat << EOF > payload.json
           {
             "model": "llama3-8b-8192",
             "response_format": {"type": "json_object"},
             "messages": [
               {
                 "role": "system",
-                "content": "You write YouTube short scripts from Wikipedia factual text. Respond ONLY in JSON: {title, description, tags, script}."
+                "content": "You write short, factual YouTube horror/crime/mystery scripts. Respond ONLY as compact JSON: {\"title\": string, \"description\": string, \"tags\": [string], \"script\": string}."
               },
               {
                 "role": "user",
-                "content": "Using this Wikipedia source text: '''${{ env.source_text }}''', write a 25-35 sec script. American English. Punchy. Paraphrased. Then give title, description, tags."
+                "content": "Write a 25-35 second YouTube Shorts script in American English about a ${CATEGORY} story inspired by real Wikipedia-like facts. Make it punchy but factual. Then provide a title, a 1-2 sentence description, and 5-10 tags as a JSON array of strings."
               }
             ]
           }
-          JSON
+          EOF
 
           JSON_OUT=$(curl -s https://api.groq.com/openai/v1/chat/completions \
             -H "Authorization: Bearer ${GROQ_KEY}" \
@@ -91,10 +92,18 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
+      - name: Save script to file (for Python & XTTS)
+        run: |
+          cat << 'SCRIPT' > script.txt
+${{ env.script }}
+SCRIPT
+
       - name: Build Subtitles
         run: |
           python3 << 'EOF'
-script = """${{ env.script }}"""
+with open("script.txt", "r", encoding="utf-8") as f:
+    script = f.read()
+
 lines = [l.strip() for l in script.split("\n") if l.strip()]
 
 def tc(ms):
@@ -110,7 +119,7 @@ index = 1
 for line in lines:
     start = time
     end = time + 3000
-    srt_lines.append(f"{index}")
+    srt_lines.append(str(index))
     srt_lines.append(f"{tc(start)} --> {tc(end)}")
     srt_lines.append(line)
     srt_lines.append("")
@@ -137,7 +146,10 @@ EOF
           source venv/bin/activate
           python3 << 'EOF'
 from TTS.api import TTS
-script = """${{ env.script }}"""
+
+with open("script.txt", "r", encoding="utf-8") as f:
+    script = f.read()
+
 tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
 tts.tts_to_file(
     text=script,
@@ -175,3 +187,4 @@ EOF
             thumbnail.jpg
             subtitles.srt
             groq_raw.json
+            script.txt
