@@ -16,18 +16,20 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install system deps
+      - name: Install system deps and Python libs
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           pip install --upgrade pip
           pip install TTS
+          pip install "transformers==4.29.2" --force-reinstall
 
       - name: Pick category
         id: pick_category
         run: |
           CATEGORY=$(shuf -e horror crime mystery | head -n1)
           echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
+          echo "Picked category: $CATEGORY"
 
       - name: Fetch Wikipedia source
         id: wiki
@@ -40,8 +42,15 @@ jobs:
             TOPIC="List_of_missing_persons_cases"
           fi
 
+          echo "Using Wikipedia topic: $TOPIC"
+
           TEXT=$(curl -s "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles=${TOPIC}&format=json" \
             | jq -r '.query.pages[]?.extract' | head -c 8000)
+
+          if [ -z "$TEXT" ]; then
+            echo "Error: Wikipedia returned empty text."
+            exit 1
+          fi
 
           {
             echo "source_text<<EOF"
@@ -54,6 +63,11 @@ jobs:
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
         run: |
+          if [ -z "${GROQ_KEY}" ]; then
+            echo "Error: GROQ_KEY secret is not set."
+            exit 1
+          fi
+
           cat << EOF > payload.json
           {
             "model": "llama-3.1-8b-instant",
@@ -100,6 +114,13 @@ jobs:
           TAGS=$(echo "$CONTENT" | jq -r '.tags | join(",")')
           SCRIPT=$(echo "$CONTENT" | jq -r '.script')
 
+          if [ -z "$SCRIPT" ]; then
+            echo "Error: script from Groq is empty."
+            exit 1
+          fi
+
+          echo "Generated title: $TITLE"
+
           {
             echo "TITLE=$TITLE"
             echo "DESCRIPTION=$DESCRIPTION"
@@ -115,11 +136,27 @@ jobs:
           ${{ env.script }}
           SCRIPT
 
+          echo "Saved script to script.txt"
+          if [ ! -s script.txt ]; then
+            echo "Error: script.txt is empty."
+            exit 1
+          fi
+
       - name: Build Subtitles
         run: |
           python << 'EOF'
+          import os
+
+          if not os.path.exists("script.txt"):
+              print("Error: script.txt not found.")
+              raise SystemExit(1)
+
           with open("script.txt", "r", encoding="utf-8") as f:
               script = f.read()
+
+          if not script.strip():
+              print("Error: script.txt is empty.")
+              raise SystemExit(1)
 
           lines = [l.strip() for l in script.split("\n") if l.strip()]
 
@@ -145,40 +182,94 @@ jobs:
 
           with open("subtitles.srt", "w", encoding="utf-8") as f:
               f.write("\n".join(srt_lines))
+
+          print("subtitles.srt written.")
           EOF
 
       - name: Fetch Pexels Video
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
         run: |
-          VIDEO_URL=$(curl -s -H "Authorization: ${PEXELS_KEY}" \
-            "https://api.pexels.com/videos/search?query=${CATEGORY}&per_page=1" \
-            | jq -r '.videos[0].video_files[0].link')
+          if [ -z "${PEXELS_KEY}" ]; then
+            echo "Error: PEXELS_KEY secret is not set."
+            exit 1
+          fi
+
+          RESP=$(curl -s -H "Authorization: ${PEXELS_KEY}" \
+            "https://api.pexels.com/videos/search?query=${CATEGORY}&per_page=1")
+          echo "Raw Pexels response:"
+          echo "$RESP"
+
+          VIDEO_URL=$(echo "$RESP" | jq -r '.videos[0].video_files[0].link')
+
+          if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+            echo "Error: Pexels returned no video URL."
+            exit 1
+          fi
 
           echo "Video URL: $VIDEO_URL"
           curl -L "$VIDEO_URL" -o video.mp4
+
+          if [ ! -s video.mp4 ]; then
+            echo "Error: downloaded video.mp4 is empty."
+            exit 1
+          fi
 
       - name: Generate Voice (XTTS)
         env:
           COQUI_TOS_AGREED: "1"
         run: |
           python << 'EOF'
+          import os, sys
           from TTS.api import TTS
+
+          if not os.path.exists("script.txt"):
+              print("Error: script.txt not found for TTS.")
+              sys.exit(1)
+
+          if not os.path.exists("voices/aman.wav"):
+              print("Error: voices/aman.wav not found. Please add your voice sample.")
+              sys.exit(1)
 
           with open("script.txt", "r", encoding="utf-8") as f:
               script = f.read()
 
+          if not script.strip():
+              print("Error: script.txt is empty for TTS.")
+              sys.exit(1)
+
+          print("Loading TTS model (xtts_v2)...")
           tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+          print("Synthesizing speech...")
           tts.tts_to_file(
               text=script,
               file_path="tts-audio.wav",
               speaker_wav="voices/aman.wav",
               language="en"
           )
+
+          if not os.path.exists("tts-audio.wav"):
+              print("Error: tts-audio.wav was not created.")
+              sys.exit(1)
+
+          print("TTS audio saved to tts-audio.wav")
           EOF
 
       - name: Render Final Video
         run: |
+          if [ ! -s video.mp4 ]; then
+            echo "Error: video.mp4 missing or empty before ffmpeg."
+            exit 1
+          fi
+          if [ ! -s tts-audio.wav ]; then
+            echo "Error: tts-audio.wav missing or empty before ffmpeg."
+            exit 1
+          fi
+          if [ ! -s subtitles.srt ]; then
+            echo "Error: subtitles.srt missing or empty before ffmpeg."
+            exit 1
+          fi
+
           ffmpeg -y \
             -i video.mp4 \
             -i tts-audio.wav \
@@ -189,12 +280,27 @@ jobs:
             -c:a aac \
             output.mp4
 
+          if [ ! -s output.mp4 ]; then
+            echo "Error: ffmpeg did not produce output.mp4."
+            exit 1
+          fi
+
       - name: Generate Thumbnail
         run: |
+          if [ ! -s output.mp4 ]; then
+            echo "Error: output.mp4 missing before thumbnail step."
+            exit 1
+          fi
+
           ffmpeg -y \
             -ss 00:00:02 -i output.mp4 -vframes 1 \
             -vf "scale=1280:-2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${TITLE}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h*0.15" \
             thumbnail.jpg
+
+          if [ ! -s thumbnail.jpg ]; then
+            echo "Error: thumbnail.jpg was not created."
+            exit 1
+          fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
