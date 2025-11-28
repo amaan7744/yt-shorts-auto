@@ -119,13 +119,14 @@ jobs:
                           "You ONLY output valid JSON. Return a single JSON object with exactly these keys: "
                           "title (string), description (string), tags (array of strings), script (string). "
                           "No extra keys, no comments, no trailing commas. "
+                          "The script must be suitable for a 30-40 second YouTube Short. "
                           "In the script, use \\n characters for line breaks instead of raw newlines."
                       ),
                   },
                   {
                       "role": "user",
                       "content": (
-                          f"Write a 25-35 second YouTube Shorts script in American English about a {category} "
+                          f"Write a 30-40 second YouTube Shorts script in American English about a {category} "
                           "true-crime or mystery story. The JSON MUST look like: "
                           "{\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\"}. "
                           "In the script, use \\n for line breaks, do NOT use S1/S2 labels, do NOT add extra double quotes "
@@ -273,7 +274,7 @@ jobs:
           description = data.get("description") or ""
           tags = data.get("tags") or []
 
-          # Sanitize title for ffmpeg drawtext (no quotes/special chars)
+          # Sanitize title (still useful for logging / future use)
           safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", title)
           safe_title = safe_title[:60] or "Mystery Short"
 
@@ -286,7 +287,7 @@ jobs:
                   f.write(f"SANITIZED_TITLE={safe_title}\n")
 
           print("Groq processing complete. Title:", title)
-          print("Sanitized title for thumbnail:", safe_title)
+          print("Sanitized title:", safe_title)
           PY
 
       - name: Build Subtitles
@@ -379,8 +380,8 @@ jobs:
 
           if [ $SUCCESS -ne 1 ]; then
             echo "Pexels failed after $MAX_ATTEMPTS attempts, generating fallback background video."
-            # 35-second black background, 1080x1920, 30 fps
-            ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:d=35 -r 30 video.mp4
+            # 40-second black background, 1080x1920, 30 fps (still 9:16)
+            ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:d=40 -r 30 video.mp4
           fi
 
           if [ ! -s video.mp4 ]; then
@@ -481,7 +482,7 @@ jobs:
           print("TTS audio saved to tts-audio.wav")
           EOF
 
-      - name: Render Final Video
+      - name: Render Final Video (9:16 vertical)
         run: |
           if [ ! -s video.mp4 ]; then
             echo "Error: video.mp4 missing or empty before ffmpeg."
@@ -491,16 +492,13 @@ jobs:
             echo "Error: tts-audio.wav missing or empty before ffmpeg."
             exit 1
           fi
-          if [ ! -s subtitles.srt ]; then
-            echo "Warning: subtitles.srt missing before ffmpeg. Continuing without it."
-          fi
 
-          echo "Rendering final video WITHOUT burned-in subtitles (YouTube can use the .srt separately)..."
+          echo "Rendering final vertical 9:16 video..."
 
           ffmpeg -y \
             -i video.mp4 \
             -i tts-audio.wav \
-            -vf "scale=1080:-2,crop=1080:1920" \
+            -filter:v "scale=1080:-2:force_original_aspect_ratio=increase,crop=1080:1920" \
             -map 0:v -map 1:a \
             -shortest \
             -c:v libx264 -preset veryfast -crf 23 \
@@ -512,7 +510,7 @@ jobs:
             exit 1
           fi
 
-          echo "Final video rendered to output.mp4"
+          echo "Final vertical video rendered to output.mp4"
 
       - name: Generate Thumbnail
         run: |
@@ -521,12 +519,10 @@ jobs:
             exit 1
           fi
 
-          # Use sanitized title to avoid ffmpeg exploding on quotes/special chars
-          TEXT_TITLE="${SANITIZED_TITLE:-Mystery Short}"
+          echo "Extracting thumbnail frame..."
 
           ffmpeg -y \
             -ss 00:00:02 -i output.mp4 -vframes 1 \
-            -vf "scale=1280:-2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${TEXT_TITLE}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h*0.15" \
             thumbnail.jpg
 
           if [ ! -s thumbnail.jpg ]; then
