@@ -68,18 +68,20 @@ jobs:
             exit 1
           fi
 
+          # Build JSON payload WITHOUT strict response_format
           cat << EOF > payload.json
           {
             "model": "llama-3.1-8b-instant",
-            "response_format": {"type": "json_object"},
+            "temperature": 0.6,
+            "max_tokens": 700,
             "messages": [
               {
                 "role": "system",
-                "content": "You write short, factual YouTube horror/crime/mystery scripts. Respond ONLY as compact JSON: {\"title\": string, \"description\": string, \"tags\": [string], \"script\": string}."
+                "content": "You ONLY output valid JSON. Return a single JSON object with exactly these keys: title (string), description (string), tags (array of strings), script (string). No extra keys, no comments, no trailing commas."
               },
               {
                 "role": "user",
-                "content": "Write a 25-35 second YouTube Shorts script in American English about a ${CATEGORY} story inspired by real Wikipedia-like facts. Make it punchy but factual. Then provide a title, a 1-2 sentence description, and 5-10 tags as a JSON array of strings."
+                "content": "Write a 25-35 second YouTube Shorts script in American English about a ${CATEGORY} true-crime or mystery story. The JSON MUST look like: {\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\"}. In the script, do NOT use S1/S2 labels, do NOT put extra quotes around scene descriptions, and do NOT add extra double quotes inside the script text. Use plain sentences separated by newlines. Output ONLY the JSON object."
               }
             ]
           }
@@ -94,27 +96,40 @@ jobs:
           echo "Raw Groq response:"
           echo "$JSON_OUT"
 
+          # If Groq still returns an 'error' field, fail early
           if echo "$JSON_OUT" | jq -e '.error' >/dev/null 2>&1; then
             echo "Groq API returned an error:"
             echo "$JSON_OUT"
             exit 1
           fi
 
-          if ! echo "$JSON_OUT" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
-            echo "Groq response does not contain .choices[0].message.content"
+          # Extract the assistant content (should be JSON text)
+          CONTENT_TEXT=$(echo "$JSON_OUT" | jq -r '.choices[0].message.content')
+
+          if [ -z "$CONTENT_TEXT" ] || [ "$CONTENT_TEXT" = "null" ]; then
+            echo "Error: Groq content text is empty."
             echo "$JSON_OUT"
             exit 1
           fi
 
-          echo "$JSON_OUT" > groq_raw.json
-          CONTENT=$(echo "$JSON_OUT" | jq -r '.choices[0].message.content')
+          echo "Groq content text:"
+          echo "$CONTENT_TEXT"
 
-          TITLE=$(echo "$CONTENT" | jq -r '.title')
-          DESCRIPTION=$(echo "$CONTENT" | jq -r '.description')
-          TAGS=$(echo "$CONTENT" | jq -r '.tags | join(",")')
-          SCRIPT=$(echo "$CONTENT" | jq -r '.script')
+          # Validate that the content is valid JSON
+          if ! echo "$CONTENT_TEXT" | jq -e '.' >/dev/null 2>&1; then
+            echo "Error: Groq content is not valid JSON:"
+            echo "$CONTENT_TEXT"
+            exit 1
+          fi
 
-          if [ -z "$SCRIPT" ]; then
+          echo "$CONTENT_TEXT" > groq_raw.json
+
+          TITLE=$(echo "$CONTENT_TEXT" | jq -r '.title')
+          DESCRIPTION=$(echo "$CONTENT_TEXT" | jq -r '.description')
+          TAGS=$(echo "$CONTENT_TEXT" | jq -r '.tags | join(",")')
+          SCRIPT=$(echo "$CONTENT_TEXT" | jq -r '.script')
+
+          if [ -z "$SCRIPT" ] || [ "$SCRIPT" = "null" ]; then
             echo "Error: script from Groq is empty."
             exit 1
           fi
@@ -172,7 +187,7 @@ jobs:
 
           for line in lines:
               start = time
-              end = time + 3000
+              end = time + 3000  # 3 seconds per line
               srt_lines.append(str(index))
               srt_lines.append(f"{tc(start)} --> {tc(end)}")
               srt_lines.append(line)
