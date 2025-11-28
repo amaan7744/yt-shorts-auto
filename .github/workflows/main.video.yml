@@ -190,4 +190,309 @@ jobs:
                   time.sleep(3)
                   continue
 
-              print("Groq s
+              print("Groq status code:", resp.status_code)
+              try:
+                  api_json = resp.json()
+              except Exception as e:
+                  print("Failed to parse Groq API JSON:", e, file=sys.stderr)
+                  time.sleep(3)
+                  continue
+
+              pathlib.Path("groq_api_response.json").write_text(
+                  json.dumps(api_json, ensure_ascii=False, indent=2),
+                  encoding="utf-8",
+              )
+
+              if "error" in api_json:
+                  print("Groq API error:", api_json["error"], file=sys.stderr)
+                  time.sleep(3)
+                  continue
+
+              content = (
+                  api_json.get("choices", [{}])[0]
+                  .get("message", {})
+                  .get("content", "")
+              )
+              if not content or not isinstance(content, str):
+                  print("Groq content empty or invalid", file=sys.stderr)
+                  time.sleep(3)
+                  continue
+
+              print("Groq content:")
+              print(content)
+
+              try:
+                  data = try_parse(content)
+              except Exception as e:
+                  print("Groq JSON parse error:", e, file=sys.stderr)
+                  time.sleep(3)
+                  continue
+
+              ok = True
+              for key in ["title", "description", "script"]:
+                  v = data.get(key)
+                  if not isinstance(v, str) or not v.strip():
+                      print(f"Groq JSON missing/empty field: {key}", file=sys.stderr)
+                      ok = False
+                      break
+              if not ok:
+                  time.sleep(3)
+                  continue
+
+              if "tags" not in data or not isinstance(data["tags"], list):
+                  data["tags"] = []
+
+              print("Groq JSON parsed successfully.")
+              break
+
+          if data is None:
+              print("Groq failed after all attempts, using fallback script.", file=sys.stderr)
+              data = {
+                  "title": "A Chilling Mystery That Was Never Solved",
+                  "description": "A short true-crime style mystery about a person who vanished without a trace, still unsolved to this day.",
+                  "tags": ["true crime", "mystery", "unsolved"],
+                  "script": (
+                      "Imagine someone you know walks out of their home one evening and is never seen again.\\n"
+                      "No note, no clear motive, and no trace left behind.\\n"
+                      "Friends and family search everywhere, but every lead ends in a dead end.\\n"
+                      "The police investigate for years, yet no suspect is ever charged.\\n"
+                      "To this day, the case remains unsolved, leaving only rumors, theories, and a chilling question:\\n"
+                      "how can a person simply vanish into thin air?"
+                  ),
+              }
+
+          pathlib.Path("groq_raw.json").write_text(
+              json.dumps(data, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          pathlib.Path("script.txt").write_text(data["script"], encoding="utf-8")
+
+          title = data.get("title") or "Untitled Mystery Short"
+          description = data.get("description") or ""
+          tags = data.get("tags") or []
+
+          safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", title)
+          safe_title = safe_title[:60] or "Mystery Short"
+
+          env_path = os.environ.get("GITHUB_ENV")
+          if env_path:
+              with open(env_path, "a", encoding="utf-8") as f:
+                  f.write(f"TITLE={title}\n")
+                  f.write(f"DESCRIPTION={description}\n")
+                  f.write(f"TAGS={','.join(tags)}\n")
+                  f.write(f"SANITIZED_TITLE={safe_title}\n")
+
+          print("Groq processing complete. Title:", title)
+          print("Sanitized title:", safe_title)
+          PY
+
+      - name: Build Subtitles
+        run: |
+          python << 'EOF'
+          import os
+
+          if not os.path.exists("script.txt"):
+              print("Error: script.txt not found.")
+              raise SystemExit(1)
+
+          with open("script.txt", "r", encoding="utf-8") as f:
+              script = f.read()
+
+          if not script.strip():
+              print("Error: script.txt is empty.")
+              raise SystemExit(1)
+
+          lines = [l.strip() for l in script.split("\n") if l.strip()]
+
+          def tc(ms):
+              h = ms//3600000; ms%=3600000
+              m = ms//60000; ms%=60000
+              s = ms//1000; r = ms%1000
+              return f"{h:02}:{m:02}:{s:02},{r:03}"
+
+          time = 0
+          srt_lines = []
+          index = 1
+
+          for line in lines:
+              start = time
+              end = time + 3000
+              srt_lines.append(str(index))
+              srt_lines.append(f"{tc(start)} --> {tc(end)}")
+              srt_lines.append(line)
+              srt_lines.append("")
+              index += 1
+              time = end
+
+          with open("subtitles.srt", "w", encoding="utf-8") as f:
+              f.write("\n".join(srt_lines))
+
+          print("subtitles.srt written.")
+          EOF
+
+      - name: Fetch Pexels Video (optional, not used in render)
+        env:
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
+        run: |
+          if [ -z "${PEXELS_KEY}" ]; then
+            echo "Warning: PEXELS_KEY secret is not set. Skipping Pexels fetch."
+            exit 0
+          fi
+
+          QUERY="${CATEGORY}"
+          RESP=$(curl -s -H "Authorization: ${PEXELS_KEY}" \
+            "https://api.pexels.com/videos/search?query=${QUERY}&per_page=1")
+          echo "Raw Pexels response:"
+          echo "$RESP" > pexels_response.json
+
+          VIDEO_URL=$(echo "$RESP" | jq -r '.videos[0].video_files[0].link // empty')
+          if [ -n "$VIDEO_URL" ]; then
+            echo "Downloaded Pexels video URL (not used in final render): $VIDEO_URL"
+          else
+            echo "No Pexels video URL found."
+          fi
+
+      - name: Generate Voice (XTTS with fallback)
+        env:
+          COQUI_TOS_AGREED: "1"
+        run: |
+          python << 'EOF'
+          import os, sys
+          from TTS.api import TTS
+
+          if not os.path.exists("script.txt"):
+              print("Error: script.txt not found for TTS.")
+              sys.exit(1)
+
+          with open("script.txt", "r", encoding="utf-8") as f:
+              script = f.read()
+
+          if not script.strip():
+              print("Error: script.txt is empty for TTS.")
+              sys.exit(1)
+
+          voice_path = "voices/aman.wav"
+          has_custom_voice = os.path.exists(voice_path)
+
+          if not has_custom_voice:
+              print("Warning: voices/aman.wav not found. Custom voice cloning will be skipped.")
+
+          tts = None
+          used_xtts = False
+
+          try:
+              print("Trying XTTS model: tts_models/multilingual/multi-dataset/xtts_v2 ...")
+              tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+              used_xtts = True
+          except Exception as e:
+              print("Failed to load XTTS model. Falling back to basic English TTS.")
+              print("XTTS load error:", repr(e))
+
+          if tts is None:
+              try:
+                  print("Loading fallback TTS model: tts_models/en/ljspeech/tacotron2-DDC ...")
+                  tts = TTS("tts_models/en/ljspeech/tacotron2-DDC")
+                  used_xtts = False
+              except Exception as e:
+                  print("Error: could not load fallback TTS model either.", repr(e))
+                  sys.exit(1)
+
+          try:
+              if used_xtts and has_custom_voice:
+                  print("Using XTTS with cloned voice from voices/aman.wav ...")
+                  tts.tts_to_file(
+                      text=script,
+                      file_path="tts-audio.wav",
+                      speaker_wav=voice_path,
+                      language="en",
+                  )
+              else:
+                  if used_xtts:
+                      print("XTTS loaded but no custom voice found. Using default XTTS voice.")
+                      tts.tts_to_file(
+                          text=script,
+                          file_path="tts-audio.wav",
+                          language="en",
+                      )
+                  else:
+                      print("Using fallback English TTS model (no cloning).")
+                      tts.tts_to_file(
+                          text=script,
+                          file_path="tts-audio.wav",
+                      )
+          except Exception as e:
+              print("Error during TTS synthesis:", repr(e))
+              print("Trying one last fallback with basic English TTS model...")
+              try:
+                  tts = TTS("tts_models/en/ljspeech/tacotron2-DDC")
+                  tts.tts_to_file(
+                      text=script,
+                      file_path="tts-audio.wav",
+                  )
+              except Exception as e2:
+                  print("Final TTS fallback also failed:", repr(e2))
+                  sys.exit(1)
+
+          if not os.path.exists("tts-audio.wav") or os.path.getsize("tts-audio.wav") == 0:
+              print("Error: tts-audio.wav was not created or is empty.")
+              sys.exit(1)
+
+          print("TTS audio saved to tts-audio.wav")
+          EOF
+
+      - name: Render Final Video (9:16 black background, no filters)
+        run: |
+          if [ ! -s tts-audio.wav ]; then
+            echo "Error: tts-audio.wav missing or empty before ffmpeg."
+            exit 1
+          fi
+
+          echo "Rendering final vertical 9:16 video with solid black background..."
+
+          # 9:16 @ 1080x1920, 40s max, 30 fps, no filters at all
+          ffmpeg -y \
+            -f lavfi -i color=c=black:s=1080x1920:r=30:d=40 \
+            -i tts-audio.wav \
+            -map 0:v -map 1:a \
+            -shortest \
+            -c:v libx264 -preset veryfast -crf 23 \
+            -c:a aac \
+            output.mp4
+
+          if [ ! -s output.mp4 ]; then
+            echo "Error: ffmpeg did not produce output.mp4."
+            exit 1
+          fi
+
+          echo "Final vertical video rendered to output.mp4"
+
+      - name: Generate Thumbnail (no filters)
+        run: |
+          if [ ! -s output.mp4 ]; then
+            echo "Error: output.mp4 missing before thumbnail step."
+            exit 1
+          fi
+
+          echo "Extracting thumbnail frame..."
+
+          ffmpeg -y \
+            -ss 00:00:02 -i output.mp4 -vframes 1 \
+            thumbnail.jpg
+
+          if [ ! -s thumbnail.jpg ]; then
+            echo "Error: thumbnail.jpg was not created."
+            exit 1
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short
+          path: |
+            output.mp4
+            thumbnail.jpg
+            subtitles.srt
+            groq_raw.json
+            script.txt
+            groq_api_response.json
+            pexels_response.json
