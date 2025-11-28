@@ -50,11 +50,12 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Generate metadata & script with Groq
+           - name: Generate metadata & script with Groq
         id: script
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
         run: |
+          # Build JSON payload safely (no crazy quoting)
           cat << EOF > payload.json
           {
             "model": "llama3-8b-8192",
@@ -72,10 +73,28 @@ jobs:
           }
           EOF
 
+          echo "Calling Groq..."
           JSON_OUT=$(curl -s https://api.groq.com/openai/v1/chat/completions \
             -H "Authorization: Bearer ${GROQ_KEY}" \
             -H "Content-Type: application/json" \
             -d @payload.json)
+
+          echo "Raw Groq response:"
+          echo "$JSON_OUT"
+
+          # If Groq returned an error object, fail early with a clear message
+          if echo "$JSON_OUT" | jq -e '.error' >/dev/null 2>&1; then
+            echo "Groq API returned an error:"
+            echo "$JSON_OUT"
+            exit 1
+          fi
+
+          # Make sure choices[0].message.content exists
+          if ! echo "$JSON_OUT" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
+            echo "Groq response does not contain .choices[0].message.content"
+            echo "$JSON_OUT"
+            exit 1
+          fi
 
           echo "$JSON_OUT" > groq_raw.json
           CONTENT=$(echo "$JSON_OUT" | jq -r '.choices[0].message.content')
@@ -93,6 +112,7 @@ jobs:
             echo "$SCRIPT"
             echo "EOF"
           } >> "$GITHUB_ENV"
+
 
       - name: Save script to file (for Python & XTTS)
         run: |
