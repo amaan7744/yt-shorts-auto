@@ -178,4 +178,15 @@ EOF
             -vf "scale=1280:-2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${TITLE}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h*0.15" \
             thumbnail.jpg
 
+              - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short
+          path: |
+            output.mp4
+            thumbnail.jpg
+            subtitles.srt
+            groq_raw.json
+            script.txt
+
     
