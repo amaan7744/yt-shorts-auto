@@ -496,7 +496,8 @@ jobs:
             exit 1
           fi
 
-          ffmpeg -y \
+          echo "Trying ffmpeg render WITH burned-in subtitles..."
+          if ffmpeg -y \
             -i video.mp4 \
             -i tts-audio.wav \
             -vf "scale=1080:-2,crop=1080:1920,subtitles=subtitles.srt" \
@@ -504,7 +505,21 @@ jobs:
             -shortest \
             -c:v libx264 -preset veryfast -crf 23 \
             -c:a aac \
-            output.mp4
+            output.mp4; then
+            echo "Rendered video with subtitles successfully."
+          else
+            echo "ffmpeg with subtitles failed. Falling back to render WITHOUT subtitles..."
+            rm -f output.mp4
+            ffmpeg -y \
+              -i video.mp4 \
+              -i tts-audio.wav \
+              -vf "scale=1080:-2,crop=1080:1920" \
+              -map 0:v -map 1:a \
+              -shortest \
+              -c:v libx264 -preset veryfast -crf 23 \
+              -c:a aac \
+              output.mp4
+          fi
 
           if [ ! -s output.mp4 ]; then
             echo "Error: ffmpeg did not produce output.mp4."
