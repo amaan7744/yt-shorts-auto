@@ -27,13 +27,13 @@ jobs:
 
           pip install --upgrade pip
 
-          # CRITICAL: fix NumPy/SciPy versions so TTS + SciPy don't explode
+          # Fix NumPy/SciPy versions so TTS + SciPy don't explode
           pip install --upgrade --force-reinstall "numpy<2" "scipy<1.12"
 
-          # Install TTS and transformers with compatible NumPy/SciPy
-          pip install --upgrade --force-reinstall TTS "transformers==4.29.2"
+          # TTS, transformers, and requests for Groq HTTP
+          pip install --upgrade --force-reinstall TTS "transformers==4.29.2" requests
 
-          # Optional: show final versions for debugging
+          # Optional: show versions
           python - << 'EOF'
           import numpy, scipy
           print("NumPy version:", numpy.__version__)
@@ -74,7 +74,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Generate metadata & script with Groq (3 attempts + fallback)
+      - name: Generate metadata & script with Groq (retries + fallback)
         id: script
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
@@ -84,172 +84,198 @@ jobs:
             exit 1
           fi
 
-          MAX_ATTEMPTS=3
-          SUCCESS=0
+          python << 'PY'
+          import os, json, time, re, pathlib, sys
+          import requests
 
-          for ATTEMPT in $(seq 1 $MAX_ATTEMPTS); do
-            echo "=== Groq attempt $ATTEMPT/$MAX_ATTEMPTS ==="
+          api_key = os.environ.get("GROQ_KEY")
+          if not api_key:
+              print("Error: GROQ_KEY not set", file=sys.stderr)
+              sys.exit(1)
 
-            cat << EOF > payload.json
-            {
+          category = os.environ.get("CATEGORY", "mystery")
+
+          url = "https://api.groq.com/openai/v1/chat/completions"
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json",
+          }
+
+          payload = {
               "model": "llama-3.1-8b-instant",
               "temperature": 0.6,
               "max_tokens": 700,
               "messages": [
-                {
-                  "role": "system",
-                  "content": "You ONLY output valid JSON. Return a single JSON object with exactly these keys: title (string), description (string), tags (array of strings), script (string). No extra keys, no comments, no trailing commas. In the script, use \\n characters for line breaks instead of raw newlines."
-                },
-                {
-                  "role": "user",
-                  "content": "Write a 25-35 second YouTube Shorts script in American English about a ${CATEGORY} true-crime or mystery story. The JSON MUST look like: {\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\"}. In the script, use \\n for line breaks, do NOT use S1/S2 labels, do NOT add extra double quotes inside the script text. Output ONLY the JSON object."
-                }
-              ]
-            }
-            EOF
+                  {
+                      "role": "system",
+                      "content": (
+                          "You ONLY output valid JSON. Return a single JSON object with exactly these keys: "
+                          "title (string), description (string), tags (array of strings), script (string). "
+                          "No extra keys, no comments, no trailing commas. "
+                          "In the script, use \\n characters for line breaks instead of raw newlines."
+                      ),
+                  },
+                  {
+                      "role": "user",
+                      "content": (
+                          f"Write a 25-35 second YouTube Shorts script in American English about a {category} "
+                          "true-crime or mystery story. The JSON MUST look like: "
+                          "{\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\"}. "
+                          "In the script, use \\n for line breaks, do NOT use S1/S2 labels, do NOT add extra double quotes "
+                          "inside the script text. Output ONLY the JSON object."
+                      ),
+                  },
+              ],
+          }
 
-            echo "Calling Groq..."
-            curl -s https://api.groq.com/openai/v1/chat/completions \
-              -H "Authorization: Bearer ${GROQ_KEY}" \
-              -H "Content-Type: application/json" \
-              -d @payload.json > groq_api_response.json
+          def try_parse(content: str):
+              raw = content.strip()
 
-            echo "Raw Groq response:"
-            cat groq_api_response.json
+              # Strip code fences if the model added them
+              if raw.startswith("```"):
+                  raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
+                  raw = re.sub(r"\s*```$", "", raw)
 
-            # If Groq returns an error, retry
-            if jq -e '.error' groq_api_response.json >/dev/null 2>&1; then
-              echo "Groq API returned an error. Retrying..."
-              sleep 3
-              continue
-            fi
+              # Try direct json.loads
+              try:
+                  return json.loads(raw)
+              except Exception:
+                  pass
 
-            # Process and repair JSON in Python
-            python << 'PY'
-            import json, re, sys, pathlib
+              # Fallback: slice from first { to last }
+              start = raw.find("{")
+              end = raw.rfind("}")
+              if start == -1 or end == -1 or end <= start:
+                  raise ValueError("No JSON object found in content")
 
-            api_path = pathlib.Path("groq_api_response.json")
-            try:
-                api_data = json.loads(api_path.read_text(encoding="utf-8"))
-            except Exception as e:
-                print("Error: cannot parse Groq API JSON:", e, file=sys.stderr)
-                sys.exit(1)
+              candidate = raw[start:end+1]
 
-            content = api_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not content or not isinstance(content, str):
-                print("Error: Groq content empty or not a string", file=sys.stderr)
-                sys.exit(1)
+              # Remove trailing commas
+              candidate = re.sub(r",(\s*[}\]])", r"\\1", candidate)
 
-            # Strip code fences if present
-            raw = content.strip()
-            if raw.startswith("```"):
-                # remove leading ```json or ``` and trailing ```
-                raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
-                raw = re.sub(r"\s*```$", "", raw)
+              # Escape raw newlines inside strings
+              def fix_string(match):
+                  s = match.group(0)
+                  inner = s[1:-1]
+                  inner = inner.replace("\\", "\\\\")
+                  inner = inner.replace("\\r\\n", "\\n").replace("\\r", "\\n").replace("\\n", "\\n")
+                  return '"' + inner + '"'
 
-            # Try direct parse first
-            try:
-                data = json.loads(raw)
-            except Exception:
-                # Fallback: find first { and last } and slice
-                start = raw.find("{")
-                end = raw.rfind("}")
-                if start == -1 or end == -1 or end <= start:
-                    print("Error: could not find JSON object in Groq content", file=sys.stderr)
-                    sys.exit(1)
-                candidate = raw[start:end+1]
+              # Note: since we don't really have raw newlines here anymore, this is mostly safety.
+              candidate = re.sub(
+                  r'"([^"\\]*(\\.[^"\\]*)*)"',
+                  fix_string,
+                  candidate,
+                  flags=re.DOTALL,
+              )
 
-                # Remove trailing commas before } or ]
-                candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+              return json.loads(candidate)
 
-                # Escape raw newlines inside string literals
-                def fix_string(match):
-                    s = match.group(0)  # full "..."
-                    inner = s[1:-1]
-                    inner = inner.replace("\\", "\\\\")
-                    inner = inner.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
-                    return '"' + inner + '"'
+          MAX_ATTEMPTS = 3
+          data = None
 
-                candidate = re.sub(
-                    r'"([^"\\]*(\\.[^"\\]*)*)"',
-                    fix_string,
-                    candidate,
-                    flags=re.DOTALL,
-                )
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              print(f"=== Groq attempt {attempt}/{MAX_ATTEMPTS} ===")
+              try:
+                  resp = requests.post(url, headers=headers, json=payload, timeout=60)
+              except Exception as e:
+                  print(f"Groq HTTP error on attempt {attempt}: {e}", file=sys.stderr)
+                  time.sleep(3)
+                  continue
 
-                data = json.loads(candidate)
+              print("Groq status code:", resp.status_code)
+              try:
+                  api_json = resp.json()
+              except Exception as e:
+                  print("Failed to parse Groq API JSON:", e, file=sys.stderr)
+                  time.sleep(3)
+                  continue
 
-            required = ["title", "description", "script"]
-            for k in required:
-                v = data.get(k, "")
-                if not isinstance(v, str) or not v.strip():
-                    print(f"Error: field '{k}' missing or empty in Groq JSON", file=sys.stderr)
-                    sys.exit(1)
+              # Save for debugging
+              pathlib.Path("groq_api_response.json").write_text(
+                  json.dumps(api_json, ensure_ascii=False, indent=2),
+                  encoding="utf-8",
+              )
 
-            if "tags" not in data or not isinstance(data["tags"], list):
-                data["tags"] = []
+              if "error" in api_json:
+                  print("Groq API error:", api_json["error"], file=sys.stderr)
+                  time.sleep(3)
+                  continue
 
-            out_path = pathlib.Path("groq_raw.json")
-            out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+              content = (
+                  api_json.get("choices", [{}])[0]
+                  .get("message", {})
+                  .get("content", "")
+              )
+              if not content or not isinstance(content, str):
+                  print("Groq content empty or invalid", file=sys.stderr)
+                  time.sleep(3)
+                  continue
 
-            # Also create script.txt here
-            script = data["script"]
-            pathlib.Path("script.txt").write_text(script, encoding="utf-8")
-            PY
+              print("Groq content:")
+              print(content)
 
-            if [ $? -eq 0 ]; then
-              echo "Groq JSON parsed and cleaned successfully."
-              SUCCESS=1
+              try:
+                  data = try_parse(content)
+              except Exception as e:
+                  print("Groq JSON parse error:", e, file=sys.stderr)
+                  time.sleep(3)
+                  continue
+
+              # Validate minimal fields
+              ok = True
+              for key in ["title", "description", "script"]:
+                  v = data.get(key)
+                  if not isinstance(v, str) or not v.strip():
+                      print(f"Groq JSON missing/empty field: {key}", file=sys.stderr)
+                      ok = False
+                      break
+              if not ok:
+                  time.sleep(3)
+                  continue
+
+              if "tags" not in data or not isinstance(data["tags"], list):
+                  data["tags"] = []
+
+              print("Groq JSON parsed successfully.")
               break
-            else
-              echo "Groq parsing failed on attempt $ATTEMPT, retrying..."
-              sleep 3
-            fi
-          done
 
-          if [ $SUCCESS -ne 1 ]; then
-            echo "Groq failed after $MAX_ATTEMPTS attempts, using fallback script."
-            python << 'PY'
-            import json, pathlib
+          if data is None:
+              print("Groq failed after all attempts, using fallback script.", file=sys.stderr)
+              data = {
+                  "title": "A Chilling Mystery That Was Never Solved",
+                  "description": "A short true-crime style mystery about a person who vanished without a trace, still unsolved to this day.",
+                  "tags": ["true crime", "mystery", "unsolved"],
+                  "script": (
+                      "Imagine someone you know walks out of their home one evening and is never seen again.\\n"
+                      "No note, no clear motive, and no trace left behind.\\n"
+                      "Friends and family search everywhere, but every lead ends in a dead end.\\n"
+                      "The police investigate for years, yet no suspect is ever charged.\\n"
+                      "To this day, the case remains unsolved, leaving only rumors, theories, and a chilling question:\\n"
+                      "how can a person simply vanish into thin air?"
+                  ),
+              }
 
-            fallback = {
-                "title": "A Chilling Mystery That Was Never Solved",
-                "description": "A short true-crime style mystery about a person who vanished without a trace, still unsolved to this day.",
-                "tags": ["true crime", "mystery", "unsolved"],
-                "script": (
-                    "Imagine someone you know walks out of their home one evening and is never seen again.\\n"
-                    "No note, no clear motive, and no trace left behind.\\n"
-                    "Friends and family search everywhere, but every lead ends in a dead end.\\n"
-                    "The police investigate for years, yet no suspect is ever charged.\\n"
-                    "To this day, the case remains unsolved, leaving only rumors, theories, and a chilling question:\\n"
-                    "how can a person simply vanish into thin air?"
-                )
-            }
+          # Save cleaned JSON and script
+          pathlib.Path("groq_raw.json").write_text(
+              json.dumps(data, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          pathlib.Path("script.txt").write_text(data["script"], encoding="utf-8")
 
-            pathlib.Path("groq_raw.json").write_text(
-                json.dumps(fallback, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            pathlib.Path("script.txt").write_text(fallback["script"], encoding="utf-8")
-            PY
-          fi
+          title = data.get("title") or "Untitled Mystery Short"
+          description = data.get("description") or ""
+          tags = data.get("tags") or []
 
-          echo "Final Groq JSON:"
-          cat groq_raw.json
+          env_path = os.environ.get("GITHUB_ENV")
+          if env_path:
+              with open(env_path, "a", encoding="utf-8") as f:
+                  f.write(f"TITLE={title}\n")
+                  f.write(f"DESCRIPTION={description}\n")
+                  f.write(f"TAGS={','.join(tags)}\n")
 
-          TITLE=$(jq -r '.title' groq_raw.json)
-          DESCRIPTION=$(jq -r '.description' groq_raw.json)
-          TAGS=$(jq -r '.tags | join(",")' groq_raw.json || echo "")
-
-          if [ -z "$TITLE" ] || [ "$TITLE" = "null" ]; then
-            TITLE="Untitled Mystery Short"
-          fi
-
-          {
-            echo "TITLE=$TITLE"
-            echo "DESCRIPTION=$DESCRIPTION"
-            echo "TAGS=$TAGS"
-          } >> "$GITHUB_ENV"
+          print("Groq processing complete. Title:", title)
+          PY
 
       - name: Build Subtitles
         run: |
@@ -306,12 +332,10 @@ jobs:
 
           MAX_ATTEMPTS=3
           SUCCESS=0
+          QUERY="${CATEGORY}"
 
-          # We will try main category first, then fallback keywords
           for ATTEMPT in $(seq 1 $MAX_ATTEMPTS); do
-            echo "=== Pexels attempt $ATTEMPT/$MAX_ATTEMPTS for category '${CATEGORY}' ==="
-
-            QUERY="${CATEGORY}"
+            echo "=== Pexels attempt $ATTEMPT/$MAX_ATTEMPTS with query '${QUERY}' ==="
 
             RESP=$(curl -s -H "Authorization: ${PEXELS_KEY}" \
               "https://api.pexels.com/videos/search?query=${QUERY}&per_page=1")
@@ -323,7 +347,6 @@ jobs:
             if [ -n "$VIDEO_URL" ]; then
               echo "Video URL: $VIDEO_URL"
               curl -L "$VIDEO_URL" -o video.mp4
-
               if [ -s video.mp4 ]; then
                 echo "Downloaded video.mp4 successfully."
                 SUCCESS=1
@@ -331,16 +354,14 @@ jobs:
               fi
             fi
 
-            echo "No video found or download failed for query '${QUERY}', retrying with fallback keyword..."
-            # simple fallback rotation
+            echo "No video found or download failed for '${QUERY}', retrying with fallback keyword..."
             if [ "${CATEGORY}" = "horror" ]; then
-              CATEGORY="dark"
+              QUERY="dark"
             elif [ "${CATEGORY}" = "crime" ]; then
-              CATEGORY="city night"
+              QUERY="city night"
             else
-              CATEGORY="mystery fog"
+              QUERY="mystery fog"
             fi
-
             sleep 3
           done
 
