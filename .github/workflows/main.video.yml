@@ -3,7 +3,7 @@ name: Auto YouTube Short
 on:
   workflow_dispatch:
   schedule:
-    # Run every 4 hours = 6 times/day
+    # Run every 4 hours (6 times/day)
     - cron: "0 */4 * * *"
 
 jobs:
@@ -24,9 +24,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
+
           pip install --upgrade pip
-          pip install TTS
-          pip install "transformers==4.29.2" --force-reinstall
+
+          # CRITICAL: fix NumPy/SciPy versions so TTS + SciPy don't explode
+          pip install --upgrade --force-reinstall "numpy<2" "scipy<1.12"
+
+          # Install TTS and transformers with compatible NumPy/SciPy
+          pip install --upgrade --force-reinstall TTS "transformers==4.29.2"
+
+          # Optional: show final versions for debugging
+          python - << 'EOF'
+          import numpy, scipy
+          print("NumPy version:", numpy.__version__)
+          print("SciPy version:", scipy.__version__)
+          EOF
 
       - name: Pick category
         id: pick_category
@@ -186,7 +198,7 @@ jobs:
             exit 1
           fi
 
-          # Write script directly to file (no broken env multiline nonsense)
+          # Write script directly to file (no broken env multiline handling)
           printf '%s\n' "$SCRIPT" > script.txt
 
           if [ ! -s script.txt ]; then
@@ -371,5 +383,5 @@ jobs:
             thumbnail.jpg
             subtitles.srt
             groq_raw.json
-            script.txt
             groq_raw_raw.txt
+            script.txt
