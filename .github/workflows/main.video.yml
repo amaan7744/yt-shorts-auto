@@ -29,7 +29,6 @@ jobs:
           CATEGORY=$(shuf -e horror crime mystery | head -n1)
           echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
 
-      # Fetch Wikipedia source (optional context)
       - name: Fetch Wikipedia source
         id: wiki
         run: |
@@ -50,7 +49,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-           - name: Generate metadata & script with Groq
+      - name: Generate metadata & script with Groq
         id: script
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
@@ -112,7 +111,6 @@ jobs:
             echo "$SCRIPT"
             echo "EOF"
           } >> "$GITHUB_ENV"
-
 
       - name: Save script to file (for Python & XTTS)
         run: |
