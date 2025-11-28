@@ -30,8 +30,8 @@ jobs:
           # Fix NumPy/SciPy versions so TTS + SciPy don't explode
           pip install --upgrade --force-reinstall "numpy<2" "scipy<1.12"
 
-          # TTS, transformers, and requests for Groq HTTP
-          pip install --upgrade --force-reinstall TTS "transformers==4.29.2" requests
+          # TTS pinned to a stable version, transformers, and requests for Groq HTTP
+          pip install --upgrade --force-reinstall "TTS==0.22.0" "transformers==4.29.2" requests
 
           # Optional: show versions
           python - << 'EOF'
@@ -151,17 +151,16 @@ jobs:
               candidate = raw[start:end+1]
 
               # Remove trailing commas
-              candidate = re.sub(r",(\s*[}\]])", r"\\1", candidate)
+              candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
 
-              # Escape raw newlines inside strings
+              # Escape raw newlines inside strings (safety)
               def fix_string(match):
                   s = match.group(0)
                   inner = s[1:-1]
                   inner = inner.replace("\\", "\\\\")
-                  inner = inner.replace("\\r\\n", "\\n").replace("\\r", "\\n").replace("\\n", "\\n")
+                  inner = inner.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
                   return '"' + inner + '"'
 
-              # Note: since we don't really have raw newlines here anymore, this is mostly safety.
               candidate = re.sub(
                   r'"([^"\\]*(\\.[^"\\]*)*)"',
                   fix_string,
@@ -399,8 +398,9 @@ jobs:
               print("Error: script.txt is empty for TTS.")
               sys.exit(1)
 
-          print("Loading TTS model (xtts_v2)...")
+          print("Loading TTS model (tts_models/multilingual/multi-dataset/xtts_v2)...")
           tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+
           print("Synthesizing speech...")
           tts.tts_to_file(
               text=script,
