@@ -2,10 +2,14 @@ name: Auto YouTube Short
 
 on:
   workflow_dispatch:
+  schedule:
+    # Run every 4 hours = 6 times/day
+    - cron: "0 */4 * * *"
 
 jobs:
   make-video:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -58,7 +62,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Generate metadata & script with Groq
+      - name: Generate metadata & script with Groq (with JSON repair)
         id: script
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
@@ -68,7 +72,6 @@ jobs:
             exit 1
           fi
 
-          # Build JSON payload WITHOUT strict response_format
           cat << EOF > payload.json
           {
             "model": "llama-3.1-8b-instant",
@@ -77,11 +80,11 @@ jobs:
             "messages": [
               {
                 "role": "system",
-                "content": "You ONLY output valid JSON. Return a single JSON object with exactly these keys: title (string), description (string), tags (array of strings), script (string). No extra keys, no comments, no trailing commas."
+                "content": "You ONLY output valid JSON. Return a single JSON object with exactly these keys: title (string), description (string), tags (array of strings), script (string). No extra keys, no comments, no trailing commas. In the script, use \\n characters for line breaks instead of raw newlines."
               },
               {
                 "role": "user",
-                "content": "Write a 25-35 second YouTube Shorts script in American English about a ${CATEGORY} true-crime or mystery story. The JSON MUST look like: {\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\"}. In the script, do NOT use S1/S2 labels, do NOT put extra quotes around scene descriptions, and do NOT add extra double quotes inside the script text. Use plain sentences separated by newlines. Output ONLY the JSON object."
+                "content": "Write a 25-35 second YouTube Shorts script in American English about a ${CATEGORY} true-crime or mystery story. The JSON MUST look like: {\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\"}. In the script, use \\n for line breaks, do NOT use S1/S2 labels, do NOT add extra double quotes inside the script text. Output ONLY the JSON object."
               }
             ]
           }
@@ -96,14 +99,14 @@ jobs:
           echo "Raw Groq response:"
           echo "$JSON_OUT"
 
-          # If Groq still returns an 'error' field, fail early
+          # If Groq returns an error, fail early
           if echo "$JSON_OUT" | jq -e '.error' >/dev/null 2>&1; then
             echo "Groq API returned an error:"
             echo "$JSON_OUT"
             exit 1
           fi
 
-          # Extract the assistant content (should be JSON text)
+          # Extract assistant content (model's JSON-shaped text)
           CONTENT_TEXT=$(echo "$JSON_OUT" | jq -r '.choices[0].message.content')
 
           if [ -z "$CONTENT_TEXT" ] || [ "$CONTENT_TEXT" = "null" ]; then
@@ -115,22 +118,79 @@ jobs:
           echo "Groq content text:"
           echo "$CONTENT_TEXT"
 
-          # Validate that the content is valid JSON
-          if ! echo "$CONTENT_TEXT" | jq -e '.' >/dev/null 2>&1; then
-            echo "Error: Groq content is not valid JSON:"
-            echo "$CONTENT_TEXT"
+          # Save raw content for repair
+          printf '%s\n' "$CONTENT_TEXT" > groq_raw_raw.txt
+
+          # Repair JSON and save as groq_raw.json
+          python << 'PY'
+          import json, re, sys, pathlib
+
+          raw_path = pathlib.Path("groq_raw_raw.txt")
+          raw = raw_path.read_text(encoding="utf-8")
+
+          # Try direct parse first
+          try:
+              data = json.loads(raw)
+          except Exception:
+              # Extract first JSON object
+              m = re.search(r"\{.*\}", raw, re.DOTALL)
+              if not m:
+                  print("Error: could not find JSON object in Groq content", file=sys.stderr)
+                  sys.exit(1)
+              candidate = m.group(0)
+
+              # Remove trailing commas before } or ]
+              candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+
+              # Escape raw newlines inside string literals
+              def fix_string(match):
+                  s = match.group(0)  # full "..."
+                  inner = s[1:-1]
+                  inner = inner.replace("\\", "\\\\")
+                  inner = inner.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+                  return '"' + inner + '"'
+
+              candidate = re.sub(
+                  r'"([^"\\]*(\\.[^"\\]*)*)"',
+                  fix_string,
+                  candidate,
+                  flags=re.DOTALL,
+              )
+
+              data = json.loads(candidate)
+
+          required = ["title", "description", "script"]
+          for k in required:
+              v = data.get(k, "")
+              if not isinstance(v, str) or not v.strip():
+                  print(f"Error: field '{k}' missing or empty in Groq JSON", file=sys.stderr)
+                  sys.exit(1)
+
+          if "tags" not in data or not isinstance(data["tags"], list):
+              data["tags"] = []
+
+          out_path = pathlib.Path("groq_raw.json")
+          out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+
+          echo "Cleaned Groq JSON:"
+          cat groq_raw.json
+
+          TITLE=$(jq -r '.title' groq_raw.json)
+          DESCRIPTION=$(jq -r '.description' groq_raw.json)
+          TAGS=$(jq -r '.tags | join(",")' groq_raw.json)
+          SCRIPT=$(jq -r '.script' groq_raw.json)
+
+          if [ -z "$SCRIPT" ] || [ "$SCRIPT" = "null" ]; then
+            echo "Error: script from Groq is empty after cleaning."
             exit 1
           fi
 
-          echo "$CONTENT_TEXT" > groq_raw.json
+          # Write script directly to file (no broken env multiline nonsense)
+          printf '%s\n' "$SCRIPT" > script.txt
 
-          TITLE=$(echo "$CONTENT_TEXT" | jq -r '.title')
-          DESCRIPTION=$(echo "$CONTENT_TEXT" | jq -r '.description')
-          TAGS=$(echo "$CONTENT_TEXT" | jq -r '.tags | join(",")')
-          SCRIPT=$(echo "$CONTENT_TEXT" | jq -r '.script')
-
-          if [ -z "$SCRIPT" ] || [ "$SCRIPT" = "null" ]; then
-            echo "Error: script from Groq is empty."
+          if [ ! -s script.txt ]; then
+            echo "Error: script.txt is empty after writing SCRIPT."
             exit 1
           fi
 
@@ -140,22 +200,7 @@ jobs:
             echo "TITLE=$TITLE"
             echo "DESCRIPTION=$DESCRIPTION"
             echo "TAGS=$TAGS"
-            echo "script<<EOF"
-            echo "$SCRIPT"
-            echo "EOF"
           } >> "$GITHUB_ENV"
-
-      - name: Save script to file (for Python & XTTS)
-        run: |
-          cat << 'SCRIPT' > script.txt
-          ${{ env.script }}
-          SCRIPT
-
-          echo "Saved script to script.txt"
-          if [ ! -s script.txt ]; then
-            echo "Error: script.txt is empty."
-            exit 1
-          fi
 
       - name: Build Subtitles
         run: |
@@ -327,3 +372,4 @@ jobs:
             subtitles.srt
             groq_raw.json
             script.txt
+            groq_raw_raw.txt
