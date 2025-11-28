@@ -95,40 +95,40 @@ jobs:
       - name: Save script to file (for Python & XTTS)
         run: |
           cat << 'SCRIPT' > script.txt
-${{ env.script }}
-SCRIPT
+          ${{ env.script }}
+          SCRIPT
 
       - name: Build Subtitles
         run: |
           python3 << 'EOF'
-with open("script.txt", "r", encoding="utf-8") as f:
-    script = f.read()
+          with open("script.txt", "r", encoding="utf-8") as f:
+              script = f.read()
 
-lines = [l.strip() for l in script.split("\n") if l.strip()]
+          lines = [l.strip() for l in script.split("\n") if l.strip()]
 
-def tc(ms):
-    h = ms//3600000; ms%=3600000
-    m = ms//60000; ms%=60000
-    s = ms//1000; r = ms%1000
-    return f"{h:02}:{m:02}:{s:02},{r:03}"
+          def tc(ms):
+              h = ms//3600000; ms%=3600000
+              m = ms//60000; ms%=60000
+              s = ms//1000; r = ms%1000
+              return f"{h:02}:{m:02}:{s:02},{r:03}"
 
-time = 0
-srt_lines = []
-index = 1
+          time = 0
+          srt_lines = []
+          index = 1
 
-for line in lines:
-    start = time
-    end = time + 3000
-    srt_lines.append(str(index))
-    srt_lines.append(f"{tc(start)} --> {tc(end)}")
-    srt_lines.append(line)
-    srt_lines.append("")
-    index += 1
-    time = end
+          for line in lines:
+              start = time
+              end = time + 3000
+              srt_lines.append(str(index))
+              srt_lines.append(f"{tc(start)} --> {tc(end)}")
+              srt_lines.append(line)
+              srt_lines.append("")
+              index += 1
+              time = end
 
-with open("subtitles.srt", "w", encoding="utf-8") as f:
-    f.write("\n".join(srt_lines))
-EOF
+          with open("subtitles.srt", "w", encoding="utf-8") as f:
+              f.write("\n".join(srt_lines))
+          EOF
 
       - name: Fetch Pexels Video
         env:
@@ -145,19 +145,19 @@ EOF
         run: |
           source venv/bin/activate
           python3 << 'EOF'
-from TTS.api import TTS
+          from TTS.api import TTS
 
-with open("script.txt", "r", encoding="utf-8") as f:
-    script = f.read()
+          with open("script.txt", "r", encoding="utf-8") as f:
+              script = f.read()
 
-tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
-tts.tts_to_file(
-    text=script,
-    file_path="tts-audio.wav",
-    speaker_wav="voices/aman.wav",
-    language="en"
-)
-EOF
+          tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+          tts.tts_to_file(
+              text=script,
+              file_path="tts-audio.wav",
+              speaker_wav="voices/aman.wav",
+              language="en"
+          )
+          EOF
 
       - name: Render Final Video
         run: |
@@ -178,7 +178,7 @@ EOF
             -vf "scale=1280:-2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${TITLE}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h*0.15" \
             thumbnail.jpg
 
-              - name: Upload Artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: youtube-short
@@ -188,5 +188,3 @@ EOF
             subtitles.srt
             groq_raw.json
             script.txt
-
-    
