@@ -492,39 +492,27 @@ jobs:
             exit 1
           fi
           if [ ! -s subtitles.srt ]; then
-            echo "Error: subtitles.srt missing or empty before ffmpeg."
-            exit 1
+            echo "Warning: subtitles.srt missing before ffmpeg. Continuing without it."
           fi
 
-          echo "Trying ffmpeg render WITH burned-in subtitles..."
-          if ffmpeg -y \
+          echo "Rendering final video WITHOUT burned-in subtitles (YouTube can use the .srt separately)..."
+
+          ffmpeg -y \
             -i video.mp4 \
             -i tts-audio.wav \
-            -vf "scale=1080:-2,crop=1080:1920,subtitles=subtitles.srt" \
+            -vf "scale=1080:-2,crop=1080:1920" \
             -map 0:v -map 1:a \
             -shortest \
             -c:v libx264 -preset veryfast -crf 23 \
             -c:a aac \
-            output.mp4; then
-            echo "Rendered video with subtitles successfully."
-          else
-            echo "ffmpeg with subtitles failed. Falling back to render WITHOUT subtitles..."
-            rm -f output.mp4
-            ffmpeg -y \
-              -i video.mp4 \
-              -i tts-audio.wav \
-              -vf "scale=1080:-2,crop=1080:1920" \
-              -map 0:v -map 1:a \
-              -shortest \
-              -c:v libx264 -preset veryfast -crf 23 \
-              -c:a aac \
-              output.mp4
-          fi
+            output.mp4
 
           if [ ! -s output.mp4 ]; then
             echo "Error: ffmpeg did not produce output.mp4."
             exit 1
           fi
+
+          echo "Final video rendered to output.mp4"
 
       - name: Generate Thumbnail
         run: |
