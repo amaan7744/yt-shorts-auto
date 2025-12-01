@@ -1,7 +1,0 @@
-TTS
-scipy
-soundfile
-numpy<2
-requests
-pydub
-torch
