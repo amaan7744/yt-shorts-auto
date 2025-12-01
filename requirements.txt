@@ -1,0 +1,8 @@
+TTS
+scipy
+soundfile
+numpy<2
+requests
+pydub
+torch
+transformers==4.29.2
