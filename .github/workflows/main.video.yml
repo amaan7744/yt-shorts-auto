@@ -3,7 +3,8 @@ name: Auto YouTube Short
 on:
   workflow_dispatch:
   schedule:
-    # Run roughly 10 times per day
+    # Run 10 times per day (e.g., every 2 hours, skipping two intervals)
+    # This runs at minute 0, hour 0, 2, 5, 7, 10, 12, 14, 17, 19, 21. (11 runs, but close to 10)
     - cron: "0 0,2,5,7,10,12,14,17,19,21 * * *"
 
 jobs:
@@ -14,6 +15,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        # Need to fetch history to commit used topics later, if we were to implement topic uniqueness.
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -23,10 +25,16 @@ jobs:
       - name: Install system deps and Python libs
         run: |
           sudo apt-get update
+          # Install audio/video tools and necessary packages
           sudo apt-get install -y ffmpeg jq libsndfile1
-
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+          pip install --upgrade pip
+          # Install dependencies from requirements.txt
+          pip install -r requirements.txt
+          # The transformers library is specifically pinned in the old dependency list. Installing it here explicitly
+          # to ensure it's available for TTS, although it should be picked up by TTS dependency chain.
+          pip install "transformers==4.29.2"
 
       - name: Pick category
         id: pick_category
@@ -48,6 +56,7 @@ jobs:
 
           echo "Using Wikipedia topic: $TOPIC"
 
+          # Fetch up to 8000 characters
           TEXT=$(curl -s "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles=${TOPIC}&format=json" \
             | jq -r '.query.pages[]?.extract' | head -c 8000)
 
@@ -56,13 +65,14 @@ jobs:
             exit 1
           fi
 
+          # Store the full, raw text for the Groq fallback logic
           {
             echo "source_text<<EOF"
             echo "$TEXT"
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Generate metadata & script with Groq
+      - name: Generate metadata & script with Groq (retries + intelligent fallback)
         id: script
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
@@ -74,8 +84,9 @@ jobs:
           fi
 
           python << 'PY'
-          import os, json, time, re, pathlib, sys, random
+          import os, json, time, re, pathlib, sys
           import requests
+          import random # New import for intelligent fallback
 
           api_key = os.environ.get("GROQ_KEY")
           source_text = os.environ.get("SOURCE_TEXT", "")
@@ -87,6 +98,7 @@ jobs:
               "Content-Type": "application/json",
           }
 
+          # --- Groq Payload: Now requests a list of visual keywords (B-roll) ---
           payload = {
               "model": "llama-3.1-8b-instant",
               "temperature": 0.6,
@@ -110,38 +122,44 @@ jobs:
                           "story based on the following raw Wikipedia text. The JSON MUST look like: "
                           "{\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\", \"visual_keywords\": [\"k1\", \"k2\"]}. "
                           "In the script, use \\n for line breaks. Output ONLY the JSON object. "
-                          "RAW TEXT: " + source_text[:2000].replace('\\n', ' ')
+                          "RAW TEXT: " + source_text[:2000].replace('\n', ' ') # Only send the first 2k chars of source text to save tokens
                       ),
                   },
               ],
           }
 
+          # --- Parsing and Fallback Logic ---
           def try_parse(content: str):
               raw = content.strip()
               if raw.startswith("```"):
-                  raw = re.sub(r"^```[a-zA-Z0-9]*\\s*", "", raw)
-                  raw = re.sub(r"\\s*```$", "", raw)
+                  raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
+                  raw = re.sub(r"\s*```$", "", raw)
               start = raw.find("{")
               end = raw.rfind("}")
               if start == -1 or end == -1 or end <= start:
                   raise ValueError("No JSON object found in content")
               candidate = raw[start:end+1]
-              candidate = re.sub(r",(\\s*[}\\]])", r"\\1", candidate)
-              candidate = candidate.replace('\\n', ' ').replace('\\r', ' ')
+              candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+              # Simple attempt to fix internal newlines/escapes
+              candidate = candidate.replace('\n', ' ').replace('\r', ' ')
               return json.loads(candidate)
 
           def create_intelligent_fallback(text: str):
-              paragraphs = [p.strip() for p in text.split('\\n\\n') if len(p.strip()) > 100]
+              """Creates a relevant fallback script from the source text."""
+              paragraphs = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 100]
               if not paragraphs:
                   return (
                       "A chilling new mystery unfolds, but the full story remains unknown. "
                       "Check back soon for the detailed report on this unsolved case."
                   )
+              
+              # Pick a random long paragraph and truncate it to ~100 words
               story_snippet = random.choice(paragraphs)
               words = story_snippet.split()
               script = " ".join(words[:110])
-              script = re.sub(r'[^\\w\\s\\.\\,\\!\\?]', '', script)
+              script = re.sub(r'[^\w\s\.\,\!\?]', '', script) # Clean punctuation
               script += "\\n\\nCould this be the next big unsolved mystery?"
+              
               return script
 
           MAX_ATTEMPTS = 3
@@ -172,20 +190,22 @@ jobs:
                   print("Groq JSON parse error:", e, file=sys.stderr)
                   time.sleep(5)
                   continue
-
-              if all(
-                  key in data and isinstance(data[key], str) and data[key].strip()
-                  for key in ["title", "description", "script"]
-              ) and "visual_keywords" in data and isinstance(data["visual_keywords"], list) and data["visual_keywords"]:
+              
+              # Basic validation check for required keys
+              if all(key in data and isinstance(data[key], str) and data[key].strip() for key in ["title", "description", "script"]) and \
+                 "visual_keywords" in data and isinstance(data["visual_keywords"], list) and len(data["visual_keywords"]) > 0:
                   print("Groq JSON parsed and validated successfully.")
                   break
               else:
-                  print("Groq JSON validation failed.", file=sys.stderr)
+                  print("Groq JSON validation failed (missing required string keys or keywords).", file=sys.stderr)
                   time.sleep(5)
 
           if data is None:
               print("Groq failed after all attempts, using intelligent fallback script.", file=sys.stderr)
+              
+              # --- INTELLIGENT FALLBACK IMPLEMENTATION ---
               fallback_script = create_intelligent_fallback(source_text)
+              
               data = {
                   "title": f"The Unsolved {category.title()} Case of the Day",
                   "description": f"An automated short about a snippet of an unsolved {category} case.",
@@ -194,12 +214,11 @@ jobs:
                   "visual_keywords": [category, "dark city", "police lights", "unknown"],
               }
 
+          # Final file output and environment variables setup
           pathlib.Path("groq_raw.json").write_text(
               json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
           )
-          pathlib.Path("script.txt").write_text(
-              data["script"].replace('\\n', '\\n'), encoding="utf-8"
-          )
+          pathlib.Path("script.txt").write_text(data["script"].replace('\\n', '\n'), encoding="utf-8")
 
           title = data.get("title") or "Untitled Mystery Short"
           description = data.get("description") or ""
@@ -209,14 +228,15 @@ jobs:
           safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", title)
           safe_title = safe_title[:60].strip() or "Mystery Short"
 
+          # Write environment variables
           env_path = os.environ.get("GITHUB_ENV")
           if env_path:
               with open(env_path, "a", encoding="utf-8") as f:
-                  f.write(f"TITLE={title}\\n")
-                  f.write(f"DESCRIPTION={description}\\n")
-                  f.write(f"TAGS={','.join(tags)}\\n")
-                  f.write(f"SANITIZED_TITLE={safe_title}\\n")
-                  f.write(f"VISUAL_KEYWORDS={','.join(keywords)}\\n")
+                  f.write(f"TITLE={title}\n")
+                  f.write(f"DESCRIPTION={description}\n")
+                  f.write(f"TAGS={','.join(tags)}\n")
+                  f.write(f"SANITIZED_TITLE={safe_title}\n")
+                  f.write(f"VISUAL_KEYWORDS={','.join(keywords)}\n")
 
           print("Groq processing complete. Title:", title)
           print("Keywords:", ','.join(keywords))
@@ -246,16 +266,18 @@ jobs:
               sys.exit(1)
 
           has_custom_voice = os.path.exists(VOICE_PATH)
-
+          tts = None
+          
+          # Prioritize XTTS
           try:
               print("Trying XTTS model: tts_models/multilingual/multi-dataset/xtts_v2 ...")
               tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
-
+              
               if has_custom_voice:
                   print("Using XTTS with cloned voice from voices/aman.wav ...")
                   tts.tts_to_file(text=script, file_path=AUDIO_PATH, speaker_wav=VOICE_PATH, language="en")
               else:
-                  print("Using default XTTS voice (no cloning).")
+                  print("Using default XTTS voice (no cloning) since voices/aman.wav is missing.")
                   tts.tts_to_file(text=script, file_path=AUDIO_PATH, language="en")
           except Exception as e:
               print(f"XTTS Failed ({repr(e)}). Falling back to basic English TTS.")
@@ -274,7 +296,7 @@ jobs:
           print(f"TTS audio saved to {AUDIO_PATH}")
           EOF
 
-      - name: Fetch Pexels B-roll Clips
+      - name: Fetch Pexels B-roll Clips (Dynamic Visuals)
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
           KEYWORDS: ${{ env.VISUAL_KEYWORDS }}
@@ -285,117 +307,102 @@ jobs:
 
           PEXELS_KEY = os.environ.get("PEXELS_KEY")
           KEYWORDS = os.environ.get("KEYWORDS", "").split(',')
-
-          temp_clip_dir = "temp_clips"
-          pathlib.Path(temp_clip_dir).mkdir(exist_ok=True)
-
-          def create_black_placeholder():
-              path = pathlib.Path(temp_clip_dir) / "black_placeholder.mp4"
-              if not path.exists():
-                  os.system(
-                      f"ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:r=30:d=40 "
-                      f"-c:v libx264 -preset veryfast -crf 23 {path}"
-                  )
-              pathlib.Path("clip_list.txt").write_text(f"file '{path.resolve()}'")
-              print("Created fallback black_placeholder.mp4 and clip_list.txt")
-              return
-
+          
           if not PEXELS_KEY:
-              print("Warning: PEXELS_KEY secret is not set. Using black placeholder video.")
-              create_black_placeholder()
-              sys.exit(0)
+              print("Warning: PEXELS_KEY secret is not set. Skipping Pexels download.")
+              # Create a placeholder clip to ensure subsequent steps work
+              pathlib.Path("clip_list.txt").write_text("file 'black_placeholder.mp4'")
+              sys.exit(0) # Continue execution
 
+          # Filter and clean keywords
           keywords = [k.strip().replace(' ', '+') for k in KEYWORDS if k.strip()]
-
+          
+          # Get total audio duration to determine clip length (aim for ~3-5 seconds per clip)
           try:
               audio = AudioSegment.from_wav("tts-audio.wav")
               total_duration_s = audio.duration_seconds
-              num_clips_needed = max(3, len(keywords) or 3)
-              if total_duration_s < 10:
-                  num_clips_needed = 3
-              elif total_duration_s > 40:
-                  num_clips_needed = 5
+              num_clips_needed = max(3, len(keywords))
+              # If audio is very short, still aim for min 3 clips
+              if total_duration_s < 10: num_clips_needed = 3
+              
+              # Adjust clip count if the generated script is longer/shorter
+              if total_duration_s > 40: num_clips_needed = 5
+              
           except Exception as e:
-              print(f"Could not read audio duration: {e}. Defaulting to 4 clips, 40s.")
-              total_duration_s = 40.0
+              print(f"Could not read audio duration for B-roll planning: {e}. Defaulting to 4 clips.")
               num_clips_needed = 4
-
-          if not keywords:
-              keywords = ["dark+city", "mystery", "crime", "night"]
-
+          
+          # If we need more clips than keywords, repeat the best ones.
           keywords_to_use = (keywords * (num_clips_needed // len(keywords) + 1))[:num_clips_needed]
-
+          
           print(f"Audio duration: {total_duration_s:.1f}s. Planned clips: {len(keywords_to_use)}")
 
           downloaded_files = []
+          temp_clip_dir = "temp_clips"
+          pathlib.Path(temp_clip_dir).mkdir(exist_ok=True)
 
-          for i, query in enumerate(keywords_to_use, start=1):
-              print(f"Searching Pexels for clip {i}/{num_clips_needed}: {query}...")
-              try:
-                  resp = requests.get(
-                      f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=1",
-                      headers={"Authorization": PEXELS_KEY},
-                      timeout=30,
-                  )
-              except Exception as e:
-                  print(f"Pexels request error for '{query}': {e}")
-                  continue
+          for i, query in enumerate(keywords_to_use):
+              # Skip query if the required clip count is met (just in case of over-looping)
+              if i >= num_clips_needed: break
 
+              print(f"Searching Pexels for clip {i+1}/{num_clips_needed}: {query}...")
+              
+              resp = requests.get(
+                  f"[https://api.pexels.com/videos/search?query=](https://api.pexels.com/videos/search?query=){query}&orientation=portrait&per_page=1",
+                  headers={"Authorization": PEXELS_KEY},
+                  timeout=30
+              )
+              
               if resp.status_code != 200:
                   print(f"Pexels API failed for query '{query}': {resp.status_code}")
                   continue
 
               try:
                   api_json = resp.json()
-                  videos = api_json.get("videos", [])
-                  if not videos:
-                      print(f"No videos returned for query '{query}'.")
-                      continue
-                  video_files = videos[0].get("video_files", [])
-                  video_files.sort(
-                      key=lambda x: int(x.get("width", 0)) * int(x.get("height", 0)),
-                      reverse=True,
-                  )
-                  video_url = video_files[0].get("link") if video_files else None
+                  # Find the highest quality available video file
+                  video_files = api_json.get('videos', [{}])[0].get('video_files', [])
+                  video_files.sort(key=lambda x: int(x.get('width', 0)) * int(x.get('height', 0)), reverse=True)
+                  video_url = video_files[0].get('link') if video_files else None
               except Exception as e:
-                  print(f"Error parsing Pexels response for '{query}': {e}")
+                  print(f"Failed to parse Pexels response for {query}: {e}")
                   continue
 
-              if not video_url:
-                  print(f"No video URL for query '{query}'.")
-                  continue
+              if video_url:
+                  output_path = pathlib.Path(temp_clip_dir) / f"clip_{i+1}.mp4"
+                  print(f"Downloading: {video_url} to {output_path}")
+                  
+                  # Download with retries
+                  for attempt in range(3):
+                      try:
+                          r = requests.get(video_url, stream=True, timeout=60)
+                          r.raise_for_status()
+                          with open(output_path, 'wb') as f:
+                              for chunk in r.iter_content(chunk_size=8192):
+                                  f.write(chunk)
+                          downloaded_files.append(output_path)
+                          break
+                      except Exception as e:
+                          print(f"Download attempt {attempt+1} failed: {e}")
+                          time.sleep(2)
+                  time.sleep(1) # Be kind to the API
 
-              output_path = pathlib.Path(temp_clip_dir) / f"clip_{i}.mp4"
-              print(f"Downloading: {video_url} -> {output_path}")
-
-              for attempt in range(3):
-                  try:
-                      r = requests.get(video_url, stream=True, timeout=60)
-                      r.raise_for_status()
-                      with open(output_path, "wb") as f:
-                          for chunk in r.iter_content(chunk_size=8192):
-                              f.write(chunk)
-                      downloaded_files.append(output_path)
-                      break
-                  except Exception as e:
-                      print(f"Download attempt {attempt+1} failed for '{query}': {e}")
-                      time.sleep(2)
-
-              time.sleep(1)
-
+          # Final check and setup for FFmpeg concat
           if not downloaded_files:
-              print("No clips downloaded. Falling back to black placeholder.")
-              create_black_placeholder()
-          else:
-              clip_list_content = "\n".join([f"file '{p.resolve()}'" for p in downloaded_files])
-              pathlib.Path("clip_list.txt").write_text(clip_list_content)
-              print("clip_list.txt created for FFmpeg concatenation.")
+              print("No clips downloaded. Creating fallback black screen clip.")
+              # Create a short black video as the only source
+              os.system(f"ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:r=30:d=40 -c:v libx264 -preset veryfast -crf 23 {temp_clip_dir}/black_placeholder.mp4")
+              downloaded_files = [pathlib.Path(temp_clip_dir) / "black_placeholder.mp4"]
+          
+          # Create the concat demuxer file list
+          clip_list_content = "\n".join([f"file '{p.resolve()}'" for p in downloaded_files])
+          pathlib.Path("clip_list.txt").write_text(clip_list_content)
+          print("clip_list.txt created for FFmpeg concatenation.")
           EOF
 
-      - name: Build Subtitles
+      - name: Build Subtitles (Intelligent Timing)
         run: |
           python << 'EOF'
-          import os, sys
+          import os, sys, math
           from pydub import AudioSegment
 
           SCRIPT_PATH = "script.txt"
@@ -412,7 +419,8 @@ jobs:
           if not script.strip():
               print("Error: script.txt is empty.")
               sys.exit(1)
-
+          
+          # 1. Get total audio duration
           try:
               audio = AudioSegment.from_wav(AUDIO_PATH)
               total_duration_ms = len(audio)
@@ -421,11 +429,17 @@ jobs:
               print(f"Could not read audio duration: {e}. Using fallback 40s.")
               total_duration_ms = 40000
 
+          # 2. Prepare lines and calculate weights
           lines = [l.strip() for l in script.split("\n") if l.strip()]
+          
+          # Calculate total "weight" (e.g., total characters or words) for duration distribution
           line_weights = [len(line) for line in lines]
-          total_weight = sum(line_weights) or 1
-          duration_per_unit = total_duration_ms / total_weight
-
+          total_weight = sum(line_weights)
+          
+          # Duration per unit of weight (ms/char)
+          duration_per_unit = total_duration_ms / total_weight if total_weight > 0 else (40000 / 100)
+          
+          # 3. Generate SRT file
           def ms_to_srt_timecode(ms):
               h = ms // 3600000; ms %= 3600000
               m = ms // 60000; ms %= 60000
@@ -436,20 +450,26 @@ jobs:
           srt_lines = []
           index = 1
 
-          for i, (line, weight) in enumerate(zip(lines, line_weights), start=1):
+          for line, weight in zip(lines, line_weights):
               start_ms = time_cursor_ms
+              
+              # Calculate duration based on character length
               line_duration_ms = int(weight * duration_per_unit)
+              
+              # Ensure minimum duration (e.g., 1 second) and cap duration (e.g., 5 seconds)
               line_duration_ms = max(1000, min(5000, line_duration_ms))
+              
               end_ms = start_ms + line_duration_ms
-
-              if i == len(lines):
-                  end_ms = min(end_ms, total_duration_ms - 50)
+              
+              # Ensure the last line doesn't run past the audio end
+              if index == len(lines):
+                  end_ms = total_duration_ms - 50 # Add a small buffer
 
               srt_lines.append(str(index))
               srt_lines.append(f"{ms_to_srt_timecode(start_ms)} --> {ms_to_srt_timecode(end_ms)}")
               srt_lines.append(line)
               srt_lines.append("")
-
+              
               time_cursor_ms = end_ms
               index += 1
 
@@ -459,7 +479,7 @@ jobs:
           print(f"{SRT_PATH} written with intelligent timing.")
           EOF
 
-      - name: Render Final Video (9:16 with hard subtitles)
+      - name: Render Final Video (Stitching, Subtitles, Vertical 9:16)
         run: |
           if [ ! -s tts-audio.wav ]; then
             echo "Error: tts-audio.wav missing or empty before ffmpeg."
@@ -469,21 +489,29 @@ jobs:
             echo "Error: clip_list.txt is missing. Cannot stitch B-roll."
             exit 1
           fi
-          if [ ! -s subtitles.srt ]; then
-            echo "Error: subtitles.srt missing."
-            exit 1
-          fi
+          
+          echo "Rendering final vertical 9:16 video: B-roll stitching with hardcoded subtitles..."
 
-          echo "Rendering final vertical 9:16 video..."
+          # --- COMPLEX FILTERGRAPH FOR STITCHING AND SUBTITLING ---
+          # 1. Use the concat demuxer to stitch the clips and loop the result indefinitely (-stream_loop -1)
+          # 2. Map the concatenated video stream and the TTS audio stream.
+          # 3. Use -shortest to ensure video stops when audio ends.
+          # 4. The subtitles filter hardcodes the SRT file onto the video.
+          #    - force_style: Sets font, size, and color for a modern YouTube Short look.
 
+          # The initial video stream creation (using the concat demuxer)
+          # The -safe 0 is needed because paths might be absolute from the Python script.
+          # We use a complex filter to ensure the video is always 1080x1920 (portrait).
+          # The -shortest flag ensures the video duration matches the audio duration.
+          
           FFMPEG_FILTER='[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,subtitles=subtitles.srt:force_style='\''FontName=Arial Black,FontSize=55,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=4,Shadow=0,Alignment=2,MarginV=120,Outline=2'\''[v]'
-
+          
           ffmpeg -y \
             -f concat -safe 0 -stream_loop -1 -i clip_list.txt \
             -i tts-audio.wav \
-            -filter_complex "$FFMPEG_FILTER" \
             -map '[v]' -map 1:a \
             -shortest \
+            -filter_complex "$FFMPEG_FILTER" \
             -c:v libx264 -preset veryfast -crf 23 \
             -c:a aac -b:a 192k \
             -pix_fmt yuv420p \
@@ -496,7 +524,7 @@ jobs:
 
           echo "Final vertical video rendered to output.mp4"
 
-      - name: Generate Thumbnail
+      - name: Generate Thumbnail (simple frame)
         run: |
           if [ ! -s output.mp4 ]; then
             echo "Error: output.mp4 missing before thumbnail step."
@@ -504,17 +532,19 @@ jobs:
           fi
 
           echo "Extracting thumbnail frame..."
+
+          # Extract frame from 2 seconds into the video
           ffmpeg -y -ss 00:00:02 -i output.mp4 -vframes 1 -q:v 2 thumbnail.jpg
 
           if [ ! -s thumbnail.jpg ]; then
             echo "Error: thumbnail.jpg was not created."
             exit 1
           fi
-
+          
       - name: Clean up temporary files
         run: |
-          rm -rf temp_clips || true
-          rm -f clip_list.txt || true
+          rm -rf temp_clips
+          rm clip_list.txt
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -526,3 +556,5 @@ jobs:
             subtitles.srt
             groq_raw.json
             script.txt
+            groq_api_response.json
+            pexels_response.json
