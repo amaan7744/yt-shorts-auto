@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: write   # needed to commit used_topics.txt
 
     steps:
       - name: Checkout
@@ -84,6 +84,7 @@ jobs:
           source_text = os.environ.get("SOURCE_TEXT", "")
           category = os.environ.get("CATEGORY", "mystery")
 
+          # Load used titles to avoid repeats
           used_titles = []
           used_path = pathlib.Path("used_topics.txt")
           if used_path.exists():
@@ -109,22 +110,26 @@ jobs:
 
           def base_user_prompt():
               return (
-                  f"Write a 35-40 second YouTube Shorts script in American English about a {category} "
-                  "story based on the following raw Wikipedia text. The JSON MUST look like: "
+                  f"Write a 35-40 second YouTube Shorts script in natural, spoken American English about a {category} case. "
+                  "Use a single specific case or incident, not a list. The JSON MUST look like: "
                   "{\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], "
                   "\"script\": \"...\", \"visual_keywords\": [\"k1\", \"k2\"]}. "
-                  "In the script, use \\n for line breaks. Output ONLY the JSON object. "
-                  "Make the story linear and clear: 1) hook, 2) setup, 3) key event, 4) unresolved question. "
-                  "Avoid childish tone and keep it serious. "
-                  + "RAW TEXT: "
+                  "SCRIPT STYLE RULES: "
+                  "1) Start with a strong hook in 1 short line. "
+                  "2) Then describe what happened, step by step, using short punchy sentences. "
+                  "3) End with an open question or chilling final line. "
+                  "4) Do NOT say 'according to Wikipedia', 'case number', 'listed as', or 'on this list'. "
+                  "5) Do NOT mention years and dates more than once; focus on the scene and emotions. "
+                  "Use \\n for line breaks. "
+                  "RAW TEXT: "
                   + source_text[:2000].replace('\\n', ' ')
                   + avoid_clause
               )
 
           payload = {
               "model": "llama-3.1-8b-instant",
-              "temperature": 0.6,
-              "max_tokens": 800,
+              "temperature": 0.7,
+              "max_tokens": 900,
               "messages": [
                   {
                       "role": "system",
@@ -132,8 +137,9 @@ jobs:
                           "You ONLY output valid JSON. Return a single JSON object with exactly these keys: "
                           "title (string), description (string), tags (array of strings), script (string), "
                           "visual_keywords (array of 3 to 5 visual search terms). "
-                          "Write a script for a 35-40 second YouTube Short, around 90-110 words. "
-                          "Use \\n characters for line breaks. "
+                          "Write like a serious YouTube true crime narrator: short sentences, clear storytelling, no cringe. "
+                          "Focus on one case, not a list. No disclaimers about sources. "
+                          "The script must be about 100–130 words. "
                           "visual_keywords must be dark, cinematic, and related to crime/horror/mystery scenes."
                       ),
                   },
@@ -174,7 +180,8 @@ jobs:
 
           def is_good_length(script: str) -> bool:
               wc = len(script.replace("\\n", " ").split())
-              return 80 <= wc <= 140
+              # ≈3 words/sec → 100–130 words ~ 30–40s
+              return 100 <= wc <= 130
 
           MAX_ATTEMPTS = 3
           data = None
@@ -257,14 +264,12 @@ jobs:
               json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
           )
 
-          # Make sure script has real newlines
           script_text = data["script"].replace("\\n", "\n")
           pathlib.Path("script.txt").write_text(script_text, encoding="utf-8")
 
           title = data.get("title") or "Untitled Mystery Short"
           description = data.get("description") or ""
           tags = data.get("tags") or []
-          keywords = data.get("visual_keywords") or []
 
           safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", title)
           safe_title = safe_title[:60].strip() or "Mystery Short"
@@ -331,12 +336,12 @@ jobs:
           print(f"TTS audio saved to {AUDIO_PATH}")
           EOF
 
-      - name: Fetch Pexels B-roll Clips (crime page only)
+      - name: Fetch Pexels B-roll Clips (crime page only, multiple clips)
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
         run: |
           python << 'EOF'
-          import os, sys, json, requests, time, pathlib
+          import os, sys, json, requests, time, pathlib, random
           from pydub import AudioSegment
 
           PEXELS_KEY = os.environ.get("PEXELS_KEY")
@@ -376,10 +381,10 @@ jobs:
 
           print(f"Audio duration: {total_duration_s:.1f}s, need about {num_clips_needed} crime clips.")
 
-          # This is the API equivalent of https://www.pexels.com/search/videos/crime/
+          # Equivalent of https://www.pexels.com/search/videos/crime/
           try:
               resp = requests.get(
-                  "https://api.pexels.com/videos/search?query=crime&orientation=portrait&per_page=10",
+                  "https://api.pexels.com/videos/search?query=crime&orientation=portrait&per_page=15",
                   headers={"Authorization": PEXELS_KEY},
                   timeout=30,
               )
@@ -405,6 +410,9 @@ jobs:
               print("No videos returned for crime query.")
               create_black_placeholder()
               sys.exit(0)
+
+          # Randomize selection so each video looks different
+          random.shuffle(videos)
 
           downloaded_files = []
           for i, vid in enumerate(videos[:num_clips_needed], start=1):
@@ -444,10 +452,10 @@ jobs:
               print("clip_list.txt created for FFmpeg concatenation with crime clips.")
           EOF
 
-      - name: Build Subtitles (sentence-based timing, bottom-center)
+      - name: Build Subtitles (sentence-based timing, compact)
         run: |
           python << 'EOF'
-          import os, sys, re
+          import os, sys, re, textwrap
           from pydub import AudioSegment
 
           SCRIPT_PATH = "script.txt"
@@ -473,27 +481,32 @@ jobs:
               print(f"Could not read audio duration: {e}. Using fallback 40s.")
               total_duration_ms = 40000
 
-          # 1) Split into sentences first
+          # Split into sentences
           raw_sentences = re.split(r'(?<=[.!?])\s+', script)
           sentences = [s.strip() for s in raw_sentences if s.strip()]
 
-          # If Groq gave garbage with no punctuation, fall back to word chunks
+          # Fallback: word chunks if punctuation is bad
           if len(sentences) <= 1:
               words = script.split()
-              chunk_size = 10  # ~10 words per subtitle
+              chunk_size = 10
               sentences = [
                   " ".join(words[i:i+chunk_size])
                   for i in range(0, len(words), chunk_size)
               ]
 
-          num_cues = len(sentences)
+          # Wrap each sentence to avoid huge blocks (keeps vertical size smaller)
+          wrapped_sentences = []
+          for s in sentences:
+              wrapped = textwrap.wrap(s, width=38)  # ~2 lines max typically
+              wrapped_sentences.append("\n".join(wrapped))
+
+          num_cues = len(wrapped_sentences)
           if num_cues == 0:
               print("No subtitle chunks produced.")
               sys.exit(1)
 
           # Evenly distribute cues across total duration
-          # Keep each cue min 1.2s and max 5s
-          base_chunk_ms = max(1200, min(5000, total_duration_ms // num_cues))
+          base_chunk_ms = max(1200, min(4500, total_duration_ms // num_cues))
 
           def ms_to_srt_timecode(ms):
               h = ms // 3600000; ms %= 3600000
@@ -504,14 +517,14 @@ jobs:
           srt_lines = []
           time_cursor_ms = 0
 
-          for i, sentence in enumerate(sentences, start=1):
+          for i, sentence in enumerate(wrapped_sentences, start=1):
               start_ms = time_cursor_ms
               end_ms = start_ms + base_chunk_ms
 
-              # For last subtitle, force it near the end of the audio
+              # Last subtitle ends near audio end
               if i == num_cues:
                   if total_duration_ms > 1500:
-                      end_ms = total_duration_ms - 150   # small buffer
+                      end_ms = total_duration_ms - 120
                   else:
                       end_ms = total_duration_ms
 
@@ -525,10 +538,10 @@ jobs:
           with open(SRT_PATH, "w", encoding="utf-8") as f:
               f.write("\n".join(srt_lines))
 
-          print(f"{SRT_PATH} written with sentence-based timing.")
+          print(f"{SRT_PATH} written with sentence-based timing and compact layout.")
           EOF
 
-      - name: Render Final Video (9:16, bottom-center subs)
+      - name: Render Final Video (9:16, bottom-center subs, no looping)
         run: |
           if [ ! -s tts-audio.wav ]; then
             echo "Error: tts-audio.wav missing or empty before ffmpeg."
@@ -543,13 +556,13 @@ jobs:
             exit 1
           fi
 
-          echo "Rendering final vertical 9:16 video with crime B-roll and bottom-center subtitles..."
+          echo "Rendering final vertical 9:16 video with crime B-roll and compact bottom-center subtitles..."
 
-          # 1080x1920 9:16, cover (crop), bottom-center subs, ~35pt font
-          FFMPEG_FILTER='[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,subtitles=subtitles.srt:force_style='\''FontName=Arial,FontSize=35,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=4,Shadow=0,Alignment=9,MarginV=120,Outline=2'\''[v]'
+          # Smaller font, bottom-center, safe area
+          FFMPEG_FILTER='[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,subtitles=subtitles.srt:force_style='\''FontName=Arial,FontSize=28,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=4,Shadow=0,Alignment=9,MarginV=160,Outline=2'\''[v]'
 
           ffmpeg -y \
-            -f concat -safe 0 -stream_loop -1 -i clip_list.txt \
+            -f concat -safe 0 -i clip_list.txt \
             -i tts-audio.wav \
             -filter_complex "$FFMPEG_FILTER" \
             -map '[v]' -map 1:a \
@@ -566,7 +579,7 @@ jobs:
 
           echo "Final vertical video rendered to output.mp4"
 
-      - name: Generate Thumbnail (always prefer uploaded image)
+      - name: Generate Thumbnail (prefer uploaded image)
         run: |
           if [ ! -s output.mp4 ]; then
             echo "Error: output.mp4 missing before thumbnail step."
