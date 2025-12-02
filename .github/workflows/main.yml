@@ -111,7 +111,7 @@ jobs:
               base = (
                   f"Using the raw text below, pick ONE specific {category} case and write a 30–40 second YouTube Shorts script. "
                   "Write in natural, spoken American English. The JSON MUST look like: "
-                  '{"title": "...", "description": "...", "tags": ["tag1", "tag2"], "script": "...", "visual_keywords": ["k1", "k2"]}. '
+                  "{\"title\": \"...\", \"description\": \"...\", \"tags\": [\"tag1\", \"tag2\"], \"script\": \"...\", \"visual_keywords\": [\"k1\", \"k2\"]}. "
                   "SCRIPT RULES: "
                   "1) Start with a shocking hook directly to the viewer in ONE short sentence. "
                   "2) Then give a simple setup: who, where, what looked normal. "
@@ -302,7 +302,6 @@ jobs:
 
           has_custom_voice = os.path.exists(VOICE_PATH)
 
-          # Split script into sentence-like chunks
           sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', script) if s.strip()]
           if len(sentences) <= 1:
               words = script.split()
@@ -340,7 +339,6 @@ jobs:
                       "text": text,
                       "file_path": str(out_path),
                   }
-                  # Only XTTS gets language + speaker_wav
                   if use_custom:
                       kwargs["speaker_wav"] = VOICE_PATH
                   if use_language_arg:
@@ -356,8 +354,8 @@ jobs:
               if not pieces:
                   raise RuntimeError("No chunks produced")
 
-              base_pause = 220   # ms between normal sentences
-              hook_pause = 320   # ms after hook
+              base_pause = 220   # ms between sentences
+              hook_pause = 320   # ms after the first hook line
 
               final = pieces[0]
               for idx, seg in enumerate(pieces[1:], 2):
@@ -366,7 +364,6 @@ jobs:
 
               final.export(AUDIO_PATH, format="wav")
 
-              # Clean up
               for p in tmp_dir.glob("chunk_*.wav"):
                   try:
                       p.unlink()
@@ -377,22 +374,20 @@ jobs:
               except:
                   pass
 
-          # Try XTTS with your cloned voice first
           try:
               synthesize_chunked(
                   model_name="tts_models/multilingual/multi-dataset/xtts_v2",
                   use_custom=has_custom_voice,
-                  use_language_arg=True,   # XTTS is multilingual, needs language
+                  use_language_arg=True,
               )
               print("XTTS synthesis complete.")
           except Exception as e:
               print("XTTS failed:", e)
-              # Fallback: Tacotron2 – plain American English, NO language arg
               try:
                   synthesize_chunked(
                       model_name="tts_models/en/ljspeech/tacotron2-DDC",
                       use_custom=False,
-                      use_language_arg=False,  # IMPORTANT: no language for this model
+                      use_language_arg=False,
                   )
                   print("Fallback Tacotron2 synthesis complete.")
               except Exception as e2:
