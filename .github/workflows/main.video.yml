@@ -448,7 +448,7 @@ jobs:
               print("clip_list.txt created for FFmpeg concatenation with crime clips.")
           EOF
 
-      - name: Build Subtitles (ASS, transparent, minimal true-crime)
+        - name: Build Subtitles (ASS, transparent, minimal true-crime)
         run: |
           python << 'EOF'
           import os, sys, re, textwrap
@@ -477,10 +477,11 @@ jobs:
               print(f"Could not read audio duration: {e}. Using fallback 40s.")
               total_duration_ms = 40000
 
-          # Split into sentences
-          raw_sentences = re.split(r'(?<=[.!?])\\s+', script)
+          # Split script into sentences
+          raw_sentences = re.split(r'(?<=[.!?])\s+', script)
           sentences = [s.strip() for s in raw_sentences if s.strip()]
 
+          # Fallback to word chunks if punctuation is bad
           if len(sentences) <= 1:
               words = script.split()
               chunk_size = 10
@@ -489,11 +490,10 @@ jobs:
                   for i in range(0, len(words), chunk_size)
               ]
 
-          # Wrap to max ~2 lines visually
+          # Wrap each sentence to keep at most ~2 lines
           wrapped_sentences = []
           for s in sentences:
-              # 38 chars per line roughly for 1080 width
-              chunks = textwrap.wrap(s, width=38)
+              chunks = textwrap.wrap(s, width=38)  # ~38 chars per line for 1080 width
               if len(chunks) <= 2:
                   text_lines = chunks
               else:
@@ -510,9 +510,12 @@ jobs:
 
           def ms_to_ass_time(ms: int) -> str:
               # h:mm:ss.cc
-              h = ms // 3600000; ms %= 3600000
-              m = ms // 60000; ms %= 60000
-              s = ms // 1000; cs = (ms % 1000) // 10
+              h = ms // 3600000
+              ms %= 3600000
+              m = ms // 60000
+              ms %= 60000
+              s = ms // 1000
+              cs = (ms % 1000) // 10
               return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
           def ass_escape(text: str) -> str:
@@ -525,6 +528,7 @@ jobs:
               start_ms = time_cursor_ms
               end_ms = start_ms + base_chunk_ms
 
+              # Last subtitle ends just before audio end
               if i == num_cues:
                   if total_duration_ms > 1500:
                       end_ms = total_duration_ms - 120
@@ -535,7 +539,6 @@ jobs:
               end_str = ms_to_ass_time(end_ms)
 
               text = ass_escape(sentence)
-
               events.append(
                   f"Dialogue: 0,{start_str},{end_str},CrimeSub,,0,0,0,,{text}"
               )
@@ -543,23 +546,23 @@ jobs:
               time_cursor_ms = end_ms
 
           ass_header = """[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-Collisions: Normal
-ScaledBorderAndShadow: yes
+          ScriptType: v4.00+
+          PlayResX: 1080
+          PlayResY: 1920
+          Collisions: Normal
+          ScaledBorderAndShadow: yes
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: CrimeSub,Montserrat,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,150,1
+          [V4+ Styles]
+          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+          Style: CrimeSub,Montserrat,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,150,1
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+          [Events]
+          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+          """
 
           with open(ASS_PATH, "w", encoding="utf-8") as f:
               f.write(ass_header)
-              f.write("\\n".join(events))
+              f.write("\n".join(events))
 
           print(f"{ASS_PATH} written with transparent minimal documentary style.")
           EOF
@@ -598,6 +601,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           fi
 
           echo "Final vertical video rendered to output.mp4"
+
 
       - name: Generate Thumbnail (prefer uploaded image)
         run: |
