@@ -302,6 +302,7 @@ jobs:
 
           has_custom_voice = os.path.exists(VOICE_PATH)
 
+          # Split script into sentence-like chunks
           sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', script) if s.strip()]
           if len(sentences) <= 1:
               words = script.split()
@@ -312,7 +313,12 @@ jobs:
           for i, s in enumerate(sentences, 1):
               print(i, ":", s)
 
-          def synthesize_chunked(model_name: str, use_custom: bool):
+          def synthesize_chunked(model_name: str, use_custom: bool, use_language_arg: bool):
+              """
+              Generate audio sentence-by-sentence with short pauses in between.
+              For XTTS: use language + optional speaker_wav.
+              For Tacotron2: NO language, NO speaker_wav.
+              """
               print("Loading TTS model:", model_name)
               tts = TTS(model_name)
 
@@ -326,24 +332,32 @@ jobs:
                       text = sentence + "..."
                   elif idx == 2:
                       text = sentence + "."
+
                   out_path = tmp_dir / f"chunk_{idx}.wav"
                   print("Synthesizing chunk", idx, ":", text)
 
+                  kwargs = {
+                      "text": text,
+                      "file_path": str(out_path),
+                  }
+                  # Only XTTS gets language + speaker_wav
                   if use_custom:
-                      tts.tts_to_file(text=text, file_path=str(out_path), speaker_wav=VOICE_PATH, language="en")
-                  else:
-                      tts.tts_to_file(text=text, file_path=str(out_path), language="en")
+                      kwargs["speaker_wav"] = VOICE_PATH
+                  if use_language_arg:
+                      kwargs["language"] = "en"
+
+                  tts.tts_to_file(**kwargs)
 
                   if not out_path.exists() or out_path.stat().st_size == 0:
-                      raise RuntimeError("chunk not created")
+                      raise RuntimeError(f"Chunk {out_path} not created")
 
                   pieces.append(AudioSegment.from_wav(out_path))
 
               if not pieces:
-                  raise RuntimeError("no chunks produced")
+                  raise RuntimeError("No chunks produced")
 
-              base_pause = 220
-              hook_pause = 320
+              base_pause = 220   # ms between normal sentences
+              hook_pause = 320   # ms after hook
 
               final = pieces[0]
               for idx, seg in enumerate(pieces[1:], 2):
@@ -352,6 +366,7 @@ jobs:
 
               final.export(AUDIO_PATH, format="wav")
 
+              # Clean up
               for p in tmp_dir.glob("chunk_*.wav"):
                   try:
                       p.unlink()
@@ -362,12 +377,24 @@ jobs:
               except:
                   pass
 
+          # Try XTTS with your cloned voice first
           try:
-              synthesize_chunked("tts_models/multilingual/multi-dataset/xtts_v2", has_custom_voice)
+              synthesize_chunked(
+                  model_name="tts_models/multilingual/multi-dataset/xtts_v2",
+                  use_custom=has_custom_voice,
+                  use_language_arg=True,   # XTTS is multilingual, needs language
+              )
+              print("XTTS synthesis complete.")
           except Exception as e:
               print("XTTS failed:", e)
+              # Fallback: Tacotron2 – plain American English, NO language arg
               try:
-                  synthesize_chunked("tts_models/en/ljspeech/tacotron2-DDC", False)
+                  synthesize_chunked(
+                      model_name="tts_models/en/ljspeech/tacotron2-DDC",
+                      use_custom=False,
+                      use_language_arg=False,  # IMPORTANT: no language for this model
+                  )
+                  print("Fallback Tacotron2 synthesis complete.")
               except Exception as e2:
                   print("Fallback TTS failed:", e2)
                   sys.exit(1)
