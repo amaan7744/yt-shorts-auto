@@ -108,7 +108,6 @@ jobs:
               "Content-Type": "application/json",
           }
 
-          # SYSTEM PROMPT: retention-obsessed crime storytelling
           system_content = (
               "You ONLY return valid JSON. Keys: title, description, tags, script, visual_keywords. "
               "Write a 30–38 second YouTube Short true-crime / mystery story (≈110–140 words). "
@@ -120,16 +119,14 @@ jobs:
               "3) First 3–4 lines open strong loops: hint at the crime, hide key details. "
               "4) Middle reveals concrete, visual details (who, where, how) that escalate tension. "
               "5) Last 2–3 lines end with a punchy, open-ended question or chilling doubt. "
-              "   Never give a neat solution or happy ending. "
               "6) No YouTube meta (no 'in this video', 'subscribe', 'Shorts'). "
               "7) No references to Wikipedia, articles, 'according to records', etc. "
               "8) Tone: calm, cinematic, American English documentary narrator. "
-              "visual_keywords: 3–6 short phrases for cinematic B-roll, like "
+              "visual_keywords: 3–6 short phrases for cinematic B-roll like "
               "'police lights on wet asphalt', 'lonely street at 3am', 'grainy CCTV hallway', "
               "'crime scene tape', 'shadowy figure under streetlamp'."
           )
 
-          # USER PROMPT: one case only, no repeats
           user_content = (
               "From the raw text below, choose ONE specific case (person, location, or incident) "
               f"in the category '{category}'. Turn it into a highly watchable 30–38 second YouTube Short "
@@ -275,13 +272,13 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # TTS: TACOTRON2 SINGLE PASS (ONE VOICE, NO CHUNKS)
+      # TTS: TACOTRON2 SINGLE PASS (ONE VOICE ONLY)
       # ----------------------------------------------------------
       - name: Generate Voice (Tacotron2 single pass)
         env:
           COQUI_TOS_AGREED: "1"
         run: |
-          python << 'EOF'
+          python << 'PY'
           import os, sys
           from TTS.api import TTS
 
@@ -313,7 +310,7 @@ jobs:
               sys.exit(1)
 
           print("Tacotron2 single-pass TTS complete:", AUDIO_PATH)
-          EOF
+          PY
 
       # ----------------------------------------------------------
       # FETCH PEXELS CRIME B-ROLL (TRIMMED TO 5s)
@@ -323,7 +320,7 @@ jobs:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
           KEYWORDS: ${{ env.VISUAL_KEYWORDS }}
         run: |
-          python << 'EOF'
+          python << 'PY'
           import os, sys, json, time, pathlib, random, urllib.parse
           import requests
           from pydub import AudioSegment
@@ -482,14 +479,14 @@ jobs:
           print("Prepared clips:")
           for c in clips:
               print(" -", c)
-          EOF
+          PY
 
       # ----------------------------------------------------------
       # BUILD CLIP LIST FOR CONCAT
       # ----------------------------------------------------------
       - name: Build clip list
         run: |
-          python << 'EOF'
+          python << 'PY'
           import os, random, pathlib, math
           from pydub import AudioSegment
 
@@ -507,4 +504,152 @@ jobs:
 
           with open("clip_list.txt","w") as f:
               for c in selected:
-             
+                  f.write(f"file '{os.path.abspath(c)}'\n")
+
+          print("Using clips:", selected)
+          PY
+
+      # ----------------------------------------------------------
+      # BUILD SUBTITLES (ASS, CLEAN, WHITE, NO BG)
+      # ----------------------------------------------------------
+      - name: Build Subtitles
+        run: |
+          python << 'PY'
+          import re, textwrap
+          from pydub import AudioSegment
+
+          script = open("script.txt", encoding="utf-8").read()
+          audio = AudioSegment.from_wav("tts-audio.wav")
+          total = len(audio)
+
+          sentences = re.split(r'(?<=[.!?])\s+', script)
+          sentences = [s.strip() for s in sentences if s.strip()]
+
+          if not sentences:
+              raise SystemExit("No sentences for subtitles")
+
+          chunks = []
+          for s in sentences:
+              lines = textwrap.wrap(s, 40)
+              if len(lines) <= 2:
+                  chunks.append("\\N".join(lines))
+              else:
+                  mid = len(lines)//2
+                  chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
+
+          base = max(800, total // len(chunks))
+
+          def fmt(ms):
+              h = ms // 3600000
+              ms %= 3600000
+              m = ms // 60000
+              ms %= 60000
+              s = ms // 1000
+              cs = (ms % 1000) // 10
+              return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+          out = []
+          out.append("[Script Info]")
+          out.append("ScriptType: v4.00+")
+          out.append("PlayResX: 1080")
+          out.append("PlayResY: 1920")
+          out.append("")
+          out.append("[V4+ Styles]")
+          out.append("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+          out.append("Style: CrimeSub,Arial,42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,40,40,120,1")
+          out.append("")
+          out.append("[Events]")
+          out.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+
+          cur = 0
+          for i, txt in enumerate(chunks, 1):
+              start = fmt(cur)
+              end = fmt(cur + base)
+              if i == len(chunks):
+                  end = fmt(total - 100)
+              cur += base
+              txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
+              out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
+
+          with open("subtitles.ass","w",encoding="utf-8") as f:
+              f.write("\n".join(out))
+
+          print("subtitles.ass written")
+          PY
+
+      # ----------------------------------------------------------
+      # RENDER FINAL VIDEO (VERTICAL, NO LOOPING)
+      # ----------------------------------------------------------
+      - name: Render final video
+        run: |
+          if [ ! -s tts-audio.wav ]; then echo "no tts-audio.wav"; exit 1; fi
+          if [ ! -s clip_list.txt ]; then echo "no clip_list.txt"; exit 1; fi
+          if [ ! -s subtitles.ass ]; then echo "no subtitles.ass"; exit 1; fi
+
+          ffmpeg -y \
+            -f concat -safe 0 -i clip_list.txt \
+            -i tts-audio.wav \
+            -filter_complex "[0:v]setsar=1[v0];[v0]subtitles=subtitles.ass[v]" \
+            -map "[v]" -map 1:a \
+            -shortest -t 60 \
+            -c:v libx264 -preset veryfast -crf 23 \
+            -c:a aac -b:a 192k \
+            -pix_fmt yuv420p \
+            output.mp4
+
+      # ----------------------------------------------------------
+      # THUMBNAIL (USE YOUR IMAGE IF PRESENT)
+      # ----------------------------------------------------------
+      - name: Thumbnail
+        run: |
+          python << 'PY'
+          import os, shutil, subprocess
+
+          candidates = []
+          for f in os.listdir("."):
+              lower = f.lower()
+              if lower == "thumbnail.jpg":
+                  continue
+              if lower.endswith((".jpg",".jpeg",".png")):
+                  candidates.append(f)
+
+          if candidates:
+              candidates.sort()
+              src = candidates[0]
+              shutil.copy(src,"thumbnail.jpg")
+              print("Using custom thumbnail from repo:", src)
+          else:
+              print("No custom thumbnail image found in repo.")
+              if not os.path.exists("output.mp4"):
+                  raise SystemExit("output.mp4 missing for thumbnail extraction")
+              cmd = "ffmpeg -y -ss 00:00:02 -i output.mp4 -vframes 1 -q:v 2 thumbnail.jpg"
+              print("Extracting frame:", cmd)
+              subprocess.run(cmd, shell=True, check=True)
+          PY
+
+      # ----------------------------------------------------------
+      # SAVE USED TOPIC (NO REPEATS)
+      # ----------------------------------------------------------
+      - name: Save used topic
+        run: |
+          TITLE="${TITLE:-Untitled Mystery}"
+          echo "$TITLE" >> used_topics.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add used_topics.txt
+          git commit -m "Add topic: $TITLE" || true
+          git push || true
+
+      # ----------------------------------------------------------
+      # UPLOAD ARTIFACTS
+      # ----------------------------------------------------------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short
+          path: |
+            output.mp4
+            subtitles.ass
+            script.txt
+            groq_raw.json
+            thumbnail.jpg
