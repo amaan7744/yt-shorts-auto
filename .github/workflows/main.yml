@@ -275,20 +275,19 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # XTTS v2 TTS WITH YOUR VOICE (voices/aman.wav)
+      # TTS: TACOTRON2 (CHUNKED WITH PAUSES)
       # ----------------------------------------------------------
-      - name: Generate Voice (XTTS v2, custom voice)
+      - name: Generate Voice (Tacotron2, chunked with pauses)
         env:
           COQUI_TOS_AGREED: "1"
         run: |
           python << 'EOF'
-          import os, re, pathlib, sys
+          import os, re, sys, pathlib
           from TTS.api import TTS
           from pydub import AudioSegment
 
           SCRIPT_PATH = "script.txt"
           AUDIO_PATH = "tts-audio.wav"
-          VOICE_PATH = "voices/aman.wav"
 
           if not os.path.exists(SCRIPT_PATH):
               print("script.txt not found")
@@ -299,27 +298,25 @@ jobs:
               print("script.txt empty")
               sys.exit(1)
 
-          has_custom = os.path.exists(VOICE_PATH)
-
-          # Split script into short sentences / chunks
+          # Split into short spoken chunks
           sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', script) if s.strip()]
           if len(sentences) <= 1:
               words = script.split()
               chunk_size = 12
               sentences = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
 
-          print("Using custom voice:" if has_custom else "Using default XTTS voice")
-          print("Sentences:")
+          print("Sentences for TTS:")
           for i, s in enumerate(sentences, 1):
               print(i, ":", s)
 
-          print("Loading XTTS v2 model...")
-          tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+          MODEL_NAME = "tts_models/en/ljspeech/tacotron2-DDC"
+          print("Loading TTS model:", MODEL_NAME)
+          tts = TTS(MODEL_NAME)
 
           tmp_dir = pathlib.Path("tts_chunks")
           tmp_dir.mkdir(exist_ok=True)
 
-          chunks = []
+          pieces = []
           for idx, sentence in enumerate(sentences, 1):
               text = sentence
               if idx == 1:
@@ -328,39 +325,36 @@ jobs:
                   text = sentence + "."
 
               out_path = tmp_dir / f"chunk_{idx}.wav"
-              print(f"Synthesizing chunk {idx}: {text}")
+              print("Synthesizing chunk", idx, ":", text)
 
-              kwargs = {
-                  "text": text,
-                  "file_path": str(out_path),
-              }
-              if has_custom:
-                  kwargs["speaker_wav"] = VOICE_PATH
-                  kwargs["language"] = "en"
-
-              tts.tts_to_file(**kwargs)
+              # IMPORTANT: English-only model, no language or speaker_wav args
+              tts.tts_to_file(
+                  text=text,
+                  file_path=str(out_path),
+              )
 
               if not out_path.exists() or out_path.stat().st_size == 0:
                   print(f"Chunk {idx} not created correctly")
                   sys.exit(1)
 
-              chunks.append(AudioSegment.from_wav(out_path))
+              pieces.append(AudioSegment.from_wav(out_path))
 
-          if not chunks:
-              print("No audio chunks created")
+          if not pieces:
+              print("No chunks produced")
               sys.exit(1)
 
+          # Pauses between sentences to sound less robotic
           base_pause = 220   # ms between normal sentences
-          hook_pause = 320   # ms after first hook line
+          hook_pause = 320   # ms after the first hook line
 
-          final = chunks[0]
-          for idx, seg in enumerate(chunks[1:], 2):
+          final = pieces[0]
+          for idx, seg in enumerate(pieces[1:], 2):
               pause_ms = hook_pause if idx == 2 else base_pause
               final += AudioSegment.silent(duration=pause_ms) + seg
 
           final.export(AUDIO_PATH, format="wav")
 
-          # Cleanup
+          # Cleanup temp chunk files
           for p in tmp_dir.glob("chunk_*.wav"):
               try:
                   p.unlink()
@@ -375,7 +369,7 @@ jobs:
               print("tts-audio.wav not created correctly")
               sys.exit(1)
 
-          print("XTTS voice synthesis complete:", AUDIO_PATH)
+          print("Tacotron2 TTS complete:", AUDIO_PATH)
           EOF
 
       # ----------------------------------------------------------
@@ -671,22 +665,27 @@ jobs:
           python << 'EOF'
           import os, shutil, subprocess
 
-          # Use any repo image starting with 'thumb' if present
+          # Prefer any repo image that looks like a custom thumbnail
+          candidates = []
           for f in os.listdir("."):
               lower = f.lower()
               if lower == "thumbnail.jpg":
                   continue
-              if lower.startswith("thumb") and lower.endswith((".jpg",".jpeg",".png")):
-                  shutil.copy(f,"thumbnail.jpg")
-                  print("Using custom thumbnail from repo:", f)
-                  raise SystemExit
+              if lower.endswith((".jpg",".jpeg",".png")):
+                  candidates.append(f)
 
-          if not os.path.exists("output.mp4"):
-              raise SystemExit("output.mp4 missing for thumbnail extraction")
-
-          cmd = "ffmpeg -y -ss 00:00:02 -i output.mp4 -vframes 1 -q:v 2 thumbnail.jpg"
-          print("No custom thumbnail found, extracting frame:", cmd)
-          subprocess.run(cmd, shell=True, check=True)
+          if candidates:
+              candidates.sort()
+              src = candidates[0]
+              shutil.copy(src,"thumbnail.jpg")
+              print("Using custom thumbnail from repo:", src)
+          else:
+              print("No custom thumbnail image found in repo.")
+              if not os.path.exists("output.mp4"):
+                  raise SystemExit("output.mp4 missing for thumbnail extraction")
+              cmd = "ffmpeg -y -ss 00:00:02 -i output.mp4 -vframes 1 -q:v 2 thumbnail.jpg"
+              print("Extracting frame:", cmd)
+              subprocess.run(cmd, shell=True, check=True)
           EOF
 
       # ----------------------------------------------------------
