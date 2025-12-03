@@ -72,7 +72,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # ----------------------------------------------------------
-      # GROQ SCRIPT (MRBEAST-STYLE HOOK + CLIFFHANGER)
+      # GROQ SCRIPT (HOOK + CLIFFHANGER, NO REPEAT TOPICS)
       # ----------------------------------------------------------
       - name: Generate script with Groq
         env:
@@ -275,23 +275,107 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # BARK TTS (ONE SHOT, NATURAL)
+      # XTTS v2 TTS WITH YOUR VOICE (voices/aman.wav)
       # ----------------------------------------------------------
-      - name: Generate Voice (Bark)
+      - name: Generate Voice (XTTS v2, custom voice)
+        env:
+          COQUI_TOS_AGREED: "1"
         run: |
           python << 'EOF'
-          import os
-          from bark import generate_audio, preload_models
-          from scipy.io.wavfile import write as wavwrite
+          import os, re, pathlib, sys
+          from TTS.api import TTS
+          from pydub import AudioSegment
 
-          preload_models()
+          SCRIPT_PATH = "script.txt"
+          AUDIO_PATH = "tts-audio.wav"
+          VOICE_PATH = "voices/aman.wav"
 
-          script = open("script.txt","r",encoding="utf-8").read().strip()
+          if not os.path.exists(SCRIPT_PATH):
+              print("script.txt not found")
+              sys.exit(1)
+
+          script = open(SCRIPT_PATH, "r", encoding="utf-8").read().strip()
           if not script:
-              raise SystemExit("script empty")
+              print("script.txt empty")
+              sys.exit(1)
 
-          audio_array = generate_audio(script)
-          wavwrite("tts-audio.wav", 24000, audio_array)
+          has_custom = os.path.exists(VOICE_PATH)
+
+          # Split script into short sentences / chunks
+          sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', script) if s.strip()]
+          if len(sentences) <= 1:
+              words = script.split()
+              chunk_size = 12
+              sentences = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+
+          print("Using custom voice:" if has_custom else "Using default XTTS voice")
+          print("Sentences:")
+          for i, s in enumerate(sentences, 1):
+              print(i, ":", s)
+
+          print("Loading XTTS v2 model...")
+          tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+
+          tmp_dir = pathlib.Path("tts_chunks")
+          tmp_dir.mkdir(exist_ok=True)
+
+          chunks = []
+          for idx, sentence in enumerate(sentences, 1):
+              text = sentence
+              if idx == 1:
+                  text = sentence + "..."
+              elif idx == 2:
+                  text = sentence + "."
+
+              out_path = tmp_dir / f"chunk_{idx}.wav"
+              print(f"Synthesizing chunk {idx}: {text}")
+
+              kwargs = {
+                  "text": text,
+                  "file_path": str(out_path),
+              }
+              if has_custom:
+                  kwargs["speaker_wav"] = VOICE_PATH
+                  kwargs["language"] = "en"
+
+              tts.tts_to_file(**kwargs)
+
+              if not out_path.exists() or out_path.stat().st_size == 0:
+                  print(f"Chunk {idx} not created correctly")
+                  sys.exit(1)
+
+              chunks.append(AudioSegment.from_wav(out_path))
+
+          if not chunks:
+              print("No audio chunks created")
+              sys.exit(1)
+
+          base_pause = 220   # ms between normal sentences
+          hook_pause = 320   # ms after first hook line
+
+          final = chunks[0]
+          for idx, seg in enumerate(chunks[1:], 2):
+              pause_ms = hook_pause if idx == 2 else base_pause
+              final += AudioSegment.silent(duration=pause_ms) + seg
+
+          final.export(AUDIO_PATH, format="wav")
+
+          # Cleanup
+          for p in tmp_dir.glob("chunk_*.wav"):
+              try:
+                  p.unlink()
+              except:
+                  pass
+          try:
+              tmp_dir.rmdir()
+          except:
+              pass
+
+          if not os.path.exists(AUDIO_PATH) or os.path.getsize(AUDIO_PATH) == 0:
+              print("tts-audio.wav not created correctly")
+              sys.exit(1)
+
+          print("XTTS voice synthesis complete:", AUDIO_PATH)
           EOF
 
       # ----------------------------------------------------------
@@ -492,7 +576,7 @@ jobs:
           EOF
 
       # ----------------------------------------------------------
-      # BUILD SUBTITLES (ASS, CLEAN, WHITE, NO BACKGROUND)
+      # BUILD SUBTITLES (ASS, CLEAN, WHITE, NO BG)
       # ----------------------------------------------------------
       - name: Build Subtitles
         run: |
