@@ -1,0 +1,867 @@
+name: Auto YouTube Short
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0,2,5,7,10,12,14,17,19,21 * * *"
+
+concurrency:
+  group: auto-youtube-short
+  cancel-in-progress: true
+
+jobs:
+  make-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+
+    steps:
+      # ----------------------------------------------------------
+      # CHECKOUT + PYTHON + CACHE
+      # ----------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install system deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq libsndfile1
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Preflight check
+        run: |
+          set -euo pipefail
+          if [ ! -f requirements.txt ]; then
+            echo "requirements.txt missing"; exit 1;
+          fi
+          python -c "import json" >/dev/null 2>&1 || { echo 'Python sanity failed'; exit 1; }
+
+      # ----------------------------------------------------------
+      # PICK CATEGORY
+      # ----------------------------------------------------------
+      - name: Pick category
+        run: |
+          set -euo pipefail
+          CATEGORY=$(shuf -e horror crime mystery | head -n1)
+          echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
+          echo "Picked category: $CATEGORY"
+
+      # ----------------------------------------------------------
+      # FETCH WIKIPEDIA TEXT
+      # ----------------------------------------------------------
+      - name: Fetch Wikipedia source
+        run: |
+          set -euo pipefail
+          if [ "${CATEGORY}" = "horror" ]; then
+            TOPIC="List_of_reportedly_haunted_locations_in_the_United_States"
+          elif [ "${CATEGORY}" = "crime" ]; then
+            TOPIC="List_of_unsolved_murder_cases_in_the_United_States"
+          else
+            TOPIC="List_of_missing_persons_cases"
+          fi
+
+          echo "Using Wikipedia topic: $TOPIC"
+
+          TEXT=$(curl -s "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles=${TOPIC}&format=json" \
+            | jq -r '.query.pages[]?.extract' | head -c 8000)
+
+          if [ -z "$TEXT" ]; then
+            echo "Error: Wikipedia returned empty text."
+            exit 1
+          fi
+
+          {
+            echo "source_text<<EOF"
+            echo "$TEXT"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      # ----------------------------------------------------------
+      # GROQ SCRIPT (REAL CASE, RUTHLESS HOOK FILTERS)
+      # ----------------------------------------------------------
+      - name: Generate script with Groq
+        env:
+          GROQ_KEY: ${{ secrets.GROQ_KEY }}
+          SOURCE_TEXT: ${{ env.source_text }}
+        run: |
+          python << 'PY'
+          import os, re, json, time, pathlib, requests, random, sys, string
+
+          api_key = os.environ.get("GROQ_KEY")
+          if not api_key:
+              print("GROQ_KEY missing.")
+              sys.exit(1)
+
+          raw_text = os.environ.get("SOURCE_TEXT", "")
+          category = os.environ.get("CATEGORY", "mystery")
+
+          used_path = pathlib.Path("used_topics.txt")
+          used_titles = []
+          if used_path.exists():
+              used_titles = [
+                  line.strip()
+                  for line in used_path.read_text(encoding="utf-8").splitlines()
+                  if line.strip()
+              ]
+
+          avoid_clause = "; ".join(used_titles[-80:]) if used_titles else ""
+
+          url = "https://api.groq.com/openai/v1/chat/completions"
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json",
+          }
+
+          # SYSTEM PROMPT (UPGRADED)
+          system_content = (
+              "You ONLY return valid JSON. Keys: title, description, tags, script, visual_keywords. "
+              "Write a 30–38 second YouTube Short true-crime / mystery story (≈95–125 words). "
+              "Narration style: calm, cinematic, like a Netflix documentary narrator. "
+              "No melodrama, no clickbait phrases, no over-the-top adjectives. "
+              "SCRIPT RULES: "
+              "1) Line 1 is the hook. It must: "
+              "   - Directly address the viewer, using 'you' or 'your'. "
+              "   - Contrast normal vs disturbing in plain words "
+              "     (e.g., 'You walk home like always, but someone never stops following you'). "
+              "   - Be 11 words or fewer. "
+              "   - NOT start with a date, year, or day of the week. "
+              "   - NOT start with 'This case', 'There was', 'There is', 'There are', "
+              "     'In a small town', 'They say', 'Legend has it'. "
+              "2) Use short lines separated by \\n, each ≤ 14 words. "
+              "3) First 3–4 lines open loops: what looks normal, what goes wrong, what remains unknown. "
+              "4) Middle lines give concrete VISUAL details (who / where / how) that raise tension, "
+              "   including the victim's name and the location (city/state/country) at least once. "
+              "5) Only the final 1–2 lines should be questions or doubts. "
+              "   The rest should be calm, factual statements, like a documentary. "
+              "6) Use no more than 3 lines that end with '?'. "
+              "7) No YouTube meta (no 'in this video', 'subscribe', 'Shorts', 'channel'). "
+              "8) Do not say 'according to records', 'according to reports', "
+              "   'according to Wikipedia', 'police reports', or anything like that. "
+              "   Just state the facts as narrative. "
+              "9) Tone: human, conversational, American English. No robotic phrasing. "
+              "10) No emojis, no weird symbols, no repeated punctuation like '!!!???'. "
+              "11) Keep content PG-13: no graphic gore, no slurs. "
+              "visual_keywords: 3–6 short phrases for cinematic, DARK B-roll like "
+              "'person walking alone at night', 'police lights on wet asphalt', "
+              "'shadowy figure under streetlamp', 'empty street at 3am'."
+          )
+
+          # USER PROMPT
+          user_content = (
+              "From the raw text below, pick ONE real case that is clearly identified "
+              "in the text: a specific person (victim) and the incident connected to them. "
+              "Base the story ONLY on that real case. "
+              "You must use: "
+              "- The victim's full name at least once. "
+              "- The location (city/state/country) at least once. "
+              "Optionally you may weave in the year if it appears, "
+              "but do NOT use the year in the first line. "
+              f"The category is '{category}'. "
+              "Turn this into a tightly written, watchable 30–38 second YouTube Short "
+              "with strong pacing and natural language. "
+              "Do NOT repeat any previously used titles or case topics. "
+          )
+          if avoid_clause:
+              user_content += "Avoid repeating these topics or titles: " + avoid_clause + ". "
+          user_content += (
+              "Return ONLY JSON with keys: title, description, tags, script, visual_keywords. "
+              "Use \\n for line breaks in 'script'. "
+              "Do NOT mention Wikipedia, articles, journalists, reports, or 'according to'. "
+              "Do NOT invent supernatural explanations. Focus on facts and unanswered questions. "
+              "RAW TEXT: " + raw_text[:2000].replace("\n", " ")
+          )
+
+          payload = {
+              "model": "llama-3.1-8b-instant",
+              "temperature": 0.7,
+              "max_tokens": 900,
+              "messages": [
+                  {"role": "system", "content": system_content},
+                  {"role": "user", "content": user_content},
+              ],
+          }
+
+          # HELPERS
+          def try_parse(text: str):
+              text = text.strip()
+              if text.startswith("```"):
+                  text = re.sub(r"^```[a-zA-Z0-9]*", "", text)
+                  text = text.replace("```", "")
+              start = text.find("{")
+              end = text.rfind("}")
+              if start == -1 or end == -1 or end <= start:
+                  raise ValueError("No JSON object found")
+              candidate = text[start:end+1]
+              candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+              return json.loads(candidate)
+
+          def good_length(script: str) -> bool:
+              wc = len(script.replace("\\n", " ").split())
+              return 95 <= wc <= 125
+
+          DATE_PATTERN = re.compile(
+              r"\b(19|20)\d{2}\b|January|February|March|April|May|June|July|August|September|October|November|December",
+              re.IGNORECASE,
+          )
+
+          ALLOWED_CHARS = set(string.ascii_letters + string.digits + " ,.'\"?!-:\n")
+
+          def clean_script(s: str) -> str:
+              s = s.replace("\r", "")
+              s = "".join(ch for ch in s if ch in ALLOWED_CHARS)
+              s = re.sub(r"[ \t]+", " ", s)
+              s = re.sub(r"[!?]{3,}", "!!", s)
+              s = re.sub(r"\.{4,}", "...", s)
+              lines = [ln.strip() for ln in s.split("\n")]
+              lines = [ln for ln in lines if ln]
+              return "\n".join(lines)
+
+          banned_starts = (
+              "this case", "there was", "there is", "there are",
+              "in a small town", "they say", "legend has it"
+          )
+
+          def count_question_lines(script: str) -> int:
+              return sum(1 for line in script.split("\n") if line.strip().endswith("?"))
+
+          def last_lines_are_questions(script: str) -> bool:
+              lines = [l.strip() for l in script.split("\n") if l.strip()]
+              if len(lines) < 3:
+                  return True
+              last2 = lines[-2:]
+              return all(l.endswith("?") for l in last2)
+
+          data = None
+          for attempt in range(1, 4):
+              print(f"=== Groq attempt {attempt}/3 ===")
+              try:
+                  resp = requests.post(url, headers=headers, json=payload, timeout=90)
+                  resp.raise_for_status()
+                  j = resp.json()
+                  content = j["choices"][0]["message"]["content"]
+              except Exception as e:
+                  print("Groq error:", e, file=sys.stderr)
+                  time.sleep(4)
+                  continue
+
+              try:
+                  data = try_parse(content)
+              except Exception as e:
+                  print("JSON parse error:", e, file=sys.stderr)
+                  time.sleep(3)
+                  data = None
+                  continue
+
+              title = (data.get("title") or "").strip()
+              script = (data.get("script") or "").strip()
+              vkeys = data.get("visual_keywords")
+
+              if not title or not script or not isinstance(vkeys, list) or not vkeys:
+                  print("Missing required fields, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              if title in used_titles:
+                  print("Title already used, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              script = clean_script(script)
+
+              if not good_length(script):
+                  print("Bad length (needs ~95–125 words), retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              lines = [l.strip() for l in script.split("\n") if l.strip()]
+              if not lines:
+                  print("Empty lines after cleaning, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              first_line = lines[0]
+              if len(first_line.split()) > 11:
+                  print("Hook too long, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              first_lower = first_line.lower()
+              if not any(word in first_lower.split() for word in ("you", "your")):
+                  print("Hook missing 'you/your', retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              if first_lower.startswith(banned_starts):
+                  print("Hook uses weak pattern, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              if DATE_PATTERN.search(first_line):
+                  print("Hook uses date or month, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              q_count = count_question_lines(script)
+              if q_count > 3:
+                  print("Too many question lines, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              if not last_lines_are_questions(script):
+                  print("Last lines are not the only questions, retrying...", file=sys.stderr)
+                  data = None
+                  time.sleep(3)
+                  continue
+
+              data["script"] = script
+              break
+
+          if data is None:
+              print("Groq failed after 3 attempts, using fallback.", file=sys.stderr)
+              fallback_script = (
+                  "You walk home like always, but tonight the street feels wrong.\n"
+                  "A car crawls behind you, lights low, engine barely breathing.\n"
+                  "Years ago, someone vanished on this same road, same hour.\n"
+                  "Their phone was found in the ditch, screen still glowing.\n"
+                  "The last video showed headlights, then a door opening in the dark.\n"
+                  "Police named a suspect, but no one was ever convicted.\n"
+                  "So if those lights slowed down behind you… what would you do?"
+              )
+              data = {
+                  "title": f"Night Road {category.title()} Case",
+                  "description": "A calm, detailed look at a real roadside disappearance.",
+                  "tags": [category, "true crime", "mystery", "shorts"],
+                  "script": fallback_script,
+                  "visual_keywords": [
+                      "car headlights on empty road",
+                      "person walking alone at night",
+                      "phone glowing in the dark",
+                      "police lights in distance",
+                  ],
+              }
+
+          script_for_file = data["script"]
+          pathlib.Path("script.txt").write_text(script_for_file, encoding="utf-8")
+          pathlib.Path("groq_raw.json").write_text(
+              json.dumps(data, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+
+          title = data.get("title", "Untitled Mystery").strip()
+          visual_keywords = data.get("visual_keywords", [])
+          description = data.get("description", "").strip()
+          tags = data.get("tags", [])
+
+          safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", title)[:60].strip() or "Mystery Short"
+
+          env_path = os.environ["GITHUB_ENV"]
+          with open(env_path, "a", encoding="utf-8") as f:
+              f.write(f"TITLE={title}\n")
+              f.write(f"DESCRIPTION={description}\n")
+              f.write(f"TAGS={','.join(tags)}\n")
+              f.write(f"SANITIZED_TITLE={safe_title}\n")
+              f.write(f"VISUAL_KEYWORDS={','.join(visual_keywords)}\n")
+
+          wc = len(script_for_file.replace("\n", " ").split())
+          print("Final title:", title)
+          print(f"Script word count: {wc}")
+          print("First lines of script:")
+          for i, line in enumerate(script_for_file.splitlines()[:4], 1):
+              print(i, ":", line)
+          PY
+
+      # ----------------------------------------------------------
+      # TTS: RELIABLE TACOTRON2 (NO CLONING)
+      # ----------------------------------------------------------
+      - name: Generate Voice (Tacotron2)
+        env:
+          COQUI_TOS_AGREED: "1"
+        run: |
+          python << 'PY'
+          import os, sys
+          from TTS.api import TTS
+          from pydub import AudioSegment, effects
+
+          SCRIPT_PATH = "script.txt"
+          AUDIO_PATH = "tts-audio.wav"
+
+          if not os.path.exists(SCRIPT_PATH):
+              print("script.txt not found")
+              sys.exit(1)
+
+          script = open(SCRIPT_PATH, "r", encoding="utf-8").read().strip()
+          if not script:
+              print("script.txt empty")
+              sys.exit(1)
+
+          def normalize_audio(path: str):
+              audio = AudioSegment.from_wav(path)
+              audio = effects.normalize(audio)
+              audio = audio.set_frame_rate(44100).set_channels(1)
+              audio.export(path, format="wav")
+
+          MODEL_NAME = "tts_models/en/ljspeech/tacotron2-DDC"
+
+          tts_text = script.replace("\n", ". ")
+
+          print("Loading Tacotron2 model...")
+          tts = TTS(MODEL_NAME)
+
+          print("Generating TTS audio...")
+          tts.tts_to_file(
+              text=tts_text,
+              file_path=AUDIO_PATH,
+          )
+
+          if not os.path.exists(AUDIO_PATH) or os.path.getsize(AUDIO_PATH) == 0:
+              print("tts-audio.wav not created correctly")
+              sys.exit(1)
+
+          print("Normalizing audio and fixing format...")
+          normalize_audio(AUDIO_PATH)
+
+          audio = AudioSegment.from_wav(AUDIO_PATH)
+          dur = audio.duration_seconds
+          print(f"TTS complete: {AUDIO_PATH}, ~{dur:.1f}s")
+          PY
+
+      # ----------------------------------------------------------
+      # FETCH PEXELS DARK B-ROLL (TRIMMED TO 5s)
+      # ----------------------------------------------------------
+      - name: Fetch Pexels dark B-roll (trimmed)
+        env:
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
+          KEYWORDS: ${{ env.VISUAL_KEYWORDS }}
+        run: |
+          python << 'PY'
+          import os, sys, json, time, pathlib, random, urllib.parse, math
+          import requests
+          from pydub import AudioSegment
+
+          PEXELS_KEY = os.environ.get("PEXELS_KEY")
+          raw_keywords = os.environ.get("KEYWORDS", "")
+
+          prepared_dir = pathlib.Path("prepared")
+          prepared_dir.mkdir(exist_ok=True)
+
+          def fallback_black(duration_sec: float = 40.0):
+              out = prepared_dir / "black_placeholder.mp4"
+              d = max(20.0, duration_sec + 3.0)
+              cmd = (
+                  f"ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:r=30:d={d} "
+                  f"-c:v libx264 -preset veryfast -crf 23 \"{out}\""
+              )
+              os.system(cmd)
+              print("Using black placeholder clip.")
+              return [out]
+
+          if not PEXELS_KEY:
+              print("PEXELS_KEY missing, falling back to black video.")
+              try:
+                  audio = AudioSegment.from_wav("tts-audio.wav")
+                  dur = audio.duration_seconds
+              except Exception:
+                  dur = 40.0
+              clips = fallback_black(dur)
+          else:
+              try:
+                  audio = AudioSegment.from_wav("tts-audio.wav")
+                  dur = audio.duration_seconds
+              except Exception as e:
+                  print("Could not read tts-audio.wav, defaulting duration:", e)
+                  dur = 35.0
+
+              base_kws = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+              if not base_kws:
+                  base_kws = [
+                      "person walking alone at night",
+                      "dark empty street at night",
+                      "police lights in dark alley",
+                      "lonely city street 3am",
+                      "shadowy figure under streetlamp",
+                  ]
+              kws = []
+              for k in base_kws:
+                  kws.append(k + " night street")
+              kws.extend([
+                  "dark alley crime scene",
+                  "empty road at night with police lights",
+                  "street at 3am with one person",
+              ])
+
+              min_clips = 4
+              max_clips = 8
+              ideal = int(round(dur / 5.0))
+              n_clips = max(min_clips, min(max_clips, ideal))
+
+              print(f"Audio duration ~{dur:.1f}s, planning {n_clips} B-roll clips.")
+              print("Search keywords (dark themed):", kws)
+
+              random.shuffle(kws)
+              downloaded = []
+              kw_idx = 0
+
+              while len(downloaded) < n_clips and kw_idx < len(kws):
+                  query = kws[kw_idx]
+                  kw_idx += 1
+                  q = urllib.parse.quote_plus(query)
+                  print(f"Searching Pexels for: {query}")
+
+                  try:
+                      resp = requests.get(
+                          f"https://api.pexels.com/videos/search?query={q}&orientation=portrait&per_page=5",
+                          headers={"Authorization": PEXELS_KEY},
+                          timeout=40,
+                      )
+                  except Exception as e:
+                      print("Request error:", e)
+                      continue
+
+                  if resp.status_code == 429:
+                      print("Pexels rate limited us (429). Using fallback black video.")
+                      downloaded = fallback_black(dur)
+                      break
+
+                  if resp.status_code >= 500:
+                      print("Pexels server error:", resp.status_code)
+                      time.sleep(5)
+                      continue
+
+                  if resp.status_code != 200:
+                      print("Pexels status:", resp.status_code)
+                      continue
+
+                  try:
+                      videos = resp.json().get("videos", [])
+                  except Exception as e:
+                      print("JSON parse error:", e)
+                      continue
+
+                  if not videos:
+                      print("No videos for", query)
+                      continue
+
+                  random.shuffle(videos)
+                  for vid in videos:
+                      files = vid.get("video_files", [])
+                      files.sort(
+                          key=lambda x: int(x.get("width", 0)) * int(x.get("height", 0)),
+                          reverse=True,
+                      )
+                      if not files:
+                          continue
+
+                      url = files[0].get("link")
+                      if not url:
+                          continue
+
+                      idx = len(downloaded) + 1
+                      raw_path = prepared_dir / f"raw_{idx}.mp4"
+                      out_path = prepared_dir / f"clip_{idx}.mp4"
+
+                      print(f"Downloading clip {idx}: {url}")
+                      ok = False
+                      for attempt in range(3):
+                          try:
+                              r = requests.get(url, stream=True, timeout=80)
+                              r.raise_for_status()
+                              with open(raw_path, "wb") as f:
+                                  for chunk in r.iter_content(chunk_size=8192):
+                                      f.write(chunk)
+                              ok = True
+                              break
+                          except Exception as e:
+                              print(f"Download error (attempt {attempt+1}): {e}")
+                              time.sleep(2)
+
+                      if not ok:
+                          print("Skipping this video after failed downloads.")
+                          continue
+
+                      cmd = (
+                          f"ffmpeg -y -i \"{raw_path}\" "
+                          f"-t 5 -an "
+                          f"-vf scale=1080:1920:force_original_aspect_ratio=increase,"
+                          f"crop=1080:1920 "
+                          f"-c:v libx264 -preset veryfast -crf 25 "
+                          f"\"{out_path}\""
+                      )
+                      print("Trimming & scaling:", cmd)
+                      os.system(cmd)
+
+                      try:
+                          raw_path.unlink()
+                      except Exception:
+                          pass
+
+                      if out_path.exists() and out_path.stat().st_size > 0:
+                          downloaded.append(out_path)
+                          print("Added trimmed clip:", out_path)
+                          if len(downloaded) >= n_clips:
+                              break
+
+              if not downloaded:
+                  print("No Pexels clips downloaded, falling back to black video.")
+                  downloaded = fallback_black(dur)
+
+              clips = downloaded
+
+          print("Prepared clips:")
+          for c in clips:
+              print(" -", c)
+          PY
+
+      # ----------------------------------------------------------
+      # BUILD CLIP LIST (REPEAT CLIPS TO COVER AUDIO)
+      # ----------------------------------------------------------
+      - name: Build clip list
+        run: |
+          python << 'PY'
+          import os, random, pathlib, math
+          from pydub import AudioSegment
+
+          audio = AudioSegment.from_wav("tts-audio.wav")
+          dur = audio.duration_seconds
+          print(f"Audio duration for clip planning: ~{dur:.1f}s")
+
+          clips = sorted(str(p) for p in pathlib.Path("prepared").glob("*.mp4"))
+          if not clips:
+              raise SystemExit("No prepared clips found")
+
+          random.shuffle(clips)
+          needed = max(3, math.ceil(dur / 5.0))
+
+          base = clips[:]
+          if len(base) == 1:
+              selected = base * needed
+          else:
+              selected = []
+              while len(selected) < needed:
+                  random.shuffle(base)
+                  selected.extend(base)
+              selected = selected[:needed]
+
+          with open("clip_list.txt","w") as f:
+              for c in selected:
+                  f.write(f"file '{os.path.abspath(c)}'\n")
+
+          print("Using clips (looped as needed):")
+          for c in selected:
+              print(" -", c)
+          PY
+
+      # ----------------------------------------------------------
+      # BUILD SUBTITLES (ASS, PROPORTIONAL TIMING)
+      # ----------------------------------------------------------
+      - name: Build Subtitles
+        run: |
+          python << 'PY'
+          import re, textwrap
+          from pydub import AudioSegment
+
+          script = open("script.txt", encoding="utf-8").read()
+          audio = AudioSegment.from_wav("tts-audio.wav")
+          total = len(audio)
+
+          sentences = re.split(r'(?<=[.!?])\s+', script)
+          sentences = [s.strip() for s in sentences if s.strip()]
+
+          if not sentences:
+              raise SystemExit("No sentences for subtitles")
+
+          chunks = []
+          for s in sentences:
+              lines = textwrap.wrap(s, 40)
+              if len(lines) <= 2:
+                  chunks.append("\\N".join(lines))
+              else:
+                  mid = len(lines)//2
+                  chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
+
+          lengths = [len(c) for c in chunks]
+          total_len = sum(lengths)
+
+          def fmt(ms):
+              h = ms // 3600000
+              ms %= 3600000
+              m = ms // 60000
+              ms %= 60000
+              s = ms // 1000
+              cs = (ms % 1000) // 10
+              return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+          out = []
+          out.append("[Script Info]")
+          out.append("ScriptType: v4.00+")
+          out.append("PlayResX: 1080")
+          out.append("PlayResY: 1920")
+          out.append("")
+          out.append("[V4+ Styles]")
+          out.append("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+          out.append("Style: CrimeSub,Arial,42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,40,40,120,1")
+          out.append("")
+          out.append("[Events]")
+          out.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+
+          cur = 0
+          for i, (txt, L) in enumerate(zip(chunks, lengths), 1):
+              share = L / total_len if total_len else 1/len(chunks)
+              dur_i = int(total * share)
+              if dur_i < 600:  # minimum 0.6 sec
+                  dur_i = 600
+              start = fmt(cur)
+              end_ms = cur + dur_i
+              if i == len(chunks):
+                  end_ms = total - 100
+              end = fmt(end_ms)
+              cur = end_ms
+              txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
+              out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
+
+          with open("subtitles.ass","w",encoding="utf-8") as f:
+              f.write("\n".join(out))
+
+          print("subtitles.ass written")
+          PY
+
+      # ----------------------------------------------------------
+      # RENDER FINAL VIDEO (VERTICAL, DARKENED, MAX 45s)
+      # ----------------------------------------------------------
+      - name: Render final video
+        run: |
+          set -euo pipefail
+          if [ ! -s tts-audio.wav ]; then echo "no tts-audio.wav"; exit 1; fi
+          if [ ! -s clip_list.txt ]; then echo "no clip_list.txt"; exit 1; fi
+          if [ ! -s subtitles.ass ]; then echo "no subtitles.ass"; exit 1; fi
+
+          ffmpeg -y \
+            -f concat -safe 0 -i clip_list.txt \
+            -i tts-audio.wav \
+            -filter_complex "[0:v]setsar=1,eq=brightness=-0.12:contrast=1.25:saturation=0.9[v0];[v0]subtitles=subtitles.ass[v]" \
+            -map "[v]" -map 1:a \
+            -shortest \
+            -t 45 \
+            -r 30 \
+            -c:v libx264 -preset veryfast -crf 21 \
+            -c:a aac -b:a 192k \
+            -movflags +faststart \
+            -pix_fmt yuv420p \
+            output.mp4
+
+      # ----------------------------------------------------------
+      # THUMBNAIL (REPO IMAGE ONLY, NO VIDEO SCREENSHOT)
+      # ----------------------------------------------------------
+      - name: Thumbnail
+        run: |
+          python << 'PY'
+          import os, shutil, subprocess
+
+          dest = "thumbnail.jpg"
+
+          preferred_names = ["thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"]
+          found = None
+          for name in preferred_names:
+              if os.path.exists(name):
+                  found = name
+                  break
+
+          if not found:
+              candidates = []
+              for f in os.listdir("."):
+                  lower = f.lower()
+                  if lower in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"):
+                      continue
+                  if lower.endswith((".jpg",".jpeg",".png")) and not lower.startswith("output"):
+                      candidates.append(f)
+
+              if candidates:
+                  candidates.sort()
+                  found = candidates[0]
+
+          if found:
+              src_abs = os.path.abspath(found)
+              dest_abs = os.path.abspath(dest)
+              if src_abs != dest_abs:
+                  shutil.copy(found, dest)
+                  print("Using repo thumbnail:", found)
+              else:
+                  print("Repo already has thumbnail.jpg, using it as-is.")
+          else:
+              print("No thumbnail image found in repo. Creating dark placeholder thumbnail.")
+              cmd = (
+                  "ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=1 "
+                  "-vframes 1 -q:v 2 thumbnail.jpg"
+              )
+              subprocess.run(cmd, shell=True, check=True)
+          PY
+
+      # ----------------------------------------------------------
+      # SAVE USED TOPIC
+      # ----------------------------------------------------------
+      - name: Save used topic
+        run: |
+          set -euo pipefail
+          TITLE="${TITLE:-Untitled Mystery}"
+          echo "$TITLE" >> used_topics.txt
+          tail -n 500 used_topics.txt > used_topics.tmp && mv used_topics.tmp used_topics.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add used_topics.txt
+          git commit -m "Add topic: $TITLE" || echo "No changes to commit"
+          git push || echo "Git push failed – check logs"
+
+      # ----------------------------------------------------------
+      # UPLOAD ARTIFACTS
+      # ----------------------------------------------------------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short-${{ env.CATEGORY }}-${{ github.run_id }}
+          path: |
+            output.mp4
+            subtitles.ass
+            script.txt
+            groq_raw.json
+            thumbnail.jpg
+            used_topics.txt
+
+      # ----------------------------------------------------------
+      # JOB SUMMARY
+      # ----------------------------------------------------------
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "Title: $TITLE"
+            echo "Category: $CATEGORY"
+            echo "Description: $DESCRIPTION"
+            echo "Visual keywords: $VISUAL_KEYWORDS"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
