@@ -5,4 +5,5 @@ numpy<2
 requests
 pydub
 torch
+torchaudio
 transformers==4.29.2
