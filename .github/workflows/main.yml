@@ -275,16 +275,15 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # TTS: TACOTRON2 (CHUNKED WITH PAUSES)
+      # TTS: TACOTRON2 SINGLE PASS (ONE VOICE, NO CHUNKS)
       # ----------------------------------------------------------
-      - name: Generate Voice (Tacotron2, chunked with pauses)
+      - name: Generate Voice (Tacotron2 single pass)
         env:
           COQUI_TOS_AGREED: "1"
         run: |
           python << 'EOF'
-          import os, re, sys, pathlib
+          import os, sys
           from TTS.api import TTS
-          from pydub import AudioSegment
 
           SCRIPT_PATH = "script.txt"
           AUDIO_PATH = "tts-audio.wav"
@@ -298,78 +297,22 @@ jobs:
               print("script.txt empty")
               sys.exit(1)
 
-          # Split into short spoken chunks
-          sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', script) if s.strip()]
-          if len(sentences) <= 1:
-              words = script.split()
-              chunk_size = 12
-              sentences = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
-
-          print("Sentences for TTS:")
-          for i, s in enumerate(sentences, 1):
-              print(i, ":", s)
-
+          print("Loading Tacotron2 model (single voice)...")
           MODEL_NAME = "tts_models/en/ljspeech/tacotron2-DDC"
-          print("Loading TTS model:", MODEL_NAME)
           tts = TTS(MODEL_NAME)
 
-          tmp_dir = pathlib.Path("tts_chunks")
-          tmp_dir.mkdir(exist_ok=True)
-
-          pieces = []
-          for idx, sentence in enumerate(sentences, 1):
-              text = sentence
-              if idx == 1:
-                  text = sentence + "..."
-              elif idx == 2:
-                  text = sentence + "."
-
-              out_path = tmp_dir / f"chunk_{idx}.wav"
-              print("Synthesizing chunk", idx, ":", text)
-
-              # IMPORTANT: English-only model, no language or speaker_wav args
-              tts.tts_to_file(
-                  text=text,
-                  file_path=str(out_path),
-              )
-
-              if not out_path.exists() or out_path.stat().st_size == 0:
-                  print(f"Chunk {idx} not created correctly")
-                  sys.exit(1)
-
-              pieces.append(AudioSegment.from_wav(out_path))
-
-          if not pieces:
-              print("No chunks produced")
-              sys.exit(1)
-
-          # Pauses between sentences to sound less robotic
-          base_pause = 220   # ms between normal sentences
-          hook_pause = 320   # ms after the first hook line
-
-          final = pieces[0]
-          for idx, seg in enumerate(pieces[1:], 2):
-              pause_ms = hook_pause if idx == 2 else base_pause
-              final += AudioSegment.silent(duration=pause_ms) + seg
-
-          final.export(AUDIO_PATH, format="wav")
-
-          # Cleanup temp chunk files
-          for p in tmp_dir.glob("chunk_*.wav"):
-              try:
-                  p.unlink()
-              except:
-                  pass
-          try:
-              tmp_dir.rmdir()
-          except:
-              pass
+          # ONE SHOT: no chunks, no multiple voices, one continuous narration
+          print("Generating full audio in a single pass...")
+          tts.tts_to_file(
+              text=script,
+              file_path=AUDIO_PATH,
+          )
 
           if not os.path.exists(AUDIO_PATH) or os.path.getsize(AUDIO_PATH) == 0:
               print("tts-audio.wav not created correctly")
               sys.exit(1)
 
-          print("Tacotron2 TTS complete:", AUDIO_PATH)
+          print("Tacotron2 single-pass TTS complete:", AUDIO_PATH)
           EOF
 
       # ----------------------------------------------------------
@@ -502,7 +445,7 @@ jobs:
                               ok = True
                               break
                           except Exception as e:
-                              print(f"Download error (attempt {attempt+1}):", e)
+                              print(f"Download error (attempt {attempt+1}): {e}")
                               time.sleep(2)
 
                       if not ok:
@@ -564,153 +507,4 @@ jobs:
 
           with open("clip_list.txt","w") as f:
               for c in selected:
-                  f.write(f"file '{os.path.abspath(c)}'\n")
-
-          print("Using clips:", selected)
-          EOF
-
-      # ----------------------------------------------------------
-      # BUILD SUBTITLES (ASS, CLEAN, WHITE, NO BG)
-      # ----------------------------------------------------------
-      - name: Build Subtitles
-        run: |
-          python << 'EOF'
-          import re, textwrap
-          from pydub import AudioSegment
-
-          script = open("script.txt", encoding="utf-8").read()
-          audio = AudioSegment.from_wav("tts-audio.wav")
-          total = len(audio)
-
-          sentences = re.split(r'(?<=[.!?])\s+', script)
-          sentences = [s.strip() for s in sentences if s.strip()]
-
-          if not sentences:
-              raise SystemExit("No sentences for subtitles")
-
-          chunks = []
-          for s in sentences:
-              lines = textwrap.wrap(s, 40)
-              if len(lines) <= 2:
-                  chunks.append("\\N".join(lines))
-              else:
-                  mid = len(lines)//2
-                  chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
-
-          base = max(800, total // len(chunks))
-
-          def fmt(ms):
-              h = ms // 3600000
-              ms %= 3600000
-              m = ms // 60000
-              ms %= 60000
-              s = ms // 1000
-              cs = (ms % 1000) // 10
-              return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
-          out = []
-          out.append("[Script Info]")
-          out.append("ScriptType: v4.00+")
-          out.append("PlayResX: 1080")
-          out.append("PlayResY: 1920")
-          out.append("")
-          out.append("[V4+ Styles]")
-          out.append("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-          out.append("Style: CrimeSub,Arial,42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,40,40,120,1")
-          out.append("")
-          out.append("[Events]")
-          out.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
-
-          cur = 0
-          for i, txt in enumerate(chunks, 1):
-              start = fmt(cur)
-              end = fmt(cur + base)
-              if i == len(chunks):
-                  end = fmt(total - 100)
-              cur += base
-              txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
-              out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
-
-          with open("subtitles.ass","w",encoding="utf-8") as f:
-              f.write("\n".join(out))
-
-          print("subtitles.ass written")
-          EOF
-
-      # ----------------------------------------------------------
-      # RENDER FINAL VIDEO (VERTICAL, NO LOOPING)
-      # ----------------------------------------------------------
-      - name: Render final video
-        run: |
-          if [ ! -s tts-audio.wav ]; then echo "no tts-audio.wav"; exit 1; fi
-          if [ ! -s clip_list.txt ]; then echo "no clip_list.txt"; exit 1; fi
-          if [ ! -s subtitles.ass ]; then echo "no subtitles.ass"; exit 1; fi
-
-          ffmpeg -y \
-            -f concat -safe 0 -i clip_list.txt \
-            -i tts-audio.wav \
-            -filter_complex "[0:v]setsar=1[v0];[v0]subtitles=subtitles.ass[v]" \
-            -map "[v]" -map 1:a \
-            -shortest -t 60 \
-            -c:v libx264 -preset veryfast -crf 23 \
-            -c:a aac -b:a 192k \
-            -pix_fmt yuv420p \
-            output.mp4
-
-      # ----------------------------------------------------------
-      # THUMBNAIL (USE YOUR IMAGE IF PRESENT)
-      # ----------------------------------------------------------
-      - name: Thumbnail
-        run: |
-          python << 'EOF'
-          import os, shutil, subprocess
-
-          # Prefer any repo image that looks like a custom thumbnail
-          candidates = []
-          for f in os.listdir("."):
-              lower = f.lower()
-              if lower == "thumbnail.jpg":
-                  continue
-              if lower.endswith((".jpg",".jpeg",".png")):
-                  candidates.append(f)
-
-          if candidates:
-              candidates.sort()
-              src = candidates[0]
-              shutil.copy(src,"thumbnail.jpg")
-              print("Using custom thumbnail from repo:", src)
-          else:
-              print("No custom thumbnail image found in repo.")
-              if not os.path.exists("output.mp4"):
-                  raise SystemExit("output.mp4 missing for thumbnail extraction")
-              cmd = "ffmpeg -y -ss 00:00:02 -i output.mp4 -vframes 1 -q:v 2 thumbnail.jpg"
-              print("Extracting frame:", cmd)
-              subprocess.run(cmd, shell=True, check=True)
-          EOF
-
-      # ----------------------------------------------------------
-      # SAVE USED TOPIC (NO REPEATS)
-      # ----------------------------------------------------------
-      - name: Save used topic
-        run: |
-          TITLE="${TITLE:-Untitled Mystery}"
-          echo "$TITLE" >> used_topics.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add used_topics.txt
-          git commit -m "Add topic: $TITLE" || true
-          git push || true
-
-      # ----------------------------------------------------------
-      # UPLOAD ARTIFACTS
-      # ----------------------------------------------------------
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-short
-          path: |
-            output.mp4
-            subtitles.ass
-            script.txt
-            groq_raw.json
-            thumbnail.jpg
+             
