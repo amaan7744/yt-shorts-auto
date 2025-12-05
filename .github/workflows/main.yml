@@ -130,7 +130,6 @@ jobs:
               "Content-Type": "application/json",
           }
 
-          # SYSTEM PROMPT (UPGRADED)
           system_content = (
               "You ONLY return valid JSON. Keys: title, description, tags, script, visual_keywords. "
               "Write a 30–38 second YouTube Short true-crime / mystery story (≈95–125 words). "
@@ -164,7 +163,6 @@ jobs:
               "'shadowy figure under streetlamp', 'empty street at 3am'."
           )
 
-          # USER PROMPT
           user_content = (
               "From the raw text below, pick ONE real case that is clearly identified "
               "in the text: a specific person (victim) and the incident connected to them. "
@@ -199,7 +197,6 @@ jobs:
               ],
           }
 
-          # HELPERS
           def try_parse(text: str):
               text = text.strip()
               if text.startswith("```"):
@@ -398,59 +395,20 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # TTS: RELIABLE TACOTRON2 (NO CLONING)
+      # TTS VIA EXTERNAL SCRIPT (CLONE + FALLBACK)
       # ----------------------------------------------------------
-      - name: Generate Voice (Tacotron2)
+      - name: Generate Voice (cloned via tts_generate.py)
         env:
           COQUI_TOS_AGREED: "1"
+          TTS_SCRIPT_PATH: "script.txt"
+          TTS_OUTPUT_PATH: "tts-audio.wav"
+          TTS_USE_CLONE: "1"
+          TTS_VOICE_PATH: "voices/aman.wav"
+          TTS_LANGUAGE: "en"
+          TTS_SPEED: "0.96"
         run: |
-          python << 'PY'
-          import os, sys
-          from TTS.api import TTS
-          from pydub import AudioSegment, effects
-
-          SCRIPT_PATH = "script.txt"
-          AUDIO_PATH = "tts-audio.wav"
-
-          if not os.path.exists(SCRIPT_PATH):
-              print("script.txt not found")
-              sys.exit(1)
-
-          script = open(SCRIPT_PATH, "r", encoding="utf-8").read().strip()
-          if not script:
-              print("script.txt empty")
-              sys.exit(1)
-
-          def normalize_audio(path: str):
-              audio = AudioSegment.from_wav(path)
-              audio = effects.normalize(audio)
-              audio = audio.set_frame_rate(44100).set_channels(1)
-              audio.export(path, format="wav")
-
-          MODEL_NAME = "tts_models/en/ljspeech/tacotron2-DDC"
-
-          tts_text = script.replace("\n", ". ")
-
-          print("Loading Tacotron2 model...")
-          tts = TTS(MODEL_NAME)
-
-          print("Generating TTS audio...")
-          tts.tts_to_file(
-              text=tts_text,
-              file_path=AUDIO_PATH,
-          )
-
-          if not os.path.exists(AUDIO_PATH) or os.path.getsize(AUDIO_PATH) == 0:
-              print("tts-audio.wav not created correctly")
-              sys.exit(1)
-
-          print("Normalizing audio and fixing format...")
-          normalize_audio(AUDIO_PATH)
-
-          audio = AudioSegment.from_wav(AUDIO_PATH)
-          dur = audio.duration_seconds
-          print(f"TTS complete: {AUDIO_PATH}, ~{dur:.1f}s")
-          PY
+          set -euo pipefail
+          python tts_generate.py
 
       # ----------------------------------------------------------
       # FETCH PEXELS DARK B-ROLL (TRIMMED TO 5s)
