@@ -95,7 +95,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # ----------------------------------------------------------
-      # GROQ SCRIPT (REAL CASE, RUTHLESS HOOK FILTERS)
+      # GROQ SCRIPT (NEUTRAL INVESTIGATIVE TRUE-CRIME)
       # ----------------------------------------------------------
       - name: Generate script with Groq
         env:
@@ -130,66 +130,57 @@ jobs:
               "Content-Type": "application/json",
           }
 
+          # ---------- SCRIPT STYLE ----------
           system_content = (
               "You ONLY return valid JSON. Keys: title, description, tags, script, visual_keywords. "
-              "Write a 30–38 second YouTube Short true-crime / mystery story (≈95–125 words). "
-              "Narration style: calm, cinematic, like a Netflix documentary narrator. "
-              "No melodrama, no clickbait phrases, no over-the-top adjectives. "
-              "SCRIPT RULES: "
-              "1) Line 1 is the hook. It must: "
-              "   - Directly address the viewer, using 'you' or 'your'. "
-              "   - Contrast normal vs disturbing in plain words "
-              "     (e.g., 'You walk home like always, but someone never stops following you'). "
-              "   - Be 11 words or fewer. "
-              "   - NOT start with a date, year, or day of the week. "
-              "   - NOT start with 'This case', 'There was', 'There is', 'There are', "
-              "     'In a small town', 'They say', 'Legend has it'. "
-              "2) Use short lines separated by \\n, each ≤ 14 words. "
-              "3) First 3–4 lines open loops: what looks normal, what goes wrong, what remains unknown. "
-              "4) Middle lines give concrete VISUAL details (who / where / how) that raise tension, "
-              "   including the victim's name and the location (city/state/country) at least once. "
-              "5) Only the final 1–2 lines should be questions or doubts. "
-              "   The rest should be calm, factual statements, like a documentary. "
-              "6) Use no more than 3 lines that end with '?'. "
-              "7) No YouTube meta (no 'in this video', 'subscribe', 'Shorts', 'channel'). "
-              "8) Do not say 'according to records', 'according to reports', "
-              "   'according to Wikipedia', 'police reports', or anything like that. "
-              "   Just state the facts as narrative. "
-              "9) Tone: human, conversational, American English. No robotic phrasing. "
-              "10) No emojis, no weird symbols, no repeated punctuation like '!!!???'. "
-              "11) Keep content PG-13: no graphic gore, no slurs. "
-              "visual_keywords: 3–6 short phrases for cinematic, DARK B-roll like "
-              "'person walking alone at night', 'police lights on wet asphalt', "
-              "'shadowy figure under streetlamp', 'empty street at 3am'."
+              "Write a 30–40 second true-crime short script (≈95–130 words) with a neutral, "
+              "investigative tone. The narration should feel like a calm investigator summarizing "
+              "a real case for a professional true-crime documentary.\n\n"
+              "Follow these rules:\n"
+              "1) Begin with a simple, quiet moment that leads into a real-world crime or "
+              "disappearance (night road, empty street, routine activity, etc.).\n"
+              "2) Present the crime or disappearance using straightforward, factual-style narration.\n"
+              "3) Describe only minimal, realistic clues such as tire marks, phone records, "
+              "surveillance gaps, or witness absence.\n"
+              "4) Avoid drama, sensationalism, emotional language, or exaggerated suspense.\n"
+              "5) Maintain a steady pace similar to a professional true-crime documentary voiceover.\n"
+              "6) Conclude with a direct, concise question OR a single unresolved detail that "
+              "clearly highlights the mystery.\n"
+              "7) Keep everything suitable for a 30–40 second YouTube Short.\n"
+              "8) Use short lines separated by \\n, each ≤ 16 words.\n"
+              "9) Keep content PG-13: no graphic gore, no slurs, no shock-language.\n"
+              "10) visual_keywords: 3–6 short phrases for grounded, dark B-roll like "
+              "'car on empty road at night', 'streetlights over wet asphalt', "
+              "'small town intersection at night', 'silent police station hallway'.\n"
           )
 
           user_content = (
-              "From the raw text below, pick ONE real case that is clearly identified "
-              "in the text: a specific person (victim) and the incident connected to them. "
-              "Base the story ONLY on that real case. "
-              "You must use: "
-              "- The victim's full name at least once. "
-              "- The location (city/state/country) at least once. "
-              "Optionally you may weave in the year if it appears, "
-              "but do NOT use the year in the first line. "
-              f"The category is '{category}'. "
-              "Turn this into a tightly written, watchable 30–38 second YouTube Short "
-              "with strong pacing and natural language. "
-              "Do NOT repeat any previously used titles or case topics. "
+              "From the raw text below, pick ONE real case clearly identified in the text: "
+              "a specific victim and their disappearance or killing. Base the story ONLY "
+              "on that real case.\n\n"
+              "Requirements:\n"
+              "- Use the victim's full name at least once.\n"
+              "- Mention the location (city/state/country) at least once.\n"
+              "- You may mention the year, but not in the first line.\n"
+              "- Keep the tone neutral, like a case summary in a documentary.\n"
+              "- Do NOT dramatize or sensationalize. No phrases like 'horrifying', 'chilling', "
+              "'nightmare', 'terrifying', 'unbelievable', etc.\n"
+              "- Do NOT copy or reuse any previous examples or phrasings. Generate a completely new "
+              "script each time.\n"
+              "- Do NOT reference Wikipedia, articles, journalists, or 'reports'. Just state the case.\n"
+              f"The general category is '{category}'. "
           )
           if avoid_clause:
-              user_content += "Avoid repeating these topics or titles: " + avoid_clause + ". "
+              user_content += "Avoid repeating these topics or titles: " + avoid_clause + ".\n"
           user_content += (
               "Return ONLY JSON with keys: title, description, tags, script, visual_keywords. "
               "Use \\n for line breaks in 'script'. "
-              "Do NOT mention Wikipedia, articles, journalists, reports, or 'according to'. "
-              "Do NOT invent supernatural explanations. Focus on facts and unanswered questions. "
               "RAW TEXT: " + raw_text[:2000].replace("\n", " ")
           )
 
           payload = {
               "model": "llama-3.1-8b-instant",
-              "temperature": 0.7,
+              "temperature": 0.6,
               "max_tokens": 900,
               "messages": [
                   {"role": "system", "content": system_content},
@@ -212,12 +203,7 @@ jobs:
 
           def good_length(script: str) -> bool:
               wc = len(script.replace("\\n", " ").split())
-              return 95 <= wc <= 125
-
-          DATE_PATTERN = re.compile(
-              r"\b(19|20)\d{2}\b|January|February|March|April|May|June|July|August|September|October|November|December",
-              re.IGNORECASE,
-          )
+              return 95 <= wc <= 130
 
           ALLOWED_CHARS = set(string.ascii_letters + string.digits + " ,.'\"?!-:\n")
 
@@ -231,20 +217,8 @@ jobs:
               lines = [ln for ln in lines if ln]
               return "\n".join(lines)
 
-          banned_starts = (
-              "this case", "there was", "there is", "there are",
-              "in a small town", "they say", "legend has it"
-          )
-
           def count_question_lines(script: str) -> int:
               return sum(1 for line in script.split("\n") if line.strip().endswith("?"))
-
-          def last_lines_are_questions(script: str) -> bool:
-              lines = [l.strip() for l in script.split("\n") if l.strip()]
-              if len(lines) < 3:
-                  return True
-              last2 = lines[-2:]
-              return all(l.endswith("?") for l in last2)
 
           data = None
           for attempt in range(1, 4):
@@ -286,7 +260,7 @@ jobs:
               script = clean_script(script)
 
               if not good_length(script):
-                  print("Bad length (needs ~95–125 words), retrying...", file=sys.stderr)
+                  print("Bad length (needs ~95–130 words), retrying...", file=sys.stderr)
                   data = None
                   time.sleep(3)
                   continue
@@ -298,41 +272,15 @@ jobs:
                   time.sleep(3)
                   continue
 
-              first_line = lines[0]
-              if len(first_line.split()) > 11:
-                  print("Hook too long, retrying...", file=sys.stderr)
+              last = lines[-1]
+              if not last.endswith("?") and "unknown" not in last.lower() and "never" not in last.lower():
+                  print("Last line not clearly highlighting the mystery, retrying...", file=sys.stderr)
                   data = None
                   time.sleep(3)
                   continue
 
-              first_lower = first_line.lower()
-              if not any(word in first_lower.split() for word in ("you", "your")):
-                  print("Hook missing 'you/your', retrying...", file=sys.stderr)
-                  data = None
-                  time.sleep(3)
-                  continue
-
-              if first_lower.startswith(banned_starts):
-                  print("Hook uses weak pattern, retrying...", file=sys.stderr)
-                  data = None
-                  time.sleep(3)
-                  continue
-
-              if DATE_PATTERN.search(first_line):
-                  print("Hook uses date or month, retrying...", file=sys.stderr)
-                  data = None
-                  time.sleep(3)
-                  continue
-
-              q_count = count_question_lines(script)
-              if q_count > 3:
+              if count_question_lines(script) > 2:
                   print("Too many question lines, retrying...", file=sys.stderr)
-                  data = None
-                  time.sleep(3)
-                  continue
-
-              if not last_lines_are_questions(script):
-                  print("Last lines are not the only questions, retrying...", file=sys.stderr)
                   data = None
                   time.sleep(3)
                   continue
@@ -343,24 +291,24 @@ jobs:
           if data is None:
               print("Groq failed after 3 attempts, using fallback.", file=sys.stderr)
               fallback_script = (
-                  "You walk home like always, but tonight the street feels wrong.\n"
-                  "A car crawls behind you, lights low, engine barely breathing.\n"
-                  "Years ago, someone vanished on this same road, same hour.\n"
-                  "Their phone was found in the ditch, screen still glowing.\n"
-                  "The last video showed headlights, then a door opening in the dark.\n"
-                  "Police named a suspect, but no one was ever convicted.\n"
-                  "So if those lights slowed down behind you… what would you do?"
+                  "It starts with a routine drive home on a quiet county road.\n"
+                  "A car is later found abandoned on the shoulder, hazard lights still on.\n"
+                  "Inside: a wallet, phone, and keys. No sign of a struggle.\n"
+                  "Tire marks show one sudden stop, then nothing leaving the scene.\n"
+                  "Nearby cameras record the car passing once, but never coming back.\n"
+                  "No confirmed witnesses. No confirmed sightings.\n"
+                  "To this day, investigators still don’t know where the driver went."
               )
               data = {
-                  "title": f"Night Road {category.title()} Case",
-                  "description": "A calm, detailed look at a real roadside disappearance.",
+                  "title": f"Unfinished Drive {category.title()} Case",
+                  "description": "A neutral, factual look at a driver who vanished on a routine trip.",
                   "tags": [category, "true crime", "mystery", "shorts"],
                   "script": fallback_script,
                   "visual_keywords": [
-                      "car headlights on empty road",
-                      "person walking alone at night",
-                      "phone glowing in the dark",
-                      "police lights in distance",
+                      "car on empty road at night",
+                      "hazard lights blinking on roadside",
+                      "empty driver's seat",
+                      "quiet police station hallway",
                   ],
               }
 
@@ -395,7 +343,7 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # TTS VIA tts_generate.py (CLONE ON BY DEFAULT)
+      # TTS VIA tts_generate.py (XTTS CLONE)
       # ----------------------------------------------------------
       - name: Generate Voice (via tts_generate.py)
         env:
@@ -413,7 +361,7 @@ jobs:
           python tts_generate.py
 
       # ----------------------------------------------------------
-      # ADD NATURAL AMBIENCE (RAIN / NIGHT / WIND) UNDER VOICE
+      # ADD NATURAL AMBIENCE (RAIN / NIGHT / WIND)
       # ----------------------------------------------------------
       - name: Add natural ambience under narration
         run: |
@@ -456,7 +404,7 @@ jobs:
           else:
               bg = bg[:len(voice)]
 
-          bg = bg - 18  # drop ambience volume
+          bg = bg - 18  # push ambience back
 
           mixed = voice.overlay(bg)
           mixed.export(BASE, format="wav")
@@ -464,7 +412,7 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # FETCH PEXELS DARK B-ROLL (TRIMMED TO 5s)
+      # FETCH PEXELS DARK B-ROLL (MANUAL LINKS FIRST)
       # ----------------------------------------------------------
       - name: Fetch Pexels dark B-roll (trimmed)
         env:
@@ -493,156 +441,209 @@ jobs:
               print("Using black placeholder clip.")
               return [out]
 
-          if not PEXELS_KEY:
-              print("PEXELS_KEY missing, falling back to black video.")
-              try:
-                  audio = AudioSegment.from_wav("tts-audio.wav")
-                  dur = audio.duration_seconds
-              except Exception:
-                  dur = 40.0
-              clips = fallback_black(dur)
+          try:
+              audio = AudioSegment.from_wav("tts-audio.wav")
+              dur = audio.duration_seconds
+          except Exception as e:
+              print("Could not read tts-audio.wav, defaulting duration:", e)
+              dur = 35.0
+
+          downloaded = []
+
+          # --------- MANUAL LINKS (YOUR CURATED PEXELS VIDEOS) ----------
+          manual_file = pathlib.Path("pexels_links.txt")
+          manual_links = []
+          if manual_file.exists():
+              for line in manual_file.read_text(encoding="utf-8").splitlines():
+                  line = line.strip()
+                  if line and not line.startswith("#"):
+                      manual_links.append(line)
+
+          if manual_links:
+              print("Using manual Pexels links from pexels_links.txt")
+              for idx, url in enumerate(manual_links, start=1):
+                  raw_path = prepared_dir / f"manual_raw_{idx}.mp4"
+                  out_path = prepared_dir / f"clip_{idx}.mp4"
+                  print(f"Downloading manual clip {idx}: {url}")
+                  ok = False
+                  for attempt in range(3):
+                      try:
+                          r = requests.get(url, stream=True, timeout=80)
+                          r.raise_for_status()
+                          with open(raw_path, "wb") as f:
+                              for chunk in r.iter_content(chunk_size=8192):
+                                  f.write(chunk)
+                          ok = True
+                          break
+                      except Exception as e:
+                          print(f"Manual download error (attempt {attempt+1}): {e}")
+                          time.sleep(2)
+                  if not ok:
+                      print("Skipping this manual video after failed downloads.")
+                      continue
+
+                  cmd = (
+                      f"ffmpeg -y -i \"{raw_path}\" "
+                      f"-t 5 -an "
+                      f"-vf scale=1080:1920:force_original_aspect_ratio=increase,"
+                      f"crop=1080:1920 "
+                      f"-c:v libx264 -preset veryfast -crf 25 "
+                      f"\"{out_path}\""
+                  )
+                  print("Trimming & scaling (manual):", cmd)
+                  os.system(cmd)
+
+                  try:
+                      raw_path.unlink()
+                  except Exception:
+                      pass
+
+                  if out_path.exists() and out_path.stat().st_size > 0:
+                      downloaded.append(out_path)
+                      print("Added manual trimmed clip:", out_path)
+
+          # If manual links gave us clips, we skip API.
+          clips = []
+          if downloaded:
+              clips = downloaded
           else:
-              try:
-                  audio = AudioSegment.from_wav("tts-audio.wav")
-                  dur = audio.duration_seconds
-              except Exception as e:
-                  print("Could not read tts-audio.wav, defaulting duration:", e)
-                  dur = 35.0
+              print("No usable manual clips, falling back to Pexels API / black video.")
+              # --------- PEXELS API FALLBACK ----------
+              if not PEXELS_KEY:
+                  print("PEXELS_KEY missing, falling back to black video.")
+                  clips = fallback_black(dur)
+              else:
+                  base_kws = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+                  if not base_kws:
+                      base_kws = [
+                          "person walking alone at night",
+                          "dark empty street at night",
+                          "police lights in dark alley",
+                          "lonely city street 3am",
+                          "shadowy figure under streetlamp",
+                      ]
+                  kws = []
+                  for k in base_kws:
+                      kws.append(k + " night street")
+                  kws.extend([
+                      "dark alley crime scene",
+                      "empty road at night with police lights",
+                      "street at 3am with one person",
+                  ])
 
-              base_kws = [k.strip() for k in raw_keywords.split(",") if k.strip()]
-              if not base_kws:
-                  base_kws = [
-                      "person walking alone at night",
-                      "dark empty street at night",
-                      "police lights in dark alley",
-                      "lonely city street 3am",
-                      "shadowy figure under streetlamp",
-                  ]
-              kws = []
-              for k in base_kws:
-                  kws.append(k + " night street")
-              kws.extend([
-                  "dark alley crime scene",
-                  "empty road at night with police lights",
-                  "street at 3am with one person",
-              ])
+                  min_clips = 4
+                  max_clips = 8
+                  ideal = int(round(dur / 5.0))
+                  n_clips = max(min_clips, min(max_clips, ideal))
 
-              min_clips = 4
-              max_clips = 8
-              ideal = int(round(dur / 5.0))
-              n_clips = max(min_clips, min(max_clips, ideal))
+                  print(f"Audio duration ~{dur:.1f}s, planning {n_clips} B-roll clips.")
+                  print("Search keywords (dark themed):", kws)
 
-              print(f"Audio duration ~{dur:.1f}s, planning {n_clips} B-roll clips.")
-              print("Search keywords (dark themed):", kws)
+                  random.shuffle(kws)
 
-              random.shuffle(kws)
-              downloaded = []
-              kw_idx = 0
-
-              while len(downloaded) < n_clips and kw_idx < len(kws):
-                  query = kws[kw_idx]
-                  kw_idx += 1
-                  q = urllib.parse.quote_plus(query)
-                  print(f"Searching Pexels for: {query}")
-
-                  try:
-                      resp = requests.get(
-                          f"https://api.pexels.com/videos/search?query={q}&orientation=portrait&per_page=5",
-                          headers={"Authorization": PEXELS_KEY},
-                          timeout=40,
-                      )
-                  except Exception as e:
-                      print("Request error:", e)
-                      continue
-
-                  if resp.status_code == 429:
-                      print("Pexels rate limited us (429). Using fallback black video.")
-                      downloaded = fallback_black(dur)
-                      break
-
-                  if resp.status_code >= 500:
-                      print("Pexels server error:", resp.status_code)
-                      time.sleep(5)
-                      continue
-
-                  if resp.status_code != 200:
-                      print("Pexels status:", resp.status_code)
-                      continue
-
-                  try:
-                      videos = resp.json().get("videos", [])
-                  except Exception as e:
-                      print("JSON parse error:", e)
-                      continue
-
-                  if not videos:
-                      print("No videos for", query)
-                      continue
-
-                  random.shuffle(videos)
-                  for vid in videos:
-                      files = vid.get("video_files", [])
-                      files.sort(
-                          key=lambda x: int(x.get("width", 0)) * int(x.get("height", 0)),
-                          reverse=True,
-                      )
-                      if not files:
-                          continue
-
-                      url = files[0].get("link")
-                      if not url:
-                          continue
-
-                      idx = len(downloaded) + 1
-                      raw_path = prepared_dir / f"raw_{idx}.mp4"
-                      out_path = prepared_dir / f"clip_{idx}.mp4"
-
-                      print(f"Downloading clip {idx}: {url}")
-                      ok = False
-                      for attempt in range(3):
-                          try:
-                              r = requests.get(url, stream=True, timeout=80)
-                              r.raise_for_status()
-                              with open(raw_path, "wb") as f:
-                                  for chunk in r.iter_content(chunk_size=8192):
-                                      f.write(chunk)
-                              ok = True
-                              break
-                          except Exception as e:
-                              print(f"Download error (attempt {attempt+1}): {e}")
-                              time.sleep(2)
-
-                      if not ok:
-                          print("Skipping this video after failed downloads.")
-                          continue
-
-                      cmd = (
-                          f"ffmpeg -y -i \"{raw_path}\" "
-                          f"-t 5 -an "
-                          f"-vf scale=1080:1920:force_original_aspect_ratio=increase,"
-                          f"crop=1080:1920 "
-                          f"-c:v libx264 -preset veryfast -crf 25 "
-                          f"\"{out_path}\""
-                      )
-                      print("Trimming & scaling:", cmd)
-                      os.system(cmd)
+                  while len(downloaded) < n_clips and kws:
+                      query = kws.pop()
+                      q = urllib.parse.quote_plus(query)
+                      print(f"Searching Pexels for: {query}")
 
                       try:
-                          raw_path.unlink()
-                      except Exception:
-                          pass
+                          resp = requests.get(
+                              f"https://api.pexels.com/videos/search?query={q}&orientation=portrait&per_page=5",
+                              headers={"Authorization": PEXELS_KEY},
+                              timeout=40,
+                          )
+                      except Exception as e:
+                          print("Request error:", e)
+                          continue
 
-                      if out_path.exists() and out_path.stat().st_size > 0:
-                          downloaded.append(out_path)
-                          print("Added trimmed clip:", out_path)
-                          if len(downloaded) >= n_clips:
-                              break
+                      if resp.status_code == 429:
+                          print("Pexels rate limited us (429). Using fallback black video.")
+                          downloaded = fallback_black(dur)
+                          break
 
-              if not downloaded:
-                  print("No Pexels clips downloaded, falling back to black video.")
-                  downloaded = fallback_black(dur)
+                      if resp.status_code >= 500:
+                          print("Pexels server error:", resp.status_code)
+                          time.sleep(5)
+                          continue
 
-              clips = downloaded
+                      if resp.status_code != 200:
+                          print("Pexels status:", resp.status_code)
+                          continue
+
+                      try:
+                          videos = resp.json().get("videos", [])
+                      except Exception as e:
+                          print("JSON parse error:", e)
+                          continue
+
+                      if not videos:
+                          print("No videos for", query)
+                          continue
+
+                      random.shuffle(videos)
+                      for vid in videos:
+                          files = vid.get("video_files", [])
+                          files.sort(
+                              key=lambda x: int(x.get("width", 0)) * int(x.get("height", 0)),
+                              reverse=True,
+                          )
+                          if not files:
+                              continue
+
+                          url = files[0].get("link")
+                          if not url:
+                              continue
+
+                          idx = len(downloaded) + 1
+                          raw_path = prepared_dir / f"raw_{idx}.mp4"
+                          out_path = prepared_dir / f"clip_{idx}.mp4"
+
+                          print(f"Downloading API clip {idx}: {url}")
+                          ok = False
+                          for attempt in range(3):
+                              try:
+                                  r = requests.get(url, stream=True, timeout=80)
+                                  r.raise_for_status()
+                                  with open(raw_path, "wb") as f:
+                                      for chunk in r.iter_content(chunk_size=8192):
+                                          f.write(chunk)
+                                  ok = True
+                                  break
+                              except Exception as e:
+                                  print(f"Download error (attempt {attempt+1}): {e}")
+                                  time.sleep(2)
+
+                          if not ok:
+                              print("Skipping this API video after failed downloads.")
+                              continue
+
+                          cmd = (
+                              f"ffmpeg -y -i \"{raw_path}\" "
+                              f"-t 5 -an "
+                              f"-vf scale=1080:1920:force_original_aspect_ratio=increase,"
+                              f"crop=1080:1920 "
+                              f"-c:v libx264 -preset veryfast -crf 25 "
+                              f"\"{out_path}\""
+                          )
+                          print("Trimming & scaling (API):", cmd)
+                          os.system(cmd)
+
+                          try:
+                              raw_path.unlink()
+                          except Exception:
+                              pass
+
+                          if out_path.exists() and out_path.stat().st_size > 0:
+                              downloaded.append(out_path)
+                              print("Added API trimmed clip:", out_path)
+                              if len(downloaded) >= n_clips:
+                                  break
+
+                  if not downloaded:
+                      print("No Pexels clips downloaded, falling back to black video.")
+                      downloaded = fallback_black(dur)
+
+                  clips = downloaded
 
           print("Prepared clips:")
           for c in clips:
@@ -650,7 +651,7 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # BUILD CLIP LIST (REPEAT CLIPS TO COVER AUDIO)
+      # BUILD CLIP LIST (ENSURE VIDEO COVERS AUDIO)
       # ----------------------------------------------------------
       - name: Build clip list
         run: |
@@ -664,28 +665,28 @@ jobs:
 
           clips = sorted(str(p) for p in pathlib.Path("prepared").glob("*.mp4"))
           if not clips:
-              raise SystemExit("No prepared clips found")
+            raise SystemExit("No prepared clips found")
 
           random.shuffle(clips)
           needed = max(3, math.ceil(dur / 5.0))
 
           base = clips[:]
           if len(base) == 1:
-              selected = base * needed
+            selected = base * needed
           else:
-              selected = []
-              while len(selected) < needed:
-                  random.shuffle(base)
-                  selected.extend(base)
-              selected = selected[:needed]
+            selected = []
+            while len(selected) < needed:
+              random.shuffle(base)
+              selected.extend(base)
+            selected = selected[:needed]
 
           with open("clip_list.txt","w") as f:
-              for c in selected:
-                  f.write(f"file '{os.path.abspath(c)}'\n")
+            for c in selected:
+              f.write(f"file '{os.path.abspath(c)}'\n")
 
           print("Using clips (looped as needed):")
           for c in selected:
-              print(" -", c)
+            print(" -", c)
           PY
 
       # ----------------------------------------------------------
@@ -705,28 +706,28 @@ jobs:
           sentences = [s.strip() for s in sentences if s.strip()]
 
           if not sentences:
-              raise SystemExit("No sentences for subtitles")
+            raise SystemExit("No sentences for subtitles")
 
           chunks = []
           for s in sentences:
-              lines = textwrap.wrap(s, 40)
-              if len(lines) <= 2:
-                  chunks.append("\\N".join(lines))
-              else:
-                  mid = len(lines)//2
-                  chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
+            lines = textwrap.wrap(s, 40)
+            if len(lines) <= 2:
+              chunks.append("\\N".join(lines))
+            else:
+              mid = len(lines)//2
+              chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
 
           lengths = [len(c) for c in chunks]
           total_len = sum(lengths)
 
           def fmt(ms):
-              h = ms // 3600000
-              ms %= 3600000
-              m = ms // 60000
-              ms %= 60000
-              s = ms // 1000
-              cs = (ms % 1000) // 10
-              return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+            h = ms // 3600000
+            ms %= 3600000
+            m = ms // 60000
+            ms %= 60000
+            s = ms // 1000
+            cs = (ms % 1000) // 10
+            return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
           out = []
           out.append("[Script Info]")
@@ -743,21 +744,21 @@ jobs:
 
           cur = 0
           for i, (txt, L) in enumerate(zip(chunks, lengths), 1):
-              share = L / total_len if total_len else 1/len(chunks)
-              dur_i = int(total * share)
-              if dur_i < 600:
-                  dur_i = 600
-              start = fmt(cur)
-              end_ms = cur + dur_i
-              if i == len(chunks):
-                  end_ms = total - 100
-              end = fmt(end_ms)
-              cur = end_ms
-              txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
-              out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
+            share = L / total_len if total_len else 1/len(chunks)
+            dur_i = int(total * share)
+            if dur_i < 600:
+              dur_i = 600
+            start = fmt(cur)
+            end_ms = cur + dur_i
+            if i == len(chunks):
+              end_ms = total - 100
+            end = fmt(end_ms)
+            cur = end_ms
+            txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
+            out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
 
           with open("subtitles.ass","w",encoding="utf-8") as f:
-              f.write("\n".join(out))
+            f.write("\n".join(out))
 
           print("subtitles.ass written")
           PY
@@ -787,7 +788,7 @@ jobs:
             output.mp4
 
       # ----------------------------------------------------------
-      # THUMBNAIL (USE REPO IMAGE)
+      # THUMBNAIL (USE REPO IMAGE, NO SCREENSHOT)
       # ----------------------------------------------------------
       - name: Thumbnail
         run: |
