@@ -395,14 +395,14 @@ jobs:
           PY
 
       # ----------------------------------------------------------
-      # TTS (NATURAL MODEL + OPTIONAL CLONE) VIA tts_generate.py
+      # TTS VIA tts_generate.py (CLONE ON BY DEFAULT)
       # ----------------------------------------------------------
       - name: Generate Voice (via tts_generate.py)
         env:
           COQUI_TOS_AGREED: "1"
           TTS_SCRIPT_PATH: "script.txt"
           TTS_OUTPUT_PATH: "tts-audio.wav"
-          TTS_USE_CLONE: "0"           # keep 0 until primary is perfect; set "1" if you want cloning
+          TTS_USE_CLONE: "1"
           TTS_VOICE_PATH: "voices/aman.wav"
           TTS_LANGUAGE: "en"
           TTS_SPEED: "0.96"
@@ -413,7 +413,7 @@ jobs:
           python tts_generate.py
 
       # ----------------------------------------------------------
-      # ADD NATURAL AMBIENCE (RAIN / NIGHT / CITY) UNDER VOICE
+      # ADD NATURAL AMBIENCE (RAIN / NIGHT / WIND) UNDER VOICE
       # ----------------------------------------------------------
       - name: Add natural ambience under narration
         run: |
@@ -424,23 +424,25 @@ jobs:
 
           BASE = "tts-audio.wav"
           if not os.path.exists(BASE) or os.path.getsize(BASE) == 0:
-            print("No base TTS audio found; skipping ambience.")
-            raise SystemExit(0)
+              print("No base TTS audio found; skipping ambience.")
+              raise SystemExit(0)
+
+          keywords = ("rain", "night", "street", "wind", "thunder", "storm", "city", "ambience", "ambient")
 
           candidates = []
           for root, dirs, files in os.walk("."):
-            if any(part.startswith(".git") for part in root.split(os.sep)):
-              continue
-            for f in files:
-              lower = f.lower()
-              if not lower.endswith((".wav", ".mp3", ".flac", ".ogg")):
-                continue
-              if lower.startswith(("bg_", "rain", "thunder", "ambience", "ambient", "street", "city")):
-                candidates.append(os.path.join(root, f))
+              if any(part.startswith(".git") for part in root.split(os.sep)):
+                  continue
+              for f in files:
+                  lower = f.lower()
+                  if not lower.endswith((".wav", ".mp3", ".flac", ".ogg")):
+                      continue
+                  if any(k in lower for k in keywords):
+                      candidates.append(os.path.join(root, f))
 
           if not candidates:
-            print("No ambience audio found (bg_*, rain*, thunder*, ambient*, street*, city*). Keeping clean voice.")
-            raise SystemExit(0)
+              print("No ambience audio found containing rain/night/wind/etc. Keeping clean voice.")
+              raise SystemExit(0)
 
           bg_path = random.choice(candidates)
           print("Using ambience file:", bg_path)
@@ -449,12 +451,12 @@ jobs:
           bg = AudioSegment.from_file(bg_path)
 
           if len(bg) < len(voice):
-            loops = len(voice) // len(bg) + 1
-            bg = (bg * loops)[:len(voice)]
+              loops = len(voice) // len(bg) + 1
+              bg = (bg * loops)[:len(voice)]
           else:
-            bg = bg[:len(voice)]
+              bg = bg[:len(voice)]
 
-          bg = bg - 18  # push ambience into background
+          bg = bg - 18  # drop ambience volume
 
           mixed = voice.overlay(bg)
           mixed.export(BASE, format="wav")
@@ -481,170 +483,170 @@ jobs:
           prepared_dir.mkdir(exist_ok=True)
 
           def fallback_black(duration_sec: float = 40.0):
-            out = prepared_dir / "black_placeholder.mp4"
-            d = max(20.0, duration_sec + 3.0)
-            cmd = (
-              f"ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:r=30:d={d} "
-              f"-c:v libx264 -preset veryfast -crf 23 \"{out}\""
-            )
-            os.system(cmd)
-            print("Using black placeholder clip.")
-            return [out]
+              out = prepared_dir / "black_placeholder.mp4"
+              d = max(20.0, duration_sec + 3.0)
+              cmd = (
+                  f"ffmpeg -y -f lavfi -i color=c=black:s=1080x1920:r=30:d={d} "
+                  f"-c:v libx264 -preset veryfast -crf 23 \"{out}\""
+              )
+              os.system(cmd)
+              print("Using black placeholder clip.")
+              return [out]
 
           if not PEXELS_KEY:
-            print("PEXELS_KEY missing, falling back to black video.")
-            try:
-              audio = AudioSegment.from_wav("tts-audio.wav")
-              dur = audio.duration_seconds
-            except Exception:
-              dur = 40.0
-            clips = fallback_black(dur)
+              print("PEXELS_KEY missing, falling back to black video.")
+              try:
+                  audio = AudioSegment.from_wav("tts-audio.wav")
+                  dur = audio.duration_seconds
+              except Exception:
+                  dur = 40.0
+              clips = fallback_black(dur)
           else:
-            try:
-              audio = AudioSegment.from_wav("tts-audio.wav")
-              dur = audio.duration_seconds
-            except Exception as e:
-              print("Could not read tts-audio.wav, defaulting duration:", e)
-              dur = 35.0
-
-            base_kws = [k.strip() for k in raw_keywords.split(",") if k.strip()]
-            if not base_kws:
-              base_kws = [
-                "person walking alone at night",
-                "dark empty street at night",
-                "police lights in dark alley",
-                "lonely city street 3am",
-                "shadowy figure under streetlamp",
-              ]
-            kws = []
-            for k in base_kws:
-              kws.append(k + " night street")
-            kws.extend([
-              "dark alley crime scene",
-              "empty road at night with police lights",
-              "street at 3am with one person",
-            ])
-
-            min_clips = 4
-            max_clips = 8
-            ideal = int(round(dur / 5.0))
-            n_clips = max(min_clips, min(max_clips, ideal))
-
-            print(f"Audio duration ~{dur:.1f}s, planning {n_clips} B-roll clips.")
-            print("Search keywords (dark themed):", kws)
-
-            random.shuffle(kws)
-            downloaded = []
-            kw_idx = 0
-
-            while len(downloaded) < n_clips and kw_idx < len(kws):
-              query = kws[kw_idx]
-              kw_idx += 1
-              q = urllib.parse.quote_plus(query)
-              print(f"Searching Pexels for: {query}")
-
               try:
-                resp = requests.get(
-                  f"https://api.pexels.com/videos/search?query={q}&orientation=portrait&per_page=5",
-                  headers={"Authorization": PEXELS_KEY},
-                  timeout=40,
-                )
+                  audio = AudioSegment.from_wav("tts-audio.wav")
+                  dur = audio.duration_seconds
               except Exception as e:
-                print("Request error:", e)
-                continue
+                  print("Could not read tts-audio.wav, defaulting duration:", e)
+                  dur = 35.0
 
-              if resp.status_code == 429:
-                print("Pexels rate limited us (429). Using fallback black video.")
-                downloaded = fallback_black(dur)
-                break
+              base_kws = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+              if not base_kws:
+                  base_kws = [
+                      "person walking alone at night",
+                      "dark empty street at night",
+                      "police lights in dark alley",
+                      "lonely city street 3am",
+                      "shadowy figure under streetlamp",
+                  ]
+              kws = []
+              for k in base_kws:
+                  kws.append(k + " night street")
+              kws.extend([
+                  "dark alley crime scene",
+                  "empty road at night with police lights",
+                  "street at 3am with one person",
+              ])
 
-              if resp.status_code >= 500:
-                print("Pexels server error:", resp.status_code)
-                time.sleep(5)
-                continue
+              min_clips = 4
+              max_clips = 8
+              ideal = int(round(dur / 5.0))
+              n_clips = max(min_clips, min(max_clips, ideal))
 
-              if resp.status_code != 200:
-                print("Pexels status:", resp.status_code)
-                continue
+              print(f"Audio duration ~{dur:.1f}s, planning {n_clips} B-roll clips.")
+              print("Search keywords (dark themed):", kws)
 
-              try:
-                videos = resp.json().get("videos", [])
-              except Exception as e:
-                print("JSON parse error:", e)
-                continue
+              random.shuffle(kws)
+              downloaded = []
+              kw_idx = 0
 
-              if not videos:
-                print("No videos for", query)
-                continue
+              while len(downloaded) < n_clips and kw_idx < len(kws):
+                  query = kws[kw_idx]
+                  kw_idx += 1
+                  q = urllib.parse.quote_plus(query)
+                  print(f"Searching Pexels for: {query}")
 
-              random.shuffle(videos)
-              for vid in videos:
-                files = vid.get("video_files", [])
-                files.sort(
-                  key=lambda x: int(x.get("width", 0)) * int(x.get("height", 0)),
-                  reverse=True,
-                )
-                if not files:
-                  continue
-
-                url = files[0].get("link")
-                if not url:
-                  continue
-
-                idx = len(downloaded) + 1
-                raw_path = prepared_dir / f"raw_{idx}.mp4"
-                out_path = prepared_dir / f"clip_{idx}.mp4"
-
-                print(f"Downloading clip {idx}: {url}")
-                ok = False
-                for attempt in range(3):
                   try:
-                    r = requests.get(url, stream=True, timeout=80)
-                    r.raise_for_status()
-                    with open(raw_path, "wb") as f:
-                      for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                    ok = True
-                    break
+                      resp = requests.get(
+                          f"https://api.pexels.com/videos/search?query={q}&orientation=portrait&per_page=5",
+                          headers={"Authorization": PEXELS_KEY},
+                          timeout=40,
+                      )
                   except Exception as e:
-                    print(f"Download error (attempt {attempt+1}): {e}")
-                    time.sleep(2)
+                      print("Request error:", e)
+                      continue
 
-                if not ok:
-                  print("Skipping this video after failed downloads.")
-                  continue
+                  if resp.status_code == 429:
+                      print("Pexels rate limited us (429). Using fallback black video.")
+                      downloaded = fallback_black(dur)
+                      break
 
-                cmd = (
-                  f"ffmpeg -y -i \"{raw_path}\" "
-                  f"-t 5 -an "
-                  f"-vf scale=1080:1920:force_original_aspect_ratio=increase,"
-                  f"crop=1080:1920 "
-                  f"-c:v libx264 -preset veryfast -crf 25 "
-                  f"\"{out_path}\""
-                )
-                print("Trimming & scaling:", cmd)
-                os.system(cmd)
+                  if resp.status_code >= 500:
+                      print("Pexels server error:", resp.status_code)
+                      time.sleep(5)
+                      continue
 
-                try:
-                  raw_path.unlink()
-                except Exception:
-                  pass
+                  if resp.status_code != 200:
+                      print("Pexels status:", resp.status_code)
+                      continue
 
-                if out_path.exists() and out_path.stat().st_size > 0:
-                  downloaded.append(out_path)
-                  print("Added trimmed clip:", out_path)
-                  if len(downloaded) >= n_clips:
-                    break
+                  try:
+                      videos = resp.json().get("videos", [])
+                  except Exception as e:
+                      print("JSON parse error:", e)
+                      continue
 
-            if not downloaded:
-              print("No Pexels clips downloaded, falling back to black video.")
-              downloaded = fallback_black(dur)
+                  if not videos:
+                      print("No videos for", query)
+                      continue
 
-            clips = downloaded
+                  random.shuffle(videos)
+                  for vid in videos:
+                      files = vid.get("video_files", [])
+                      files.sort(
+                          key=lambda x: int(x.get("width", 0)) * int(x.get("height", 0)),
+                          reverse=True,
+                      )
+                      if not files:
+                          continue
+
+                      url = files[0].get("link")
+                      if not url:
+                          continue
+
+                      idx = len(downloaded) + 1
+                      raw_path = prepared_dir / f"raw_{idx}.mp4"
+                      out_path = prepared_dir / f"clip_{idx}.mp4"
+
+                      print(f"Downloading clip {idx}: {url}")
+                      ok = False
+                      for attempt in range(3):
+                          try:
+                              r = requests.get(url, stream=True, timeout=80)
+                              r.raise_for_status()
+                              with open(raw_path, "wb") as f:
+                                  for chunk in r.iter_content(chunk_size=8192):
+                                      f.write(chunk)
+                              ok = True
+                              break
+                          except Exception as e:
+                              print(f"Download error (attempt {attempt+1}): {e}")
+                              time.sleep(2)
+
+                      if not ok:
+                          print("Skipping this video after failed downloads.")
+                          continue
+
+                      cmd = (
+                          f"ffmpeg -y -i \"{raw_path}\" "
+                          f"-t 5 -an "
+                          f"-vf scale=1080:1920:force_original_aspect_ratio=increase,"
+                          f"crop=1080:1920 "
+                          f"-c:v libx264 -preset veryfast -crf 25 "
+                          f"\"{out_path}\""
+                      )
+                      print("Trimming & scaling:", cmd)
+                      os.system(cmd)
+
+                      try:
+                          raw_path.unlink()
+                      except Exception:
+                          pass
+
+                      if out_path.exists() and out_path.stat().st_size > 0:
+                          downloaded.append(out_path)
+                          print("Added trimmed clip:", out_path)
+                          if len(downloaded) >= n_clips:
+                              break
+
+              if not downloaded:
+                  print("No Pexels clips downloaded, falling back to black video.")
+                  downloaded = fallback_black(dur)
+
+              clips = downloaded
 
           print("Prepared clips:")
           for c in clips:
-            print(" -", c)
+              print(" -", c)
           PY
 
       # ----------------------------------------------------------
@@ -662,28 +664,28 @@ jobs:
 
           clips = sorted(str(p) for p in pathlib.Path("prepared").glob("*.mp4"))
           if not clips:
-            raise SystemExit("No prepared clips found")
+              raise SystemExit("No prepared clips found")
 
           random.shuffle(clips)
           needed = max(3, math.ceil(dur / 5.0))
 
           base = clips[:]
           if len(base) == 1:
-            selected = base * needed
+              selected = base * needed
           else:
-            selected = []
-            while len(selected) < needed:
-              random.shuffle(base)
-              selected.extend(base)
-            selected = selected[:needed]
+              selected = []
+              while len(selected) < needed:
+                  random.shuffle(base)
+                  selected.extend(base)
+              selected = selected[:needed]
 
           with open("clip_list.txt","w") as f:
-            for c in selected:
-              f.write(f"file '{os.path.abspath(c)}'\n")
+              for c in selected:
+                  f.write(f"file '{os.path.abspath(c)}'\n")
 
           print("Using clips (looped as needed):")
           for c in selected:
-            print(" -", c)
+              print(" -", c)
           PY
 
       # ----------------------------------------------------------
@@ -703,28 +705,28 @@ jobs:
           sentences = [s.strip() for s in sentences if s.strip()]
 
           if not sentences:
-            raise SystemExit("No sentences for subtitles")
+              raise SystemExit("No sentences for subtitles")
 
           chunks = []
           for s in sentences:
-            lines = textwrap.wrap(s, 40)
-            if len(lines) <= 2:
-              chunks.append("\\N".join(lines))
-            else:
-              mid = len(lines)//2
-              chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
+              lines = textwrap.wrap(s, 40)
+              if len(lines) <= 2:
+                  chunks.append("\\N".join(lines))
+              else:
+                  mid = len(lines)//2
+                  chunks.append("\\N".join([" ".join(lines[:mid]), " ".join(lines[mid:])]))
 
           lengths = [len(c) for c in chunks]
           total_len = sum(lengths)
 
           def fmt(ms):
-            h = ms // 3600000
-            ms %= 3600000
-            m = ms // 60000
-            ms %= 60000
-            s = ms // 1000
-            cs = (ms % 1000) // 10
-            return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+              h = ms // 3600000
+              ms %= 3600000
+              m = ms // 60000
+              ms %= 60000
+              s = ms // 1000
+              cs = (ms % 1000) // 10
+              return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
           out = []
           out.append("[Script Info]")
@@ -741,21 +743,21 @@ jobs:
 
           cur = 0
           for i, (txt, L) in enumerate(zip(chunks, lengths), 1):
-            share = L / total_len if total_len else 1/len(chunks)
-            dur_i = int(total * share)
-            if dur_i < 600:
-              dur_i = 600
-            start = fmt(cur)
-            end_ms = cur + dur_i
-            if i == len(chunks):
-              end_ms = total - 100
-            end = fmt(end_ms)
-            cur = end_ms
-            txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
-            out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
+              share = L / total_len if total_len else 1/len(chunks)
+              dur_i = int(total * share)
+              if dur_i < 600:
+                  dur_i = 600
+              start = fmt(cur)
+              end_ms = cur + dur_i
+              if i == len(chunks):
+                  end_ms = total - 100
+              end = fmt(end_ms)
+              cur = end_ms
+              txt_esc = txt.replace("{", "\\{").replace("}", "\\}")
+              out.append(f"Dialogue: 0,{start},{end},CrimeSub,,0,0,0,,{txt_esc}")
 
           with open("subtitles.ass","w",encoding="utf-8") as f:
-            f.write("\n".join(out))
+              f.write("\n".join(out))
 
           print("subtitles.ass written")
           PY
@@ -785,7 +787,7 @@ jobs:
             output.mp4
 
       # ----------------------------------------------------------
-      # THUMBNAIL (REPO IMAGE ONLY, NO VIDEO SCREENSHOT)
+      # THUMBNAIL (USE REPO IMAGE)
       # ----------------------------------------------------------
       - name: Thumbnail
         run: |
@@ -797,38 +799,38 @@ jobs:
           preferred_names = ["thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"]
           found = None
           for name in preferred_names:
-            if os.path.exists(name):
-              found = name
-              break
+              if os.path.exists(name):
+                  found = name
+                  break
 
           if not found:
-            candidates = []
-            for f in os.listdir("."):
-              lower = f.lower()
-              if lower in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"):
-                continue
-              if lower.endswith((".jpg",".jpeg",".png")) and not lower.startswith("output"):
-                candidates.append(f)
+              candidates = []
+              for f in os.listdir("."):
+                  lower = f.lower()
+                  if lower in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"):
+                      continue
+                  if lower.endswith((".jpg",".jpeg",".png")) and not lower.startswith("output"):
+                      candidates.append(f)
 
-            if candidates:
-              candidates.sort()
-              found = candidates[0]
+              if candidates:
+                  candidates.sort()
+                  found = candidates[0]
 
           if found:
-            src_abs = os.path.abspath(found)
-            dest_abs = os.path.abspath(dest)
-            if src_abs != dest_abs:
-              shutil.copy(found, dest)
-              print("Using repo thumbnail:", found)
-            else:
-              print("Repo already has thumbnail.jpg, using it as-is.")
+              src_abs = os.path.abspath(found)
+              dest_abs = os.path.abspath(dest)
+              if src_abs != dest_abs:
+                  shutil.copy(found, dest)
+                  print("Using repo thumbnail:", found)
+              else:
+                  print("Repo already has thumbnail.jpg, using it as-is.")
           else:
-            print("No thumbnail image found in repo. Creating dark placeholder thumbnail.")
-            cmd = (
-              "ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=1 "
-              "-vframes 1 -q:v 2 thumbnail.jpg"
-            )
-            subprocess.run(cmd, shell=True, check=True)
+              print("No thumbnail image found in repo. Creating dark placeholder thumbnail.")
+              cmd = (
+                  "ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=1 "
+                  "-vframes 1 -q:v 2 thumbnail.jpg"
+              )
+              subprocess.run(cmd, shell=True, check=True)
           PY
 
       # ----------------------------------------------------------
