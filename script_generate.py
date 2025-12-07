@@ -184,6 +184,17 @@ Pick only keywords that fit THIS specific case.
             print(f"[ERROR] DeepSeek request error: {e}", file=sys.stderr)
             time.sleep(3)
             continue
+            - name: Debug DeepSeek URL
+  env:
+    DEEPSEEK_API_URL: ${{ secrets.DEEPSEEK_API_URL }}
+  run: |
+    python - << 'PY'
+    import os
+    url = os.environ.get("DEEPSEEK_API_URL", "")
+    print("URL repr:", repr(url))
+    print("Length :", len(url))
+    PY
+
 
         content = content.strip()
         # Try to locate JSON object in output
