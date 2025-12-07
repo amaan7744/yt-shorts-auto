@@ -1,26 +1,20 @@
-# HTTP / API calls (DeepSeek, Pexels, Wikipedia, etc.)
+# HTTP / APIs (DeepSeek, Pexels, Wikipedia, etc.)
 requests>=2.31.0
 
-# Core TTS + cloning
-torch>=2.1.0
-torchaudio>=2.1.0
-TTS>=0.22.0
+# TTS: XTTS-v2 voice cloning
+TTS==0.22.0
+torch==2.1.0
+torchaudio==2.1.0
 
-# Audio post-processing
+# Audio processing for post-production
 pydub>=0.25.1
 
-
-# PyTorch + torchaudio (CPU build is fine on GitHub Actions)
-torch>=2.3.0
-torchaudio>=2.3.0
-
-# Video creation and editing (Ken Burns, vertical shorts, etc.)
+# Video editing / rendering (Ken Burns, vertical Shorts)
 moviepy>=1.0.3
 Pillow>=10.0.0
 
-# HTML parsing for Wikipedia or other scrapers
+# HTML parsing / scraping (Wikipedia, etc.)
 beautifulsoup4>=4.12.0
 
-# (optional but often useful)
-numpy>=1.26.0
+# Progress bars / utilities
 tqdm>=4.66.0
