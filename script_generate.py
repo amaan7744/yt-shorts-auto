@@ -10,6 +10,9 @@ import random
 
 USED_TOPICS_PATH = pathlib.Path("used_topics.txt")
 
+# Hard-coded OpenRouter endpoint for chat completions
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
 
 def load_used_titles():
     if not USED_TOPICS_PATH.exists():
@@ -30,11 +33,16 @@ def save_used_title(title: str):
         f.write(title + "\n")
 
 
-def get_deepseek_response(prompt: str, api_url: str, api_key: str, model: str) -> str:
-    """Generic OpenAI-style chat completion call."""
+def get_deepseek_response(prompt: str, api_key: str, model: str) -> str:
+    """
+    Call DeepSeek via OpenRouter using OpenAI-style /chat/completions API.
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        # Optional but good practice for OpenRouter:
+        "HTTP-Referer": "https://github.com",  # or your repo URL
+        "X-Title": "yt-shorts-auto-deepseek",
     }
     payload = {
         "model": model,
@@ -45,10 +53,9 @@ def get_deepseek_response(prompt: str, api_url: str, api_key: str, model: str) -
         "max_tokens": 900,
     }
 
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
+    resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
-    # Adjust this if your provider returns a different shape:
     return data["choices"][0]["message"]["content"]
 
 
@@ -68,11 +75,10 @@ def count_words(s: str) -> int:
 
 def main():
     api_key = os.environ.get("DEEPSEEK_API_KEY")
-    api_url = os.environ.get("DEEPSEEK_API_URL")
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-r1t2-chimera")
+    model = os.environ.get("DEEPSEEK_MODEL", "deepseek/deepseek-r1-distill")
 
-    if not api_key or not api_url:
-        print("[ERROR] DEEPSEEK_API_KEY or DEEPSEEK_API_URL missing.", file=sys.stderr)
+    if not api_key:
+        print("[ERROR] DEEPSEEK_API_KEY missing.", file=sys.stderr)
         sys.exit(1)
 
     category = os.environ.get("CATEGORY", "mystery")
@@ -80,7 +86,6 @@ def main():
     used_titles = load_used_titles()
     avoid_clause = "; ".join(used_titles[-80:]) if used_titles else ""
 
-    # Prompt text – from our earlier spec, compacted
     prompt = f"""
 You are writing calm, neutral, documentary-style true-crime scripts for 40-second YouTube Shorts.
 
@@ -174,30 +179,17 @@ Pick only keywords that fit THIS specific case.
 - Escape internal quotes properly so JSON parses without error.
 """
 
-    # Call DeepSeek with retry + validation
     data = None
-    for attempt in range(1, 4):
+    for attempt in range(1, 3 + 1):
         print(f"[script_generate] DeepSeek attempt {attempt}/3", flush=True)
         try:
-            content = get_deepseek_response(prompt, api_url, api_key, model)
+            content = get_deepseek_response(prompt, api_key, model)
         except Exception as e:
             print(f"[ERROR] DeepSeek request error: {e}", file=sys.stderr)
             time.sleep(3)
             continue
-            - name: Debug DeepSeek URL
-  env:
-    DEEPSEEK_API_URL: ${{ secrets.DEEPSEEK_API_URL }}
-  run: |
-    python - << 'PY'
-    import os
-    url = os.environ.get("DEEPSEEK_API_URL", "")
-    print("URL repr:", repr(url))
-    print("Length :", len(url))
-    PY
-
 
         content = content.strip()
-        # Try to locate JSON object in output
         start = content.find("{")
         end = content.rfind("}")
         if start == -1 or end == -1 or end <= start:
@@ -211,6 +203,7 @@ Pick only keywords that fit THIS specific case.
         except Exception as e:
             print(f"[ERROR] JSON parse error: {e}", file=sys.stderr)
             time.sleep(3)
+            data = None
             continue
 
         title = (data.get("title") or "").strip()
@@ -231,7 +224,6 @@ Pick only keywords that fit THIS specific case.
             time.sleep(3)
             continue
 
-        # Basic word count check
         script = clean_script_text(script)
         wc = count_words(script)
         if wc < 110 or wc > 140:
@@ -254,7 +246,6 @@ Pick only keywords that fit THIS specific case.
             time.sleep(3)
             continue
 
-        # Limit question lines
         q_lines = sum(1 for ln in lines if ln.endswith("?"))
         if q_lines > 2:
             print("[WARN] Too many question lines, retrying...", file=sys.stderr)
@@ -262,14 +253,12 @@ Pick only keywords that fit THIS specific case.
             time.sleep(3)
             continue
 
-        # Basic wiki_title sanity
         if not wiki_title or len(wiki_title.split()) < 2:
             print("[WARN] wiki_title seems too short, retrying...", file=sys.stderr)
             data = None
             time.sleep(3)
             continue
 
-        # If we got here, we accept the output
         data["script"] = script
         break
 
@@ -277,7 +266,6 @@ Pick only keywords that fit THIS specific case.
         print("[FATAL] DeepSeek failed after 3 attempts.", file=sys.stderr)
         sys.exit(1)
 
-    # Save script.txt and script_meta.json
     script_text = data["script"]
     pathlib.Path("script.txt").write_text(script_text, encoding="utf-8")
     pathlib.Path("script_meta.json").write_text(
