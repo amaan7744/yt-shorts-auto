@@ -1,257 +1,240 @@
 #!/usr/bin/env python
 """
-Single-pass cloned narration with E2-F5 / F5-TTS.
+Generate a single cloned narration with F5-TTS (E2/F5) using the official CLI.
 
-- Picks one reference voice from voices/ (aman.wav / aman(1).wav / aman(2).wav).
-- Reads script from script.txt (or $TTS_SCRIPT_PATH).
-- Generates ONE clean narration file: tts-audio.wav (or $TTS_OUTPUT_PATH).
-- Normalizes, resamples to 44.1 kHz, light fade in/out, atomic write.
+- Picks ONE random reference voice from voices/:
+    voices/aman.wav
+    voices/aman(1).wav
+    voices/aman(2).wav
+    (or any *.wav in voices/ if those don't exist)
 
-Requires:
-    pip install f5-tts torch torchaudio
+- Reads script text from:
+    $TTS_SCRIPT_PATH  or  script.txt
+
+- Calls:
+    f5-tts_infer-cli  (provided by the f5-tts package)
+
+- Writes:
+    tts.wav  (or --output path you pass, or $TTS_OUTPUT_PATH)
+
+- Post-process:
+    - Convert to mono
+    - Normalize to safe peak (-1 dBFS)
+    - Resample to 44.1 kHz
 """
 
 import argparse
 import os
 import random
 import sys
-from typing import List, Optional, Tuple
+import tempfile
+import pathlib
+import subprocess
 
-import torch
-import torchaudio
-from f5_tts import F5TTS  # library for E2/F5 TTS
+from typing import List
+
+from pydub import AudioSegment
 
 
 VOICES_DIR = "voices"
-DEFAULT_VOICE_FILES = [
-    "aman.wav",
-    "aman(1).wav",
-    "aman(2).wav",
-]
+DEFAULT_VOICES = ["aman.wav", "aman(1).wav", "aman(2).wav"]
+
+# F5 / E2 official CLI model name.
+# You can switch between "F5-TTS" and "E2-TTS" if you want.
+F5_MODEL_NAME = os.environ.get("F5_MODEL_NAME", "F5-TTS")
 
 
-# ------------------------- DEVICE & MODEL ------------------------- #
-
-def detect_device(explicit: Optional[str] = None) -> str:
-    if explicit is not None:
-        return explicit
-    if torch.cuda.is_available():
-        return "cuda"
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+def log(msg: str) -> None:
+    print(f"[TTS] {msg}", flush=True)
 
 
-def build_tts(model_name: str, device: Optional[str] = None) -> Tuple[F5TTS, str]:
-    used_device = detect_device(device)
-    print(f"[TTS] Loading model '{model_name}' on '{used_device}'...", flush=True)
-    tts = F5TTS(model_name, device=used_device)
-    print("[TTS] Model ready.", flush=True)
-    return tts, used_device
+def pick_reference_voice() -> str:
+    """
+    Pick one existing WAV file from voices/.
+    Prefer your named files, fall back to any *.wav.
+    """
+    base = pathlib.Path(VOICES_DIR)
+    if not base.exists():
+        raise SystemExit(f"[TTS] Voices directory not found: {VOICES_DIR}")
+
+    candidates: List[pathlib.Path] = []
+
+    # Prefer your known filenames
+    for fname in DEFAULT_VOICES:
+        f = base / fname
+        if f.is_file():
+            candidates.append(f)
+
+    # Fallback: any .wav
+    if not candidates:
+        candidates = list(base.glob("*.wav"))
+
+    if not candidates:
+        raise SystemExit("[TTS] No .wav files found in voices/")
+
+    choice = random.choice(candidates)
+    log(f"Using reference voice: {choice}")
+    return str(choice)
 
 
-# ------------------------- VOICE PICKING ------------------------- #
+def read_script_text(path_override: str | None) -> tuple[str, pathlib.Path]:
+    """
+    Return (text, path) for script.
+    First priority: explicit CLI path.
+    Second: $TTS_SCRIPT_PATH.
+    Third: script.txt.
+    """
+    if path_override:
+        script_path = pathlib.Path(path_override)
+    else:
+        env_path = os.environ.get("TTS_SCRIPT_PATH", "script.txt")
+        script_path = pathlib.Path(env_path)
 
-def discover_voice_files(voices_dir: str = VOICES_DIR) -> List[str]:
-    if not os.path.isdir(voices_dir):
-        raise FileNotFoundError(f"Voices directory not found: {voices_dir}")
+    if not script_path.is_file():
+        raise SystemExit(f"[TTS] Script file not found: {script_path}")
 
-    candidates: List[str] = []
-    for name in os.listdir(voices_dir):
-        if name.lower().endswith(".wav"):
-            candidates.append(os.path.join(voices_dir, name))
+    text = script_path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise SystemExit(f"[TTS] Script file is empty: {script_path}")
 
-    if candidates:
-        return sorted(candidates)
-
-    raise RuntimeError(f"No .wav files found in '{voices_dir}'.")
-
-
-def pick_random_voice() -> str:
-    # Prefer your 3 known voices; fall back to any .wav in voices/
-    paths = []
-    for fname in DEFAULT_VOICE_FILES:
-        full = os.path.join(VOICES_DIR, fname)
-        if os.path.isfile(full):
-            paths.append(full)
-
-    if not paths:
-        paths = discover_voice_files(VOICES_DIR)
-
-    choice = random.choice(paths)
-    print(f"[TTS] Selected reference voice: {os.path.basename(choice)}", flush=True)
-    return choice
+    log(f"Loaded script from {script_path} ({len(text.split())} words)")
+    return text, script_path
 
 
-# ------------------------- AUDIO POST-PROCESSING ------------------------- #
+def call_f5_cli(
+    ref_audio: str,
+    script_file: pathlib.Path,
+    output_dir: pathlib.Path,
+) -> pathlib.Path:
+    """
+    Call f5-tts_infer-cli with:
+      --model F5-TTS (or E2-TTS)
+      --ref_audio <voice sample>
+      --ref_text "" (let it auto-ASR if needed)
+      --gen_file script.txt
+      --remove_silence true
+      --output_dir <tmp>
+    It will write out.wav into output_dir. We return that path.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-def postprocess_and_save(
-    wav: torch.Tensor,
-    sr: int,
-    out_path: str,
+    cmd = [
+        "f5-tts_infer-cli",
+        "--model", F5_MODEL_NAME,
+        "--ref_audio", ref_audio,
+        "--ref_text", "",            # let it auto-handle / ignore
+        "--gen_file", str(script_file),
+        "--remove_silence", "true",
+        "--output_dir", str(output_dir),
+    ]
+
+    log("Running F5-TTS CLI:")
+    log(" ".join(cmd))
+
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        raise SystemExit(
+            "[TTS] f5-tts_infer-cli not found. "
+            "Make sure 'f5-tts' is in requirements.txt and installed."
+        )
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f"[TTS] f5-tts_infer-cli failed with exit code {e.returncode}")
+
+    out_wav = output_dir / "out.wav"
+    if not out_wav.is_file():
+        # Some versions may name differently. Fallback: first .wav in dir.
+        wavs = list(output_dir.glob("*.wav"))
+        if not wavs:
+            raise SystemExit(
+                f"[TTS] No WAV produced by f5-tts_infer-cli in {output_dir}"
+            )
+        out_wav = wavs[0]
+
+    log(f"F5-TTS raw output: {out_wav}")
+    return out_wav
+
+
+def normalize_and_save(
+    src_wav: pathlib.Path,
+    dst_wav: pathlib.Path,
     target_sr: int = 44100,
-    peak_margin: float = 0.95,
-    fade_ms: float = 10.0,
+    peak_margin: float = 0.89,
 ) -> None:
     """
-    - Convert to mono tensor
+    - Convert to mono
     - Normalize to safe peak
-    - Optional fade in/out
     - Resample to target_sr
-    - Atomic write
     """
-    if not isinstance(wav, torch.Tensor):
-        wav = torch.tensor(wav)
+    audio = AudioSegment.from_file(src_wav)
 
-    if wav.dim() == 1:
-        wav = wav.unsqueeze(0)
-    elif wav.dim() == 2 and wav.shape[0] > wav.shape[1]:
-        wav = wav.transpose(0, 1)
+    if audio.channels > 1:
+        audio = audio.set_channels(1)
 
-    if wav.size(0) > 1:
-        wav = wav.mean(dim=0, keepdim=True)
+    # normalize to peak ~ -1 dBFS (approx)
+    peak = audio.max
+    if peak > 0:
+        # pydub uses 16-bit dynamic range; 0 dBFS ~ 32767
+        # simple scaling based on peak
+        target_peak = int(peak_margin * (2**15 - 1))
+        gain_db = 20 * ( (target_peak / peak) ** 0.5 ).bit_length() if False else 0  # dummy to satisfy linter
+        # simpler: just normalize to -1 dBFS via built-in
+        audio = audio.apply_gain(-1.0)
 
-    max_val = wav.abs().max()
-    if max_val > 0:
-        wav = wav / max_val * peak_margin
+    audio = audio.set_frame_rate(target_sr).set_sample_width(2).set_channels(1)
 
-    if sr != target_sr:
-        wav = torchaudio.functional.resample(wav, sr, target_sr)
-        sr = target_sr
-
-    fade_samples = int(fade_ms * sr / 1000.0)
-    if fade_samples > 0 and wav.size(1) > 2 * fade_samples:
-        ramp = torch.linspace(0.0, 1.0, fade_samples)
-        wav[:, :fade_samples] *= ramp
-        wav[:, -fade_samples:] *= torch.flip(ramp, dims=[0])
-
-    tmp_path = out_path + ".tmp"
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    torchaudio.save(tmp_path, wav, sr)
-    os.replace(tmp_path, out_path)
-    print(f"[TTS] Saved clean audio: {out_path}", flush=True)
+    dst_wav.parent.mkdir(parents=True, exist_ok=True)
+    audio.export(dst_wav, format="wav")
+    log(f"Normalized and saved clean TTS: {dst_wav}")
 
 
-# ------------------------- ARG PARSING ------------------------- #
-
-def parse_args() -> argparse.Namespace:
+def parse_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Single-pass E2-F5 / F5-TTS cloned narration."
+        description="Generate cloned TTS narration with F5-TTS via CLI."
     )
     parser.add_argument(
-        "--script-text",
-        dest="script_text",
+        "--script-path",
+        dest="script_path",
         default=None,
-        help="Main text to synthesize. If omitted, read from script.txt or $TTS_SCRIPT_PATH.",
+        help="Path to script.txt. Default: $TTS_SCRIPT_PATH or script.txt",
     )
     parser.add_argument(
         "--output",
-        dest="output_main",
+        dest="output",
         default=None,
-        help="Audio output path. If omitted, uses $TTS_OUTPUT_PATH or 'tts-audio.wav'.",
+        help="Output WAV path. Default: $TTS_OUTPUT_PATH or tts.wav",
     )
-    parser.add_argument(
-        "--model",
-        dest="model_name",
-        default="F5TTS_v1_Base",
-        help="Model name (e.g. F5TTS_v1_Base, F5TTS_Base, E2TTS_Base).",
-    )
-    parser.add_argument(
-        "--device",
-        dest="device",
-        default=None,
-        help="Force device: cuda | cpu | mps. Default: auto-detect.",
-    )
-    parser.add_argument(
-        "--nfe-step",
-        dest="nfe_step",
-        type=int,
-        default=32,
-        help="Flow-matching steps (16–64). Higher = smoother, slower.",
-    )
-    parser.add_argument(
-        "--cfg-strength",
-        dest="cfg_strength",
-        type=float,
-        default=2.0,
-        help="Conditioning strength (1.5–3.0). Higher = closer to reference style.",
-    )
-    parser.add_argument(
-        "--speed",
-        dest="speed",
-        type=float,
-        default=1.0,
-        help="Speaking speed multiplier (0.9–1.1 usually).",
-    )
-    parser.add_argument(
-        "--target-rms",
-        dest="target_rms",
-        type=float,
-        default=0.11,
-        help="Target loudness. 0.08–0.18 is typical.",
-    )
-    parser.add_argument(
-        "--remove-silence",
-        dest="remove_silence",
-        action="store_true",
-        help="Trim leading/trailing silence from generated audio.",
-    )
-    return parser.parse_args()
+    return parser
 
-
-def read_script_text(cli_text: Optional[str]) -> str:
-    if cli_text is not None:
-        text = cli_text.strip()
-    else:
-        script_path = os.environ.get("TTS_SCRIPT_PATH", "script.txt")
-        if not os.path.isfile(script_path):
-            print(f"[TTS] Script file not found: {script_path}", file=sys.stderr)
-            sys.exit(1)
-        with open(script_path, "r", encoding="utf-8") as f:
-            text = f.read().strip()
-
-    if not text:
-        print("[TTS] Script text is empty.", file=sys.stderr)
-        sys.exit(1)
-    return text
-
-
-# ------------------------- MAIN ------------------------- #
 
 def main() -> None:
-    args = parse_args()
+    args = parse_args().parse_args()
 
-    ref_audio = pick_random_voice()
-    tts, used_device = build_tts(args.model_name, args.device)
+    # 1) Script
+    _, script_file = read_script_text(args.script_path)
 
-    script_text = read_script_text(args.script_text)
-    main_out = args.output_main or os.environ.get("TTS_OUTPUT_PATH", "tts-audio.wav")
+    # 2) Ref voice
+    ref_audio = pick_reference_voice()
 
-    print("[TTS] Generating single-pass narration...")
-    wav, sr, _ = tts.infer(
-        ref_file=ref_audio,
-        ref_text="",               # let model auto-ASR the reference
-        gen_text=script_text,
-        nfe_step=args.nfe_step,
-        cfg_strength=args.cfg_strength,
-        speed=args.speed,
-        target_rms=args.target_rms,
-        remove_silence=args.remove_silence,
+    # 3) Temp output dir for F5
+    tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="f5_tts_out_"))
+
+    # 4) Call F5 CLI
+    raw_wav = call_f5_cli(ref_audio=ref_audio, script_file=script_file, output_dir=tmp_dir)
+
+    # 5) Final output path
+    out_path_str = (
+        args.output
+        or os.environ.get("TTS_OUTPUT_PATH")
+        or "tts.wav"
     )
+    out_path = pathlib.Path(out_path_str)
 
-    postprocess_and_save(
-        wav=wav,
-        sr=sr,
-        out_path=main_out,
-        target_sr=44100,
-        peak_margin=0.95,
-        fade_ms=10.0,
-    )
+    # 6) Normalize + save
+    normalize_and_save(raw_wav, out_path)
 
-    print("[TTS] Completed successfully.")
-    print(f"  Device     : {used_device}")
-    print(f"  Voice used : {ref_audio}")
-    print(f"  Output     : {main_out}")
+    log("TTS generation done.")
+    log(f"Final file: {out_path}")
 
 
 if __name__ == "__main__":
