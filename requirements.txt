@@ -1,9 +1,8 @@
-TTS
-scipy
-soundfile
-numpy<2
-requests
-pydub
+f5-tts
 torch
 torchaudio
-transformers==4.29.2
+requests
+pydub
+moviepy
+Pillow
+beautifulsoup4
