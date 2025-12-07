@@ -1,8 +1,9 @@
-f5-tts
-torch
-torchaudio
-requests
-pydub
-moviepy
-Pillow
-beautifulsoup4
+requests>=2.31.0
+pydub>=0.25.1
+
+# F5 / E2 TTS core dependencies
+f5-tts>=1.1.10
+
+# CPU PyTorch + torchaudio (no CUDA wheel specified -> CPU build on GitHub runner)
+torch>=2.3.0
+torchaudio>=2.3.0
