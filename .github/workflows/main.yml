@@ -38,10 +38,10 @@ jobs:
       - name: Pick category
         run: |
           CATEGORY=$(shuf -e crime mystery hidden_history | head -n1)
-          echo "CATEGORY=$CATEGORY" >> $GITHUB_ENV
+          echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
           echo "Chosen category: $CATEGORY"
 
-      - name: Generate script (DeepSeek R1T2 via OpenRouter)
+      - name: Generate script (DeepSeek via OpenRouter)
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
@@ -53,7 +53,7 @@ jobs:
           echo "Script generated successfully."
           head -n 5 script.txt || true
 
-      - name: Generate Narration TTS (E2-F5/F5)
+      - name: Generate Narration TTS (XTTS voice clone)
         run: |
           set -euo pipefail
           python tts_generate.py --output tts.wav
@@ -62,6 +62,8 @@ jobs:
       - name: Mix ambience with narration
         run: |
           set -euo pipefail
+          # expects audio_mix.py to read tts.wav and your rain/wind/thunder mp3s
+          # and output final_audio.wav
           python audio_mix.py tts.wav final_audio.wav
           echo "Audio mix created: final_audio.wav"
 
@@ -76,32 +78,51 @@ jobs:
       - name: Build Video (Ken Burns Animation + Sync)
         run: |
           set -euo pipefail
+          # expects video_build.py to read images + final_audio.wav
+          # and output video_raw.mp4
           python video_build.py final_audio.wav
           echo "Video build complete."
 
       - name: Prevent freeze – trim final video to audio length
         run: |
           set -euo pipefail
+          if [ ! -f final_audio.wav ]; then
+            echo "final_audio.wav missing"
+            exit 1
+          fi
+          if [ ! -f video_raw.mp4 ]; then
+            echo "video_raw.mp4 missing"
+            exit 1
+          fi
           DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
-          ffmpeg -y -i video_raw.mp4 -t $DURATION -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p output.mp4
+          ffmpeg -y -i video_raw.mp4 -t "$DURATION" -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p output.mp4
           echo "Final synced video: output.mp4"
 
       - name: Create Thumbnail
         run: |
+          set -euo pipefail
           if [ -f thumbnail.jpg ]; then
             cp thumbnail.jpg final_thumbnail.jpg
+            echo "Using custom thumbnail.jpg"
           else
+            echo "No custom thumbnail found; grabbing from video."
             ffmpeg -y -i output.mp4 -ss 00:00:01 -vframes 1 final_thumbnail.jpg
           fi
 
       - name: Save used topic
         run: |
-          echo "$(<script_meta.json jq -r .title)" >> used_topics.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add used_topics.txt
-          git commit -m "Used topic added" || true
-          git push || true
+          set -euo pipefail
+          if [ -f script_meta.json ]; then
+            TITLE=$(jq -r '.title' script_meta.json)
+            echo "$TITLE" >> used_topics.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add used_topics.txt
+            git commit -m "Used topic: $TITLE" || true
+            git push || true
+          else
+            echo "script_meta.json missing, skipping used_topics update."
+          fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
