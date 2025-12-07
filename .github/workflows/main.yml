@@ -18,11 +18,17 @@ jobs:
       contents: write
 
     steps:
+      # ----------------------------------------------------------
+      # CHECKOUT
+      # ----------------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ----------------------------------------------------------
+      # PYTHON + SYSTEM DEPS
+      # ----------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -35,13 +41,19 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ----------------------------------------------------------
+      # PICK CATEGORY
+      # ----------------------------------------------------------
       - name: Pick category
         run: |
           CATEGORY=$(shuf -e crime mystery hidden_history | head -n1)
           echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
           echo "Chosen category: $CATEGORY"
 
-      - name: Generate script (DeepSeek via OpenRouter)
+      # ----------------------------------------------------------
+      # SCRIPT GENERATION (DEEPSEEK)
+      # ----------------------------------------------------------
+      - name: Generate script via DeepSeek (OpenRouter)
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
@@ -50,24 +62,33 @@ jobs:
           set -euo pipefail
           echo "Running script_generate.py..."
           python script_generate.py
-          echo "Script generated successfully."
+          echo "Script generated:"
           head -n 5 script.txt || true
 
-      - name: Generate Narration TTS (XTTS voice clone)
+      # ----------------------------------------------------------
+      # TTS NARRATION (XTTS-v2 VOICE CLONE)
+      # ----------------------------------------------------------
+      - name: Generate narration (XTTS-v2 voice clone)
+        env:
+          COQUI_TOS_AGREED: "1"
         run: |
           set -euo pipefail
           python tts_generate.py --output tts.wav
-          echo "TTS done. File: tts.wav"
+          echo "XTTS narration saved as tts.wav"
 
+      # ----------------------------------------------------------
+      # AUDIO MIX (RAIN / WIND / AMBIENCE)
+      # ----------------------------------------------------------
       - name: Mix ambience with narration
         run: |
           set -euo pipefail
-          # expects audio_mix.py to read tts.wav and your rain/wind/thunder mp3s
-          # and output final_audio.wav
           python audio_mix.py tts.wav final_audio.wav
-          echo "Audio mix created: final_audio.wav"
+          echo "Audio mix created → final_audio.wav"
 
-      - name: Fetch images (Wikipedia PD + Pexels)
+      # ----------------------------------------------------------
+      # IMAGE FETCH (WIKIPEDIA PD + PEXELS)
+      # ----------------------------------------------------------
+      - name: Fetch images
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
         run: |
@@ -75,40 +96,43 @@ jobs:
           python image_fetch.py
           echo "Images fetched."
 
-      - name: Build Video (Ken Burns Animation + Sync)
+      # ----------------------------------------------------------
+      # VIDEO BUILD (IMAGES + AUDIO)
+      # ----------------------------------------------------------
+      - name: Build video
         run: |
           set -euo pipefail
-          # expects video_build.py to read images + final_audio.wav
-          # and output video_raw.mp4
           python video_build.py final_audio.wav
-          echo "Video build complete."
+          echo "Raw video → video_raw.mp4"
 
-      - name: Prevent freeze – trim final video to audio length
+      # ----------------------------------------------------------
+      # SYNC VIDEO TO AUDIO (PREVENT FRAME FREEZE)
+      # ----------------------------------------------------------
+      - name: Sync duration to audio (fix freezing)
         run: |
           set -euo pipefail
-          if [ ! -f final_audio.wav ]; then
-            echo "final_audio.wav missing"
-            exit 1
-          fi
-          if [ ! -f video_raw.mp4 ]; then
-            echo "video_raw.mp4 missing"
-            exit 1
-          fi
           DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
+          echo "Audio duration: $DURATION sec"
           ffmpeg -y -i video_raw.mp4 -t "$DURATION" -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p output.mp4
-          echo "Final synced video: output.mp4"
+          echo "Final output: output.mp4"
 
-      - name: Create Thumbnail
+      # ----------------------------------------------------------
+      # THUMBNAIL
+      # ----------------------------------------------------------
+      - name: Create thumbnail
         run: |
           set -euo pipefail
           if [ -f thumbnail.jpg ]; then
             cp thumbnail.jpg final_thumbnail.jpg
-            echo "Using custom thumbnail.jpg"
+            echo "Using user thumbnail"
           else
-            echo "No custom thumbnail found; grabbing from video."
             ffmpeg -y -i output.mp4 -ss 00:00:01 -vframes 1 final_thumbnail.jpg
+            echo "Generated frame thumbnail"
           fi
 
+      # ----------------------------------------------------------
+      # SAVE USED TOPIC
+      # ----------------------------------------------------------
       - name: Save used topic
         run: |
           set -euo pipefail
@@ -121,10 +145,13 @@ jobs:
             git commit -m "Used topic: $TITLE" || true
             git push || true
           else
-            echo "script_meta.json missing, skipping used_topics update."
+            echo "script_meta.json missing – skipping used_topics update."
           fi
 
-      - name: Upload Artifacts
+      # ----------------------------------------------------------
+      # UPLOAD ARTIFACTS
+      # ----------------------------------------------------------
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: youtube-short
