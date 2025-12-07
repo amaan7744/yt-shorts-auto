@@ -1,11 +1,14 @@
 # HTTP / API calls (DeepSeek, Pexels, Wikipedia, etc.)
 requests>=2.31.0
 
-# Audio processing and mixing
+# Core TTS + cloning
+torch>=2.1.0
+torchaudio>=2.1.0
+TTS>=0.22.0
+
+# Audio post-processing
 pydub>=0.25.1
 
-# F5 / E2 TTS CLI package
-f5-tts>=1.1.10
 
 # PyTorch + torchaudio (CPU build is fine on GitHub Actions)
 torch>=2.3.0
