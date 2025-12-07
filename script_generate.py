@@ -1,4 +1,14 @@
 #!/usr/bin/env python
+"""
+Generate a calm, neutral, documentary-style 40s true-crime script
+using DeepSeek R1T2 Chimera via OpenRouter.
+
+Outputs:
+  - script.txt        (plain narration for TTS)
+  - script_meta.json  (title, visual keywords, pexels keywords, wiki_title)
+  - updates used_topics.txt to avoid repeats
+"""
+
 import os
 import sys
 import json
@@ -6,7 +16,6 @@ import time
 import string
 import pathlib
 import requests
-import random
 
 USED_TOPICS_PATH = pathlib.Path("used_topics.txt")
 
@@ -40,8 +49,8 @@ def get_deepseek_response(prompt: str, api_key: str, model: str) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        # Optional but good practice for OpenRouter:
-        "HTTP-Referer": "https://github.com",  # or your repo URL
+        # Optional/OpenRouter-friendly headers:
+        "HTTP-Referer": "https://github.com",
         "X-Title": "yt-shorts-auto-deepseek",
     }
     payload = {
@@ -60,6 +69,9 @@ def get_deepseek_response(prompt: str, api_key: str, model: str) -> str:
 
 
 def clean_script_text(s: str) -> str:
+    """
+    Remove weird characters, normalize spacing and empty lines.
+    """
     allowed = set(string.ascii_letters + string.digits + " ,.'\"?!-:\n")
     s = s.replace("\r", "")
     s = "".join(ch for ch in s if ch in allowed)
@@ -75,7 +87,7 @@ def count_words(s: str) -> int:
 
 def main():
     api_key = os.environ.get("DEEPSEEK_API_KEY")
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek/deepseek-r1-distill")
+    model = os.environ.get("DEEPSEEK_MODEL", "tngtech/deepseek-r1t2-chimera:free")
 
     if not api_key:
         print("[ERROR] DEEPSEEK_API_KEY missing.", file=sys.stderr)
@@ -113,7 +125,7 @@ Rules for the STORY:
 - Keep language simple, clear, grounded in reality.
 
 3) LENGTH & STRUCTURE
-- Target duration: 40 seconds of speech (≈ 115–130 words total).
+- Target duration: about 40 seconds of speech (≈ 115–130 words total), but this is flexible.
 - First line = HOOK:
   - 11 words or fewer.
   - Quiet and direct, not clickbait.
@@ -180,6 +192,7 @@ Pick only keywords that fit THIS specific case.
 """
 
     data = None
+
     for attempt in range(1, 3 + 1):
         print(f"[script_generate] DeepSeek attempt {attempt}/3", flush=True)
         try:
@@ -196,6 +209,7 @@ Pick only keywords that fit THIS specific case.
             print("[ERROR] No JSON object found in response, retrying...", file=sys.stderr)
             time.sleep(3)
             continue
+
         candidate = content[start:end + 1]
 
         try:
@@ -224,13 +238,14 @@ Pick only keywords that fit THIS specific case.
             time.sleep(3)
             continue
 
+        # Clean+analyze script, but do NOT reject on word count
         script = clean_script_text(script)
         wc = count_words(script)
-        if wc < 110 or wc > 140:
-            print(f"[WARN] Word count {wc} out of range, retrying...", file=sys.stderr)
-            data = None
-            time.sleep(3)
-            continue
+        target_min, target_max = 115, 130
+        if wc < 90 or wc > 150:
+            print(f"[WARN] Word count {wc} is far from target ({target_min}-{target_max}), accepting anyway.", file=sys.stderr)
+        else:
+            print(f"[INFO] Word count {wc} within reasonable range.", file=sys.stderr)
 
         lines = [ln.strip() for ln in script.split("\n") if ln.strip()]
         if not lines:
