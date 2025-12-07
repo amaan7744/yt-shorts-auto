@@ -1,237 +1,286 @@
 #!/usr/bin/env python
 """
-Generate a single cloned narration with F5-TTS / E2-F5 using the official CLI.
+Natural multi-voice cloning with Coqui XTTS-v2.
 
-Behavior:
-- Picks ONE random reference voice from voices/:
-    voices/aman.wav
-    voices/aman(1).wav
-    voices/aman(2).wav
-    or any *.wav inside voices/ if those don't exist.
+- Randomly selects ONE reference voice from voices/ (wav or mp3).
+- Reads narration text from script.txt (or $TTS_SCRIPT_PATH).
+- Splits into short chunks for stable XTTS prosody.
+- Synthesizes each chunk with XTTS-v2 using speaker_wav (true cloning).
+- Joins chunks with short pauses + crossfade to avoid clicks.
+- Normalizes + lightly compresses audio, resamples to 44.1 kHz mono.
+- Writes a single clean WAV file (atomic write) to:
+    - CLI:     --output /path/to/tts.wav
+    - or env:  $TTS_OUTPUT_PATH
+    - or default: tts.wav
 
-- Reads script text from:
-    --script-path argument
-    OR $TTS_SCRIPT_PATH
-    OR script.txt
-
-- Calls:
-    f5-tts_infer-cli
-      --model F5-TTS (default, can override with $F5_MODEL_NAME)
-      --ref_audio <chosen voice>
-      --gen_file <script file>
-      --remove_silence
-      --output_dir <temp dir>
-
-- Post-processes:
-    - Loads the generated WAV
-    - Converts to mono
-    - Normalizes with pydub.effects.normalize()
-    - Resamples to 44.1 kHz
-    - Saves to final output path:
-        --output argument
-        OR $TTS_OUTPUT_PATH
-        OR tts.wav
+Usage in GitHub Action:
+    python tts_generate.py --output tts.wav
 """
 
 import argparse
 import os
 import random
+import re
 import sys
 import tempfile
-import pathlib
-import subprocess
 from typing import List, Optional
 
+import torch
+from TTS.api import TTS
 from pydub import AudioSegment, effects
+from pydub.effects import compress_dynamic_range
+
 
 VOICES_DIR = "voices"
-DEFAULT_VOICES = ["aman.wav", "aman(1).wav", "aman(2).wav"]
+DEFAULT_MODEL_NAME = os.environ.get(
+    "TTS_MODEL_NAME", "tts_models/multilingual/multi-dataset/xtts_v2"
+)
 
-# Default model name for F5/E2
-F5_MODEL_NAME = os.environ.get("F5_MODEL_NAME", "F5-TTS")
 
+# ------------------------- logging ------------------------- #
 
 def log(msg: str) -> None:
     print(f"[TTS] {msg}", flush=True)
 
 
-def pick_reference_voice() -> str:
-    """
-    Pick one existing WAV file from voices/.
-    Prefer your named samples, fall back to any *.wav.
-    """
-    base = pathlib.Path(VOICES_DIR)
-    if not base.exists():
-        raise SystemExit(f"[TTS] Voices directory not found: {VOICES_DIR}")
+# ------------------------- device ------------------------- #
 
-    candidates: List[pathlib.Path] = []
-
-    # Prefer your known filenames
-    for fname in DEFAULT_VOICES:
-        f = base / fname
-        if f.is_file():
-            candidates.append(f)
-
-    # Fallback: any .wav
-    if not candidates:
-        candidates = list(base.glob("*.wav"))
-
-    if not candidates:
-        raise SystemExit("[TTS] No .wav voice files found in voices/")
-
-    choice = random.choice(candidates)
-    log(f"Using reference voice: {choice}")
-    return str(choice)
+def detect_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    # GitHub Actions typically has only CPU
+    return "cpu"
 
 
-def read_script_text(path_override: Optional[str]) -> pathlib.Path:
-    """
-    Decide which script file to use and verify it's non-empty.
-    Returns a pathlib.Path to the script.
-    """
-    if path_override:
-        script_path = pathlib.Path(path_override)
-    else:
-        env_path = os.environ.get("TTS_SCRIPT_PATH", "script.txt")
-        script_path = pathlib.Path(env_path)
+# ------------------------- script reading ------------------------- #
 
-    if not script_path.is_file():
-        raise SystemExit(f"[TTS] Script file not found: {script_path}")
+def read_script_text(cli_path: Optional[str]) -> str:
+    script_path = cli_path or os.environ.get("TTS_SCRIPT_PATH", "script.txt")
 
-    text = script_path.read_text(encoding="utf-8").strip()
+    if not os.path.isfile(script_path):
+        log(f"ERROR: Script file not found: {script_path}")
+        sys.exit(1)
+
+    with open(script_path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+
     if not text:
-        raise SystemExit(f"[TTS] Script file is empty: {script_path}")
+        log(f"ERROR: Script file is empty: {script_path}")
+        sys.exit(1)
 
-    log(f"Loaded script from {script_path} ({len(text.split())} words)")
-    return script_path
+    wc = len(text.split())
+    log(f"Loaded script from {script_path} ({wc} words)")
+    return text
 
 
-def call_f5_cli(
-    ref_audio: str,
-    script_file: pathlib.Path,
-    output_dir: pathlib.Path,
-) -> pathlib.Path:
+# ------------------------- voice selection ------------------------- #
+
+def find_voice_files() -> List[str]:
+    if not os.path.isdir(VOICES_DIR):
+        log(f"ERROR: Voices directory not found: {VOICES_DIR}")
+        sys.exit(1)
+
+    voices: List[str] = []
+    for name in os.listdir(VOICES_DIR):
+        lower = name.lower()
+        if lower.endswith(".wav") or lower.endswith(".mp3"):
+            voices.append(os.path.join(VOICES_DIR, name))
+
+    if not voices:
+        log(f"ERROR: No .wav or .mp3 files found in {VOICES_DIR}")
+        sys.exit(1)
+
+    voices.sort()
+    return voices
+
+
+def pick_reference_voice() -> str:
+    voices = find_voice_files()
+    choice = random.choice(voices)
+    log(f"Using reference voice: {choice}")
+    return choice
+
+
+# ------------------------- text chunking ------------------------- #
+
+def split_text_into_chunks(text: str, max_words: int = 45) -> List[str]:
     """
-    Call the f5-tts_infer-cli tool with correct flags.
-
-    Expected behavior:
-    - Writes out.wav (or another .wav) in output_dir.
-    - We return the final raw wav path.
+    Split into sentence-based chunks of <= max_words to keep XTTS stable.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Clean weird whitespace
+    text = re.sub(r"\s+", " ", text.strip())
+    # Split on sentence boundaries
+    raw_sents = re.split(r"(?<=[.!?])\s+", text)
+    sents = [s.strip() for s in raw_sents if s.strip()]
 
-    cmd = [
-        "f5-tts_infer-cli",
-        "--model", F5_MODEL_NAME,
-        "--ref_audio", ref_audio,
-        "--ref_text", "",        # empty reference text; model handles it
-        "--gen_file", str(script_file),
-        "--remove_silence",      # IMPORTANT: flag only, no "true"
-        "--output_dir", str(output_dir),
-    ]
+    if not sents:
+        return [text]
 
-    log("Running F5-TTS CLI:")
-    log(" ".join(cmd))
+    chunks: List[str] = []
+    current: List[str] = []
+    count = 0
 
-    try:
-        subprocess.run(cmd, check=True)
-    except FileNotFoundError:
-        raise SystemExit(
-            "[TTS] f5-tts_infer-cli not found.\n"
-            "Make sure 'f5-tts' is installed in requirements.txt."
-        )
-    except subprocess.CalledProcessError as e:
-        raise SystemExit(f"[TTS] f5-tts_infer-cli failed with exit code {e.returncode}")
+    for s in sents:
+        words = s.split()
+        if count + len(words) <= max_words:
+            current.append(s)
+            count += len(words)
+        else:
+            if current:
+                chunks.append(" ".join(current))
+            current = [s]
+            count = len(words)
 
-    # The CLI typically writes out.wav.
-    out_wav = output_dir / "out.wav"
-    if not out_wav.is_file():
-        wavs = list(output_dir.glob("*.wav"))
-        if not wavs:
-            raise SystemExit(
-                f"[TTS] No WAV produced by f5-tts_infer-cli in {output_dir}"
-            )
-        out_wav = wavs[0]
+    if current:
+        chunks.append(" ".join(current))
 
-    log(f"F5-TTS raw output: {out_wav}")
-    return out_wav
+    # Fallback
+    if not chunks:
+        return [text]
+
+    return chunks
 
 
-def normalize_and_save(
-    src_wav: pathlib.Path,
-    dst_wav: pathlib.Path,
-    target_sr: int = 44100,
+# ------------------------- audio helpers ------------------------- #
+
+def normalize_audio(seg: AudioSegment) -> AudioSegment:
+    """
+    Loudness normalization + gentle compression + standard format.
+    """
+    seg = effects.normalize(seg)
+    seg = compress_dynamic_range(
+        seg,
+        threshold=-20.0,  # start compressing above -20 dBFS
+        ratio=3.0,        # 3:1 compression
+        attack=5,         # ms
+        release=50,       # ms
+    )
+    seg = seg.set_frame_rate(44100).set_channels(1)
+    return seg
+
+
+def join_chunks_with_crossfade(
+    pieces: List[AudioSegment],
+    pause_ms: int = 160,
+    crossfade_ms: int = 20,
+) -> AudioSegment:
+    """
+    Join chunks with tiny pauses and crossfade to avoid clicks/pops.
+    """
+    if not pieces:
+        return AudioSegment.empty()
+
+    silence = AudioSegment.silent(duration=pause_ms)
+    out = pieces[0]
+
+    for p in pieces[1:]:
+        segment_with_pause = silence + p
+        out = out.append(segment_with_pause, crossfade=crossfade_ms)
+
+    return out
+
+
+# ------------------------- core synthesis ------------------------- #
+
+def synthesize_xtts(
+    model_name: str,
+    device: str,
+    ref_voice: str,
+    text: str,
+    output_path: str,
 ) -> None:
-    """
-    - Load the WAV
-    - Convert to mono
-    - Normalize using pydub's normalize()
-    - Resample to target_sr
-    - Export as WAV
-    """
-    audio = AudioSegment.from_file(src_wav)
+    log(f"Loading XTTS model: {model_name} on {device}")
+    tts = TTS(model_name=model_name, progress_bar=False).to(device)
 
-    # mono
-    audio = audio.set_channels(1)
+    chunks = split_text_into_chunks(text, max_words=45)
+    log(f"Script split into {len(chunks)} chunks")
 
-    # normalize to a safe level (pydub normalize has some headroom internally)
-    audio = effects.normalize(audio)
+    pieces: List[AudioSegment] = []
 
-    # set sample rate + 16-bit sample width
-    audio = audio.set_frame_rate(target_sr).set_sample_width(2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i, chunk in enumerate(chunks, start=1):
+            chunk_wc = len(chunk.split())
+            log(f"Synthesizing chunk {i}/{len(chunks)} ({chunk_wc} words)")
 
-    dst_wav.parent.mkdir(parents=True, exist_ok=True)
-    audio.export(dst_wav, format="wav")
-    log(f"Normalized and saved clean TTS: {dst_wav}")
+            tmp_wav = os.path.join(tmpdir, f"chunk_{i}.wav")
 
+            # Core XTTS voice cloning call
+            tts.tts_to_file(
+                text=chunk,
+                speaker_wav=ref_voice,
+                language="en",
+                file_path=tmp_wav,
+            )
+
+            if not os.path.exists(tmp_wav) or os.path.getsize(tmp_wav) == 0:
+                log(f"ERROR: XTTS produced empty audio for chunk {i}")
+                sys.exit(1)
+
+            audio = AudioSegment.from_file(tmp_wav)
+            pieces.append(audio)
+
+    if not pieces:
+        log("ERROR: No audio chunks were produced.")
+        sys.exit(1)
+
+    log("Joining chunks with crossfade + pauses...")
+    joined = join_chunks_with_crossfade(pieces, pause_ms=160, crossfade_ms=20)
+
+    log("Normalizing + compressing audio...")
+    final = normalize_audio(joined)
+
+    # Atomic write to avoid broken files
+    tmp_out = output_path + ".tmp"
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    final.export(tmp_out, format="wav")
+    os.replace(tmp_out, output_path)
+
+    total_sec = len(final) / 1000.0
+    log(f"Done. Wrote {output_path} ({total_sec:.1f}s)")
+
+
+# ------------------------- CLI ------------------------- #
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Generate cloned TTS narration with F5-TTS via CLI."
-    )
-    parser.add_argument(
+    p = argparse.ArgumentParser(description="XTTS-v2 voice-cloned TTS generator.")
+    p.add_argument(
         "--script-path",
         dest="script_path",
         default=None,
-        help="Path to script file. Default: $TTS_SCRIPT_PATH or script.txt",
+        help="Path to script text file (default: $TTS_SCRIPT_PATH or script.txt).",
     )
-    parser.add_argument(
+    p.add_argument(
         "--output",
         dest="output",
         default=None,
-        help="Output WAV filename. Default: $TTS_OUTPUT_PATH or tts.wav",
+        help="Output WAV path (default: $TTS_OUTPUT_PATH or tts.wav).",
     )
-    return parser.parse_args()
+    p.add_argument(
+        "--model",
+        dest="model_name",
+        default=DEFAULT_MODEL_NAME,
+        help=f"TTS model name (default: {DEFAULT_MODEL_NAME}).",
+    )
+    return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    # 1) Script
-    script_file = read_script_text(args.script_path)
+    device = detect_device()
+    script_text = read_script_text(args.script_path)
+    ref_voice = pick_reference_voice()
 
-    # 2) Reference voice
-    ref_audio = pick_reference_voice()
+    output_path = args.output or os.environ.get("TTS_OUTPUT_PATH", "tts.wav")
+    model_name = args.model_name
 
-    # 3) Temp directory for raw F5 output
-    tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="f5_tts_out_"))
-
-    # 4) Call F5 CLI
-    raw_wav = call_f5_cli(ref_audio=ref_audio, script_file=script_file, output_dir=tmp_dir)
-
-    # 5) Decide final output path
-    out_path_str = (
-        args.output
-        or os.environ.get("TTS_OUTPUT_PATH")
-        or "tts.wav"
+    synthesize_xtts(
+        model_name=model_name,
+        device=device,
+        ref_voice=ref_voice,
+        text=script_text,
+        output_path=output_path,
     )
-    out_path = pathlib.Path(out_path_str)
-
-    # 6) Normalize + save
-    normalize_and_save(raw_wav, out_path)
-
-    log("TTS generation complete.")
-    log(f"Final file: {out_path}")
 
 
 if __name__ == "__main__":
