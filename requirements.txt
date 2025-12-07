@@ -1,9 +1,23 @@
+# HTTP / API calls (DeepSeek, Pexels, Wikipedia, etc.)
 requests>=2.31.0
+
+# Audio processing and mixing
 pydub>=0.25.1
 
-# F5 / E2 TTS core dependencies
+# F5 / E2 TTS CLI package
 f5-tts>=1.1.10
 
-# CPU PyTorch + torchaudio (no CUDA wheel specified -> CPU build on GitHub runner)
+# PyTorch + torchaudio (CPU build is fine on GitHub Actions)
 torch>=2.3.0
 torchaudio>=2.3.0
+
+# Video creation and editing (Ken Burns, vertical shorts, etc.)
+moviepy>=1.0.3
+Pillow>=10.0.0
+
+# HTML parsing for Wikipedia or other scrapers
+beautifulsoup4>=4.12.0
+
+# (optional but often useful)
+numpy>=1.26.0
+tqdm>=4.66.0
