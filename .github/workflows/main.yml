@@ -3,7 +3,7 @@ name: Auto YouTube Short
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0,2,5,7,10,12,14,17,19,21 * * *"
+    - cron: "0 0,3,7,11,15,18,21 * * *"
 
 concurrency:
   group: auto-youtube-short
@@ -12,175 +12,104 @@ concurrency:
 jobs:
   make-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+
     permissions:
       contents: write
 
     steps:
-      # ----------------------------------------------------------
-      # CHECKOUT + PYTHON + DEPENDENCIES
-      # ----------------------------------------------------------
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.10
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
+      - name: Install system & Python deps
         run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          sudo apt-get install -y ffmpeg jq libsndfile1
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # ----------------------------------------------------------
-      # PICK CATEGORY (you can change categories later)
-      # ----------------------------------------------------------
       - name: Pick category
         run: |
-          set -euo pipefail
-          CATEGORY=$(shuf -e horror crime mystery | head -n1)
-          echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
-          echo "Picked category: $CATEGORY"
+          CATEGORY=$(shuf -e crime mystery hidden_history | head -n1)
+          echo "CATEGORY=$CATEGORY" >> $GITHUB_ENV
+          echo "Chosen category: $CATEGORY"
 
-      # ----------------------------------------------------------
-      # GENERATE SCRIPT VIA DEEPSEEK
-      # ----------------------------------------------------------
-      - name: Generate script (DeepSeek)
+      - name: Generate script (DeepSeek R1T2 via OpenRouter)
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_API_URL: ${{ secrets.DEEPSEEK_API_URL }}
           DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
           CATEGORY: ${{ env.CATEGORY }}
         run: |
           set -euo pipefail
+          echo "Running script_generate.py..."
           python script_generate.py
-          echo "Script generated:"
+          echo "Script generated successfully."
           head -n 5 script.txt || true
 
-      # ----------------------------------------------------------
-      # TTS VIA E2-F5 / F5-TTS (CLONED VOICE)
-      # ----------------------------------------------------------
-      - name: Generate narration (E2-F5 / F5-TTS)
+      - name: Generate Narration TTS (E2-F5/F5)
+        run: |
+          set -euo pipefail
+          python tts_generate.py --output tts.wav
+          echo "TTS done. File: tts.wav"
+
+      - name: Mix ambience with narration
+        run: |
+          set -euo pipefail
+          python audio_mix.py tts.wav final_audio.wav
+          echo "Audio mix created: final_audio.wav"
+
+      - name: Fetch images (Wikipedia PD + Pexels)
         env:
-          TTS_SCRIPT_PATH: "script.txt"
-          TTS_OUTPUT_PATH: "tts-audio.wav"
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
         run: |
           set -euo pipefail
-          python tts_generate.py --model F5TTS_v1_Base --nfe-step 32 --cfg-strength 2.0 --speed 0.98 --target-rms 0.11
+          python image_fetch.py
+          echo "Images fetched."
 
-      # ----------------------------------------------------------
-      # BUILD VIDEO (IMAGES + AMBIENCE + KEN BURNS)
-      # ----------------------------------------------------------
-      - name: Build video
-        env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      - name: Build Video (Ken Burns Animation + Sync)
         run: |
           set -euo pipefail
-          python build_video.py
+          python video_build.py final_audio.wav
+          echo "Video build complete."
 
-      # ----------------------------------------------------------
-      # THUMBNAIL (USE REPO IMAGE OR CREATE SIMPLE ONE)
-      # ----------------------------------------------------------
-      - name: Thumbnail
-        run: |
-          python << 'PY'
-          import os, shutil, subprocess
-
-          dest = "thumbnail.jpg"
-
-          preferred = ["thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"]
-          found = None
-          for name in preferred:
-              if os.path.exists(name):
-                  found = name
-                  break
-
-          if not found:
-              candidates = []
-              for f in os.listdir("."):
-                  lower = f.lower()
-                  if lower in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"):
-                      continue
-                  if lower.endswith((".jpg",".jpeg",".png")) and not lower.startswith("output"):
-                      candidates.append(f)
-              if candidates:
-                  candidates.sort()
-                  found = candidates[0]
-
-          if found:
-              src_abs = os.path.abspath(found)
-              dest_abs = os.path.abspath(dest)
-              if src_abs != dest_abs:
-                  shutil.copy(found, dest)
-                  print("Using repo thumbnail:", found)
-              else:
-                  print("Repo already has thumbnail.jpg, using it as-is.")
-          else:
-              print("No thumbnail image found in repo. Creating dark placeholder thumbnail.")
-              cmd = (
-                  "ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=1 "
-                  "-vframes 1 -q:v 2 thumbnail.jpg"
-              )
-              subprocess.run(cmd, shell=True, check=True)
-          PY
-
-      # ----------------------------------------------------------
-      # SAVE USED TOPIC (TITLE) – APPENDED BY SCRIPT_GENERATE
-      # ----------------------------------------------------------
-      - name: Commit used topics
+      - name: Prevent freeze – trim final video to audio length
         run: |
           set -euo pipefail
-          if [ -f used_topics.txt ]; then
-            tail -n 500 used_topics.txt > used_topics.trim && mv used_topics.trim used_topics.txt
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add used_topics.txt || true
-            git commit -m "Update used topics" || echo "No changes to commit"
-            git push || echo "Git push failed (probably no permissions)."
+          DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
+          ffmpeg -y -i video_raw.mp4 -t $DURATION -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p output.mp4
+          echo "Final synced video: output.mp4"
+
+      - name: Create Thumbnail
+        run: |
+          if [ -f thumbnail.jpg ]; then
+            cp thumbnail.jpg final_thumbnail.jpg
           else
-            echo "No used_topics.txt to commit."
+            ffmpeg -y -i output.mp4 -ss 00:00:01 -vframes 1 final_thumbnail.jpg
           fi
 
-      # ----------------------------------------------------------
-      # UPLOAD ARTIFACTS
-      # ----------------------------------------------------------
-      - name: Upload artifacts
+      - name: Save used topic
+        run: |
+          echo "$(<script_meta.json jq -r .title)" >> used_topics.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add used_topics.txt
+          git commit -m "Used topic added" || true
+          git push || true
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-short-${{ github.run_id }}
+          name: youtube-short
           path: |
             output.mp4
+            final_audio.wav
             script.txt
             script_meta.json
-            tts-audio.wav
-            thumbnail.jpg
-            used_topics.txt
-
-      # ----------------------------------------------------------
-      # JOB SUMMARY
-      # ----------------------------------------------------------
-      - name: Job summary
-        if: always()
-        run: |
-          set -euo pipefail
-          if [ -f script_meta.json ]; then
-            TITLE=$(python -c "import json;print(json.load(open('script_meta.json',encoding='utf-8'))['title'])")
-          else
-            TITLE="Unknown title"
-          fi
-          echo "Title: $TITLE" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "Category: $CATEGORY" | tee -a "$GITHUB_STEP_SUMMARY"
+            final_thumbnail.jpg
