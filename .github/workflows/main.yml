@@ -102,7 +102,6 @@ jobs:
           python tts_generate.py --output tts.wav
           echo "XTTS narration saved as tts.wav"
 
-
       # ----------------------------------------------------------
       # AUDIO MIX (RAIN / WIND / AMBIENCE)
       # ----------------------------------------------------------
@@ -136,7 +135,7 @@ jobs:
       # ----------------------------------------------------------
       # SYNC VIDEO TO AUDIO (PREVENT FREEZE)
       # ----------------------------------------------------------
-        - name: Sync duration to audio
+      - name: Sync duration to audio
         run: |
           set -euo pipefail
           if [ ! -f final_audio.wav ]; then
@@ -158,7 +157,6 @@ jobs:
             -c:a aac -b:a 192k \
             output.mp4
           echo "Final synced video with audio: output.mp4"
-
 
       # ----------------------------------------------------------
       # THUMBNAIL
@@ -205,4 +203,3 @@ jobs:
             script.txt
             script_meta.json
             final_thumbnail.jpg
-            
