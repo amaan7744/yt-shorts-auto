@@ -4,6 +4,7 @@ requests>=2.31.0
 # TTS stack (XTTS v2 via Coqui TTS)
 TTS==0.22.0
 transformers==4.39.3
+torchcodec>=0.1.0
 
 # Audio processing for post-production
 pydub>=0.25.1
