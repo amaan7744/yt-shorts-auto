@@ -93,6 +93,7 @@ jobs:
       - name: Generate narration (XTTS-v2 voice clone)
         env:
           COQUI_TOS_AGREED: "1"
+          TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: "1"
           HF_HOME: "/tmp/hf"
           TRANSFORMERS_CACHE: "/tmp/hf"
           TORCH_HOME: "/tmp/torch"
@@ -100,6 +101,7 @@ jobs:
           set -euo pipefail
           python tts_generate.py --output tts.wav
           echo "XTTS narration saved as tts.wav"
+
 
       # ----------------------------------------------------------
       # AUDIO MIX (RAIN / WIND / AMBIENCE)
