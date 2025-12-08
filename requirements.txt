@@ -1,20 +1,11 @@
-# HTTP / APIs (DeepSeek, Pexels, Wikipedia, etc.)
 requests>=2.31.0
 
-# TTS stack (XTTS v2 via Coqui TTS)
 TTS==0.22.0
 transformers==4.39.3
 torchcodec>=0.1.0
 
-# Audio processing for post-production
 pydub>=0.25.1
-
-# Video editing / rendering (Ken Burns, vertical Shorts)
 moviepy>=1.0.3
-Pillow>=10.0.0
-
-# HTML parsing / scraping (Wikipedia, etc.)
+Pillow==9.5.0
 beautifulsoup4>=4.12.0
-
-# Utilities
 tqdm>=4.66.0
