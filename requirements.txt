@@ -1,13 +1,16 @@
 # HTTP / APIs (DeepSeek, Pexels, Wikipedia, etc.)
 requests>=2.31.0
 
-# TTS stack: XTTS-v2 voice cloning (Coqui TTS)
+# TTS (XTTS v2 voice cloning)
 TTS==0.22.0
-torch>=2.3.0
-torchaudio>=2.3.0
+torch==2.0.1
+torchaudio==2.0.1
 
-# Audio processing for post-production (mixing, normalization)
 pydub>=0.25.1
+moviepy>=1.0.3
+Pillow>=10.0.0
+beautifulsoup4>=4.12.0
+tqdm>=4.66.0
 
 # Video editing / rendering (Ken Burns, vertical Shorts)
 moviepy>=1.0.3
