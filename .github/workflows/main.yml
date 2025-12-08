@@ -27,33 +27,55 @@ jobs:
           fetch-depth: 0
 
       # ----------------------------------------------------------
-      # PYTHON + SYSTEM DEPS
+      # PYTHON
       # ----------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install system & Python deps
+      # ----------------------------------------------------------
+      # CLEAN SPACE (SAFE)
+      # ----------------------------------------------------------
+      - name: Clean runner caches
         run: |
+          rm -rf ~/.cache/pip || true
+          rm -rf ~/.cache/huggingface || true
+          rm -rf ~/.cache/torch || true
+          rm -rf /tmp/hf || true
+          rm -rf /tmp/torch || true
+          df -h
+
+      # ----------------------------------------------------------
+      # INSTALL DEPS
+      # ----------------------------------------------------------
+      - name: Install system & Python deps
+        env:
+          HF_HOME: "/tmp/hf"
+          TRANSFORMERS_CACHE: "/tmp/hf"
+          TORCH_HOME: "/tmp/torch"
+        run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq libsndfile1
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --no-cache-dir -r requirements.txt
+          df -h
 
       # ----------------------------------------------------------
       # PICK CATEGORY
       # ----------------------------------------------------------
       - name: Pick category
         run: |
+          set -euo pipefail
           CATEGORY=$(shuf -e crime mystery hidden_history | head -n1)
           echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
           echo "Chosen category: $CATEGORY"
 
       # ----------------------------------------------------------
-      # SCRIPT GENERATION (DEEPSEEK)
+      # SCRIPT (DEEPSEEK VIA OPENROUTER)
       # ----------------------------------------------------------
-      - name: Generate script via DeepSeek (OpenRouter)
+      - name: Generate script via DeepSeek
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
@@ -62,15 +84,18 @@ jobs:
           set -euo pipefail
           echo "Running script_generate.py..."
           python script_generate.py
-          echo "Script generated:"
+          echo "Script generated (first lines):"
           head -n 5 script.txt || true
 
       # ----------------------------------------------------------
-      # TTS NARRATION (XTTS-v2 VOICE CLONE)
+      # TTS (XTTS-V2 VOICE CLONE)
       # ----------------------------------------------------------
       - name: Generate narration (XTTS-v2 voice clone)
         env:
           COQUI_TOS_AGREED: "1"
+          HF_HOME: "/tmp/hf"
+          TRANSFORMERS_CACHE: "/tmp/hf"
+          TORCH_HOME: "/tmp/torch"
         run: |
           set -euo pipefail
           python tts_generate.py --output tts.wav
@@ -102,19 +127,28 @@ jobs:
       - name: Build video
         run: |
           set -euo pipefail
+          # video_build.py should read images + final_audio.wav and output video_raw.mp4
           python video_build.py final_audio.wav
           echo "Raw video → video_raw.mp4"
 
       # ----------------------------------------------------------
-      # SYNC VIDEO TO AUDIO (PREVENT FRAME FREEZE)
+      # SYNC VIDEO TO AUDIO (PREVENT FREEZE)
       # ----------------------------------------------------------
-      - name: Sync duration to audio (fix freezing)
+      - name: Sync duration to audio
         run: |
           set -euo pipefail
+          if [ ! -f final_audio.wav ]; then
+            echo "final_audio.wav missing"
+            exit 1
+          fi
+          if [ ! -f video_raw.mp4 ]; then
+            echo "video_raw.mp4 missing"
+            exit 1
+          fi
           DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
           echo "Audio duration: $DURATION sec"
           ffmpeg -y -i video_raw.mp4 -t "$DURATION" -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p output.mp4
-          echo "Final output: output.mp4"
+          echo "Final synced video: output.mp4"
 
       # ----------------------------------------------------------
       # THUMBNAIL
@@ -124,10 +158,10 @@ jobs:
           set -euo pipefail
           if [ -f thumbnail.jpg ]; then
             cp thumbnail.jpg final_thumbnail.jpg
-            echo "Using user thumbnail"
+            echo "Using custom thumbnail.jpg"
           else
             ffmpeg -y -i output.mp4 -ss 00:00:01 -vframes 1 final_thumbnail.jpg
-            echo "Generated frame thumbnail"
+            echo "Generated thumbnail from video"
           fi
 
       # ----------------------------------------------------------
@@ -149,7 +183,7 @@ jobs:
           fi
 
       # ----------------------------------------------------------
-      # UPLOAD ARTIFACTS
+      # ARTIFACTS
       # ----------------------------------------------------------
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -161,3 +195,4 @@ jobs:
             script.txt
             script_meta.json
             final_thumbnail.jpg
+            
