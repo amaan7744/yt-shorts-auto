@@ -1,8 +1,15 @@
 #!/usr/bin/env python
-"""
-Natural multi-voice cloning with Coqui XTTS-v2.
 
-- Randomly selects ONE reference voice from voices/ (wav or mp3).
+import os
+
+# Make Coqui TTS non-interactive and compatible with newer torch.load
+os.environ.setdefault("COQUI_TOS_AGREED", "1")
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+"""
+Natural voice-cloned TTS using Coqui XTTS-v2.
+
+- Picks ONE random reference voice from voices/ (wav or mp3).
 - Reads narration text from script.txt (or $TTS_SCRIPT_PATH).
 - Splits into short chunks for stable XTTS prosody.
 - Synthesizes each chunk with XTTS-v2 using speaker_wav (true cloning).
@@ -12,13 +19,9 @@ Natural multi-voice cloning with Coqui XTTS-v2.
     - CLI:     --output /path/to/tts.wav
     - or env:  $TTS_OUTPUT_PATH
     - or default: tts.wav
-
-Usage in GitHub Action:
-    python tts_generate.py --output tts.wav
 """
 
 import argparse
-import os
 import random
 import re
 import sys
