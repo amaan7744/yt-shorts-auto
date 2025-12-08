@@ -1,113 +1,145 @@
 #!/usr/bin/env python
+"""
+video_build.py
+
+Usage:
+    python video_build.py final_audio.wav
+
+Behavior:
+- Reads the narration+ambience audio file (default: final_audio.wav).
+- Measures audio duration.
+- Reads all images from ./frames/ (img_*.jpg / .png) created by image_fetch.py.
+- Builds a vertical 1080x1920 video:
+    - Each image is shown for an equal slice of the audio duration.
+    - Images are resized and center-cropped to 1080x1920 (no black bars).
+    - Simple, stable cuts (no crazy effects) for maximum reliability.
+- Writes result to video_raw.mp4 with no audio.
+  main.yml will later mux final_audio.wav and video_raw.mp4 into output.mp4.
+
+This is intentionally simple to avoid rendering bugs and freezing frames.
+"""
+
 import os
 import sys
-import json
-import random
-import pathlib
-import time
 from typing import List
 
-import requests
+from moviepy.editor import ImageClip, concatenate_videoclips
 from pydub import AudioSegment
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
-from moviepy.editor import CompositeAudioClip
+
+FRAMES_DIR = "frames"
+OUTPUT_VIDEO = "video_raw.mp4"
+TARGET_RESOLUTION = (1080, 1920)  # width, height
+DEFAULT_FPS = 30
+MIN_CLIP_SEC = 3.0
+MAX_CLIP_SEC = 7.0
 
 
-META_PATH = pathlib.Path("script_meta.json")
-FRAMES_DIR = pathlib.Path("frames")
-AMBIENCE_DIR = pathlib.Path("ambience")
-OUTPUT_MP4 = "output.mp4"
-VOICE_WAV = "tts-audio.wav"
+def log(msg: str) -> None:
+    print(f"[VID] {msg}", flush=True)
 
 
-def load_meta():
-    if not META_PATH.exists():
-        print("[video] script_meta.json not found.", file=sys.stderr)
-        sys.exit(1)
-    return json.loads(META_PATH.read_text(encoding="utf-8"))
+def get_audio_duration(audio_path: str) -> float:
+    if not os.path.isfile(audio_path):
+        raise SystemExit(f"[VID] Audio file not found: {audio_path}")
+    audio = AudioSegment.from_file(audio_path)
+    dur_sec = len(audio) / 1000.0
+    log(f"Audio duration: {dur_sec:.2f} s")
+    return max(dur_sec, MIN_CLIP_SEC)
 
 
-def fetch_pexels_images(pexels_key: str, keywords: List[str], max_images: int = 10) -> List[str]:
-    if not pexels_key:
-        print("[video] No PEXELS_API_KEY, skipping Pexels.", flush=True)
-        return []
+def list_frames() -> List[str]:
+    if not os.path.isdir(FRAMES_DIR):
+        raise SystemExit(f"[VID] Frames directory not found: {FRAMES_DIR}")
 
-    out_files = []
-    FRAMES_DIR.mkdir(exist_ok=True, parents=True)
+    files: List[str] = []
+    for name in os.listdir(FRAMES_DIR):
+        lower = name.lower()
+        if lower.endswith((".jpg", ".jpeg", ".png")):
+            files.append(os.path.join(FRAMES_DIR, name))
 
-    base_url = "https://api.pexels.com/v1/search"
-    headers = {"Authorization": pexels_key}
+    if not files:
+        raise SystemExit(f"[VID] No frame images found in {FRAMES_DIR}")
 
-    random.shuffle(keywords)
-    for kw in keywords:
-        if len(out_files) >= max_images:
-            break
-        print(f"[video] Pexels search: {kw}")
-        try:
-            resp = requests.get(
-                base_url,
-                headers=headers,
-                params={"query": kw, "per_page": 4, "orientation": "portrait"},
-                timeout=30,
-            )
-            if resp.status_code != 200:
-                print(f"[video] Pexels status: {resp.status_code}")
-                continue
-            data = resp.json()
-            photos = data.get("photos", [])
-            random.shuffle(photos)
-            for ph in photos:
-                src = ph.get("src", {})
-                url = src.get("large") or src.get("original")
-                if not url:
-                    continue
-                fname = f"pexels_{len(out_files)+1}.jpg"
-                dest = FRAMES_DIR / fname
-                print(f"[video] Downloading Pexels image: {url}")
-                try:
-                    r = requests.get(url, timeout=60)
-                    r.raise_for_status()
-                    dest.write_bytes(r.content)
-                    out_files.append(str(dest))
-                    if len(out_files) >= max_images:
-                        break
-                except Exception as e:
-                    print(f"[video] Error downloading Pexels image: {e}")
-                    continue
-        except Exception as e:
-            print(f"[video] Pexels request error: {e}")
-            continue
-
-    return out_files
+    files.sort()
+    log(f"Using {len(files)} frame images.")
+    return files
 
 
-def fetch_wikipedia_images(wiki_title: str, max_images: int = 4) -> List[str]:
+def make_vertical_clip(img_path: str, duration: float) -> ImageClip:
     """
-    Basic Wikipedia image fetch:
-    - Finds images on the page.
-    - Prefers ones whose license metadata mentions 'public domain' or 'CC0'.
-    THIS IS BEST-EFFORT, not a legal guarantee.
+    Create a vertical 1080x1920 ImageClip with center crop.
     """
-    if not wiki_title:
-        return []
+    clip = ImageClip(img_path)
 
-    print(f"[video] Fetching Wikipedia images for: {wiki_title}")
-    FRAMES_DIR.mkdir(exist_ok=True, parents=True)
+    target_w, target_h = TARGET_RESOLUTION
+    w, h = clip.size
 
-    api_base = "https://en.wikipedia.org/w/api.php"
-    try:
-        # Get all images on the page
-        params = {
-            "action": "query",
-            "titles": wiki_title,
-            "prop": "images",
-            "format": "json",
-            "imlimit": "max",
-        }
-        resp = requests.get(api_base, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        pages = data.get("query", {}).get("pages", {})
+    # First, scale so that the image fully covers the 1080x1920 area.
+    # We pick the scale factor so that both dimensions are >= target.
+    scale_w = target_w / w
+    scale_h = target_h / h
+    scale = max(scale_w, scale_h)
+    clip = clip.resize(scale)
+
+    w, h = clip.size
+    x_center = w / 2
+    y_center = h / 2
+
+    clip = clip.crop(
+        x_center=x_center,
+        y_center=y_center,
+        width=target_w,
+        height=target_h,
+    )
+
+    clip = clip.set_duration(duration)
+    return clip
+
+
+def main() -> None:
+    audio_path = sys.argv[1] if len(sys.argv) > 1 else "final_audio.wav"
+
+    total_dur = get_audio_duration(audio_path)
+    frame_paths = list_frames()
+    n_frames = len(frame_paths)
+
+    # Compute per-image duration
+    per_clip = total_dur / n_frames
+    per_clip = max(MIN_CLIP_SEC, min(MAX_CLIP_SEC, per_clip))
+
+    # If clamped, total duration might differ slightly, but later ffmpeg
+    # will trim to exact audio duration.
+    log(f"Per-image duration: {per_clip:.2f} s")
+
+    clips: List[ImageClip] = []
+    for idx, path in enumerate(frame_paths, start=1):
+        log(f"Creating clip {idx}/{n_frames} from {path}")
+        clip = make_vertical_clip(path, per_clip)
+        clips.append(clip)
+
+    if not clips:
+        raise SystemExit("[VID] No clips created, aborting.")
+
+    log("Concatenating clips...")
+    final = concatenate_videoclips(clips, method="compose")
+
+    log(f"Writing {OUTPUT_VIDEO} at {DEFAULT_FPS} fps...")
+    final.write_videofile(
+        OUTPUT_VIDEO,
+        fps=DEFAULT_FPS,
+        codec="libx264",
+        audio=False,
+        preset="veryfast",
+        threads=2,
+        verbose=False,
+        logger=None,
+    )
+
+    log("video_build.py finished successfully.")
+
+
+if __name__ == "__main__":
+    main()
         page = next(iter(pages.values()), {})
         img_list = page.get("images", [])
         img_titles = [img["title"] for img in img_list if "title" in img]
