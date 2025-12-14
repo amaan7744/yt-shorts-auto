@@ -1,16 +1,16 @@
-name: Auto YouTube Short
+name: Auto YouTube Short (Stable Dark Crime)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0,3,7,11,15,18,21 * * *"
+    - cron: "0 0,3,6,9,12,15,18,21 * * *"
 
 concurrency:
-  group: auto-youtube-short
+  group: yt-shorts-auto
   cancel-in-progress: true
 
 jobs:
-  make-video:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -18,103 +18,47 @@ jobs:
       contents: write
 
     steps:
-      # ----------------------------------------------------------
-      # CHECKOUT
-      # ----------------------------------------------------------
-      - name: Checkout repo
+      # ----------------------------
+      # Checkout
+      # ----------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ----------------------------------------------------------
-      # PYTHON
-      # ----------------------------------------------------------
-      - name: Set up Python
+      # ----------------------------
+      # Python
+      # ----------------------------
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ----------------------------------------------------------
-      # CLEAN SPACE (SAFE)
-      # ----------------------------------------------------------
-      - name: Clean runner caches
+      # ----------------------------
+      # System deps
+      # ----------------------------
+      - name: Install system dependencies
         run: |
-          rm -rf ~/.cache/pip || true
-          rm -rf ~/.cache/huggingface || true
-          rm -rf ~/.cache/torch || true
-          rm -rf /tmp/hf || true
-          rm -rf /tmp/torch || true
-          df -h
-
-      # ----------------------------------------------------------
-      # INSTALL DEPS
-      # ----------------------------------------------------------
-      - name: Install system & Python deps
-        env:
-          HF_HOME: "/tmp/hf"
-          TRANSFORMERS_CACHE: "/tmp/hf"
-          TORCH_HOME: "/tmp/torch"
-        run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg jq libsndfile1
-          pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
-          df -h
+          sudo apt-get install -y ffmpeg jq
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # ----------------------------------------------------------
-      # PICK CATEGORY
-      # ----------------------------------------------------------
-      - name: Pick category
-        run: |
-          set -euo pipefail
-          CATEGORY=$(shuf -e crime mystery hidden_history | head -n1)
-          echo "CATEGORY=$CATEGORY" >> "$GITHUB_ENV"
-          echo "Chosen category: $CATEGORY"
-
-      # ----------------------------------------------------------
-      # SCRIPT (DEEPSEEK VIA OPENROUTER)
-      # ----------------------------------------------------------
-      - name: Generate script via DeepSeek
+      # ----------------------------
+      # Generate script (NO repeats)
+      # ----------------------------
+      - name: Generate script
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
-          CATEGORY: ${{ env.CATEGORY }}
         run: |
           set -euo pipefail
-          echo "Running script_generate.py..."
           python script_generate.py
-          echo "Script generated (first lines):"
-          head -n 5 script.txt || true
+          echo "Script generated."
 
-      # ----------------------------------------------------------
-      # TTS (XTTS-V2 VOICE CLONE)
-      # ----------------------------------------------------------
-      - name: Generate narration (XTTS-v2 voice clone)
-        env:
-          COQUI_TOS_AGREED: "1"
-          TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: "1"
-          HF_HOME: "/tmp/hf"
-          TRANSFORMERS_CACHE: "/tmp/hf"
-          TORCH_HOME: "/tmp/torch"
-        run: |
-          set -euo pipefail
-          python tts_generate.py --output tts.wav
-          echo "XTTS narration saved as tts.wav"
-
-      # ----------------------------------------------------------
-      # AUDIO MIX (RAIN / WIND / AMBIENCE)
-      # ----------------------------------------------------------
-      - name: Mix ambience with narration
-        run: |
-          set -euo pipefail
-          python audio_mix.py tts.wav final_audio.wav
-          echo "Audio mix created → final_audio.wav"
-
-      # ----------------------------------------------------------
-      # IMAGE FETCH (WIKIPEDIA PD + PEXELS)
-      # ----------------------------------------------------------
-      - name: Fetch images
+      # ----------------------------
+      # Fetch dark aesthetic images
+      # ----------------------------
+      - name: Fetch dark images
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
         run: |
@@ -122,84 +66,91 @@ jobs:
           python image_fetch.py
           echo "Images fetched."
 
-      # ----------------------------------------------------------
-      # VIDEO BUILD (IMAGES + AUDIO)
-      # ----------------------------------------------------------
-      - name: Build video
+      # ----------------------------
+      # Generate narration (UNCHANGED)
+      # ----------------------------
+      - name: Generate TTS narration
+        env:
+          COQUI_TOS_AGREED: "1"
         run: |
           set -euo pipefail
-          # video_build.py should read images + final_audio.wav and output video_raw.mp4
-          python video_build.py final_audio.wav
-          echo "Raw video → video_raw.mp4"
+          python tts_generate.py
+          echo "Narration generated."
 
-      # ----------------------------------------------------------
-      # SYNC VIDEO TO AUDIO (PREVENT FREEZE)
-      # ----------------------------------------------------------
-      - name: Sync duration to audio
+      # ----------------------------
+      # Mix ambience (rain + wind + thunder)
+      # ----------------------------
+      - name: Mix ambience
         run: |
           set -euo pipefail
-          if [ ! -f final_audio.wav ]; then
-            echo "final_audio.wav missing"
-            exit 1
-          fi
-          if [ ! -f video_raw.mp4 ]; then
-            echo "video_raw.mp4 missing"
-            exit 1
-          fi
+          python audio_mix.py
+          echo "Final audio ready."
+
+      # ----------------------------
+      # Build subtitles (synced)
+      # ----------------------------
+      - name: Build subtitles
+        run: |
+          set -euo pipefail
+          python subtitles_build.py
+          echo "Subtitles built."
+
+      # ----------------------------
+      # Build video from frames
+      # ----------------------------
+      - name: Build video (no audio)
+        run: |
+          set -euo pipefail
+          python video_build.py final_audio.wav
+          echo "Raw video created."
+
+      # ----------------------------
+      # Merge audio + subtitles + video
+      # ----------------------------
+      - name: Final render
+        run: |
+          set -euo pipefail
+          if [ ! -f video_raw.mp4 ]; then exit 1; fi
+          if [ ! -f final_audio.wav ]; then exit 1; fi
+          if [ ! -f subtitles.ass ]; then exit 1; fi
+
           DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
-          echo "Audio duration: $DURATION sec"
+
           ffmpeg -y \
             -i video_raw.mp4 \
             -i final_audio.wav \
+            -vf "subtitles=subtitles.ass" \
             -t "$DURATION" -shortest \
             -map 0:v -map 1:a \
             -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p \
             -c:a aac -b:a 192k \
             output.mp4
-          echo "Final synced video with audio: output.mp4"
 
-      # ----------------------------------------------------------
-      # THUMBNAIL
-      # ----------------------------------------------------------
-      - name: Create thumbnail
+          echo "Final video rendered."
+
+      # ----------------------------
+      # Save used topics (NO repeats ever)
+      # ----------------------------
+      - name: Save used topics
         run: |
           set -euo pipefail
-          if [ -f thumbnail.jpg ]; then
-            cp thumbnail.jpg final_thumbnail.jpg
-            echo "Using custom thumbnail.jpg"
-          else
-            ffmpeg -y -i output.mp4 -ss 00:00:01 -vframes 1 final_thumbnail.jpg
-            echo "Generated thumbnail from video"
-          fi
-
-      # ----------------------------------------------------------
-      # SAVE USED TOPIC
-      # ----------------------------------------------------------
-      - name: Save used topic
-        run: |
-          set -euo pipefail
-          if [ -f script_meta.json ]; then
-            TITLE=$(jq -r '.title' script_meta.json)
-            echo "$TITLE" >> used_topics.txt
+          if [ -f used_topics.json ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add used_topics.txt
-            git commit -m "Used topic: $TITLE" || true
+            git add used_topics.json
+            git commit -m "Update used topics" || true
             git push || true
-          else
-            echo "script_meta.json missing – skipping used_topics update."
           fi
 
-      # ----------------------------------------------------------
-      # ARTIFACTS
-      # ----------------------------------------------------------
-      - name: Upload artifacts
+      # ----------------------------
+      # Upload artifact
+      # ----------------------------
+      - name: Upload output
         uses: actions/upload-artifact@v4
         with:
           name: youtube-short
           path: |
             output.mp4
-            final_audio.wav
             script.txt
-            script_meta.json
-            final_thumbnail.jpg
+            subtitles.ass
+
