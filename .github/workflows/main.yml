@@ -14,6 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
+    # 🔴 CRITICAL: force ML caches into /tmp (auto-cleaned)
+    env:
+      HF_HOME: /tmp/huggingface
+      TRANSFORMERS_CACHE: /tmp/huggingface
+      TORCH_HOME: /tmp/torch
+      PIP_NO_CACHE_DIR: "1"
+
     permissions:
       contents: write
 
@@ -25,6 +32,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # ----------------------------
+      # FREE DISK SPACE (MANDATORY)
+      # ----------------------------
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
 
       # ----------------------------
       # Python
@@ -42,7 +62,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --no-cache-dir -r requirements.txt
 
       # ----------------------------
       # Generate script (NO repeats)
@@ -53,7 +73,6 @@ jobs:
         run: |
           set -euo pipefail
           python script_generate.py
-          echo "Script generated."
 
       # ----------------------------
       # Fetch dark aesthetic images
@@ -64,7 +83,6 @@ jobs:
         run: |
           set -euo pipefail
           python image_fetch.py
-          echo "Images fetched."
 
       # ----------------------------
       # Generate narration (UNCHANGED)
@@ -75,45 +93,37 @@ jobs:
         run: |
           set -euo pipefail
           python tts_generate.py
-          echo "Narration generated."
 
       # ----------------------------
-      # Mix ambience (rain + wind + thunder)
+      # Mix ambience
       # ----------------------------
       - name: Mix ambience
         run: |
           set -euo pipefail
           python audio_mix.py
-          echo "Final audio ready."
 
       # ----------------------------
-      # Build subtitles (synced)
+      # Build subtitles
       # ----------------------------
       - name: Build subtitles
         run: |
           set -euo pipefail
           python subtitles_build.py
-          echo "Subtitles built."
 
       # ----------------------------
-      # Build video from frames
+      # Build video (frames only)
       # ----------------------------
-      - name: Build video (no audio)
+      - name: Build video
         run: |
           set -euo pipefail
           python video_build.py final_audio.wav
-          echo "Raw video created."
 
       # ----------------------------
-      # Merge audio + subtitles + video
+      # Merge audio + subtitles
       # ----------------------------
       - name: Final render
         run: |
           set -euo pipefail
-          if [ ! -f video_raw.mp4 ]; then exit 1; fi
-          if [ ! -f final_audio.wav ]; then exit 1; fi
-          if [ ! -f subtitles.ass ]; then exit 1; fi
-
           DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
 
           ffmpeg -y \
@@ -126,14 +136,11 @@ jobs:
             -c:a aac -b:a 192k \
             output.mp4
 
-          echo "Final video rendered."
-
       # ----------------------------
-      # Save used topics (NO repeats ever)
+      # Save used topics (NO repeats)
       # ----------------------------
       - name: Save used topics
         run: |
-          set -euo pipefail
           if [ -f used_topics.json ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -143,7 +150,7 @@ jobs:
           fi
 
       # ----------------------------
-      # Upload artifact
+      # Upload result
       # ----------------------------
       - name: Upload output
         uses: actions/upload-artifact@v4
