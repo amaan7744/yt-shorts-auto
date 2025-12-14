@@ -9,7 +9,8 @@ AMBIENCE = [
 ]
 
 def main():
-    narration = AudioSegment.from_wav("narration.wav")
+    narration = AudioSegment.from_wav("tts.wav")
+
     dur = len(narration)
 
     layers = []
