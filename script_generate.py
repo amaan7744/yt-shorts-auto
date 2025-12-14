@@ -1,138 +1,259 @@
 #!/usr/bin/env python3
-import os, json, hashlib, requests, random, sys, time
+import os
+import sys
+import json
+import time
+import random
+import hashlib
+import requests
 
-USED_FILE = "used_topics.json"
+# ---------------- CONFIG ---------------- #
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
+USED_TOPICS_FILE = "used_topics.json"
+SCRIPT_OUT = "script.txt"
 
-headers = {
-    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-    "Content-Type": "application/json"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+if not API_KEY:
+    print("[FATAL] DEEPSEEK_API_KEY missing", file=sys.stderr)
+    sys.exit(1)
+
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
 }
 
-def load_used():
-    if not os.path.exists(USED_FILE):
+# Wikipedia public-domain style list pages (safe)
+WIKI_SOURCES = [
+    "List_of_unsolved_murder_cases_in_the_United_States",
+    "List_of_missing_persons_cases",
+    "List_of_people_who_disappeared_mysteriously",
+]
+
+REDDIT_SOURCES = [
+    "truecrime",
+    "UnresolvedMysteries",
+    "ColdCases",
+]
+
+# ---------------- UTIL ---------------- #
+
+def load_used_topics():
+    if not os.path.exists(USED_TOPICS_FILE):
         return set()
     try:
-        data = json.load(open(USED_FILE,"r"))
-        return set(data)
-    except:
+        with open(USED_TOPICS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
         return set()
 
-def save_used(hashset):
-    json.dump(list(hashset), open(USED_FILE, "w"), indent=2)
+def save_used_topics(used):
+    with open(USED_TOPICS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(list(used)), f, indent=2)
 
-def hash_topic(text):
+def topic_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-def get_sources():
-    out = []
+# ---------------- FETCH CONTENT ---------------- #
 
-    # Wikipedia PD categories
-    wiki = [
-        "List_of_missing_persons_cases",
-        "List_of_unsolved_murder_cases_in_the_United_States",
-        "List_of_people_who_disappeared_mysteriously"
-    ]
+def fetch_content(source: str) -> str:
+    """
+    Always returns text.
+    Never throws.
+    """
 
-    for page in wiki:
-        out.append(f"wikipedia:{page}")
+    try:
+        # -------- Wikipedia -------- #
+        if source.startswith("wiki:"):
+            title = source.split(":", 1)[1]
+            url = (
+                "https://en.wikipedia.org/w/api.php"
+                "?action=query&prop=extracts&format=json"
+                f"&titles={title}&explaintext=1"
+            )
 
-    # Reddit (new)
-    out.append("reddit:truecrime")
-    out.append("reddit:darkmysteries")
+            r = requests.get(url, timeout=15)
+            if r.status_code != 200 or not r.text.strip():
+                raise RuntimeError("Wikipedia empty response")
 
-    # Google News
-    out.append("news:crime")
+            j = r.json()
+            pages = j.get("query", {}).get("pages", {})
+            page = next(iter(pages.values()), {})
+            text = page.get("extract", "").strip()
 
-    return out
+            if not text:
+                raise RuntimeError("Wikipedia extract empty")
 
-def pick_topic(used):
-    sources = get_sources()
-    random.shuffle(sources)
+            return text[:5000]
 
-    for src in sources:
-        if src in used:
-            continue
-        return src
-    return random.choice(sources)
+        # -------- Reddit -------- #
+        if source.startswith("reddit:"):
+            sub = source.split(":", 1)[1]
+            url = f"https://www.reddit.com/r/{sub}/new.json?limit=25"
 
-def fetch_content(src):
-    if src.startswith("wikipedia:"):
-        page = src.split(":",1)[1]
-        url = f"https://en.wikipedia.org/w/api.php?action=query&prop=extracts&format=json&titles={page}&explaintext=1"
-        j = requests.get(url).json()
-        text = list(j["query"]["pages"].values())[0].get("extract","")
-        return text[:5000]
+            r = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
 
-    if src.startswith("reddit:"):
-        sub = src.split(":",1)[1]
-        url = f"https://www.reddit.com/r/{sub}/new.json?limit=20"
-        j = requests.get(url, headers={"User-Agent":"Mozilla"}).json()
-        posts = j.get("data",{}).get("children",[])
-        bodies = []
-        for p in posts:
-            d = p["data"]
-            if d.get("selftext"):
-                bodies.append(d["selftext"])
-        return random.choice(bodies)[:5000] if bodies else "Crime case description."
+            if r.status_code != 200 or not r.text.strip():
+                raise RuntimeError("Reddit empty response")
 
-    if src.startswith("news:"):
-        url = "https://news.google.com/rss/search?q=crime&hl=en-US&gl=US&ceid=US:en"
-        import feedparser
-        feed = feedparser.parse(url)
-        if feed.entries:
-            return feed.entries[0].title + ". " + feed.entries[0].summary
-        return "Recent crime report."
+            j = r.json()
+            posts = j.get("data", {}).get("children", [])
 
-    return "Unknown source."
+            bodies = [
+                p["data"].get("selftext", "").strip()
+                for p in posts
+                if p.get("data", {}).get("selftext")
+                and len(p["data"]["selftext"].split()) > 80
+            ]
 
-def generate_script(topic_text):
+            if not bodies:
+                raise RuntimeError("No usable Reddit posts")
+
+            return random.choice(bodies)[:5000]
+
+        # -------- Google News RSS -------- #
+        if source == "news":
+            import feedparser
+
+            feed = feedparser.parse(
+                "https://news.google.com/rss/search"
+                "?q=unsolved+crime&hl=en-US&gl=US&ceid=US:en"
+            )
+
+            if not feed.entries:
+                raise RuntimeError("News feed empty")
+
+            entry = random.choice(feed.entries)
+            text = f"{entry.title}. {entry.get('summary', '')}".strip()
+
+            if not text:
+                raise RuntimeError("News entry empty")
+
+            return text[:3000]
+
+    except Exception as e:
+        print(f"[WARN] fetch_content failed ({source}): {e}", file=sys.stderr)
+
+    # -------- HARD FALLBACK -------- #
+    return (
+        "Investigators documented a routine evening that ended without explanation. "
+        "Limited evidence was recovered, timelines remained incomplete, and no clear "
+        "suspect was identified. The case remains open."
+    )
+
+# ---------------- SOURCE PICKER ---------------- #
+
+def pick_source(used_hashes):
+    candidates = []
+
+    for w in WIKI_SOURCES:
+        candidates.append(f"wiki:{w}")
+
+    for r in REDDIT_SOURCES:
+        candidates.append(f"reddit:{r}")
+
+    candidates.append("news")
+
+    random.shuffle(candidates)
+
+    for src in candidates:
+        if topic_hash(src) not in used_hashes:
+            return src
+
+    # If all sources used, still rotate content (never block)
+    return random.choice(candidates)
+
+# ---------------- SCRIPT GENERATION ---------------- #
+
+def generate_script(raw_text: str) -> str:
     prompt = f"""
-Write a 40-second true-crime documentary narration.
-Tone: calm, investigative, realistic.
-Rules:
-- Start with a simple quiet moment leading into the crime.
-- Use only factual-style wording.
-- Avoid drama, exaggeration, cinematic wording.
-- Use short clear sentences.
-- End with one concise unresolved question.
-- No repetition, no filler.
-- Do NOT mention Wikipedia, Reddit, or news.
+Write a 30–40 second true-crime short script.
 
-Topic material:
-{topic_text[:2000]}
+Style:
+- Calm
+- Neutral
+- Investigative
+- Professional documentary tone
+
+Rules:
+- Begin with a simple, quiet real-world moment.
+- Describe a disappearance or crime factually.
+- Mention only realistic clues (time, place, missing evidence).
+- No drama, no sensational language.
+- No emotional manipulation.
+- End with one concise unresolved question.
+- Do NOT reference Wikipedia, Reddit, news, or sources.
+- Do NOT repeat earlier examples.
+
+Source material:
+{raw_text[:2000]}
 """
 
     payload = {
         "model": "deepseek/deepseek-chat",
-        "messages": [
-            {"role":"user","content":prompt}
-        ],
-        "max_tokens": 300,
-        "temperature": 0.6
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.5,
+        "max_tokens": 320,
     }
 
-    r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-    j = r.json()
-    text = j["choices"][0]["message"]["content"]
-    return text.strip()
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                OPENROUTER_URL,
+                headers=HEADERS,
+                json=payload,
+                timeout=60,
+            )
+
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+
+            j = r.json()
+            text = j["choices"][0]["message"]["content"].strip()
+
+            words = len(text.split())
+            if 95 <= words <= 130:
+                return text
+
+            print(f"[WARN] Word count {words} out of range, retrying…", file=sys.stderr)
+            time.sleep(2)
+
+        except Exception as e:
+            print(f"[WARN] LLM attempt failed: {e}", file=sys.stderr)
+            time.sleep(2)
+
+    # FINAL fallback (never fail)
+    return (
+        "It began as a routine walk along a quiet road. "
+        "Witnesses later reported nothing unusual at the time. "
+        "A phone was recovered, but no clear timeline could be established. "
+        "No surveillance footage explained what happened next. "
+        "The investigation remains unresolved. "
+        "What was missed that night?"
+    )
+
+# ---------------- MAIN ---------------- #
 
 def main():
-    used = load_used()
-    chosen = pick_topic(used)
-    content = fetch_content(chosen)
-    script = generate_script(content)
+    used = load_used_topics()
 
-    # Save script
-    open("script.txt","w",encoding="utf-8").write(script)
+    source = pick_source(used)
+    raw = fetch_content(source)
+    script = generate_script(raw)
 
-    # Mark topic as used
-    used.add(hash_topic(chosen))
-    save_used(used)
+    with open(SCRIPT_OUT, "w", encoding="utf-8") as f:
+        f.write(script)
 
-    print("[SCRIPT] Generated successfully.")
+    used.add(topic_hash(source))
+    save_used_topics(used)
+
+    print("[OK] Script generated successfully.")
+    print(f"[INFO] Source used: {source}")
 
 if __name__ == "__main__":
     main()
