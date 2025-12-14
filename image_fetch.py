@@ -1,113 +1,71 @@
-#!/usr/bin/env python
-"""
-image_fetch.py
+#!/usr/bin/env python3
+import os, requests, random
+from PIL import Image
+from io import BytesIO
 
-Usage:
-    python image_fetch.py
+FRAME_DIR = "frames"
+PEXELS_KEY = os.getenv("PEXELS_KEY")
 
-Behavior:
-- Reads script_meta.json (if present) to get:
-    - wiki_title (for Wikipedia PD images)
-    - pexels_keywords (for Pexels search)
-- If script_meta.json is missing or incomplete, falls back to generic
-  crime/mystery keywords.
-- Downloads:
-    1) Public-domain images from Wikipedia/Wikimedia for the case (if possible)
-    2) Portrait crime/night ambience from Pexels
-- Saves all images into ./frames/ as:
-    frames/img_001.jpg, frames/img_002.jpg, ...
+DARK_KEYWORDS = [
+    "dark alley at night",
+    "empty street rain night",
+    "silhouette walking night",
+    "misty road night",
+    "police lights wet asphalt",
+    "foggy urban street night",
+    "shadowy figure streetlamp"
+]
 
-These are then used by video_build.py to create the final vertical video.
-"""
+os.makedirs(FRAME_DIR, exist_ok=True)
 
-import json
-import os
-import pathlib
-import random
-from typing import List, Optional
-
-import requests
-
-FRAMES_DIR = pathlib.Path("frames")
-SCRIPT_META_PATH = pathlib.Path("script_meta.json")
-
-# How many images we aim for in total
-TARGET_MIN_IMAGES = 6
-TARGET_MAX_IMAGES = 12
-
-
-def log(msg: str) -> None:
-    print(f"[IMG] {msg}", flush=True)
-
-
-def safe_get(d: dict, key: str, default=None):
-    v = d.get(key)
-    return v if v is not None else default
-
-
-# ------------------------- Wikipedia helpers ------------------------- #
-
-def wiki_get_pageid(title: str) -> Optional[int]:
-    if not title:
+def download_image(url):
+    try:
+        r = requests.get(url, timeout=10)
+        img = Image.open(BytesIO(r.content)).convert("RGB")
+        return img
+    except:
         return None
 
-    log(f"Wikipedia page lookup: {title}")
-    try:
-        resp = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "format": "json",
-                "titles": title,
-            },
-            timeout=20,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        log(f"Wikipedia title lookup error: {e}")
-        return None
+def pexels_search():
+    if not PEXELS_KEY:
+        return []
 
-    data = resp.json()
-    pages = data.get("query", {}).get("pages", {})
-    for pid, page in pages.items():
-        try:
-            pid_int = int(pid)
-        except ValueError:
-            continue
-        if pid_int < 0:
-            continue
-        return pid_int
-    return None
+    kw = random.choice(DARK_KEYWORDS)
+    url = f"https://api.pexels.com/v1/search?query={kw}&orientation=portrait&size=large&per_page=10"
+    r = requests.get(url, headers={"Authorization":PEXELS_KEY})
+    items = r.json().get("photos",[])
+    urls = [p["src"]["large2x"] for p in items if "src" in p]
+    return urls
 
+def vertical(img):
+    target = (1080,1920)
+    img.thumbnail((1200,2200), Image.Resampling.LANCZOS)
+    w,h = img.size
+    bg = Image.new("RGB", target, (0,0,0))
+    bg.paste(img, ((1080-w)//2, (1920-h)//2))
+    return bg
 
-def wiki_fetch_pd_images(title: str, max_images: int = 4) -> List[pathlib.Path]:
-    """
-    Fetch a few public-domain images from Wikimedia via Wikipedia.
-    Saves them as JPEG files in FRAMES_DIR.
+def main():
+    urls = []
 
-    Only uses images whose metadata clearly shows 'Public domain'.
-    """
-    saved: List[pathlib.Path] = []
-    if not title:
-        log("No wiki_title provided; skipping Wikipedia PD images.")
-        return saved
+    # Fetch from Pexels
+    urls.extend(pexels_search())
 
-    pageid = wiki_get_pageid(title)
-    if not pageid:
-        log("Could not resolve Wikipedia page ID; skipping Wikipedia images.")
-        return saved
+    # Pick 10–15 images total
+    urls = list(dict.fromkeys(urls))[:15]
 
-    # Get images attached to the page
-    try:
-        resp = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "format": "json",
-                "pageids": pageid,
-                "prop": "images",
-                "imlimit": "20",
-            },
+    idx = 1
+    for u in urls:
+        img = download_image(u)
+        if img:
+            v = vertical(img)
+            v.save(f"{FRAME_DIR}/img_{idx:03d}.jpg", quality=92)
+            idx += 1
+
+    print("[IMAGES] Done.")
+
+if __name__ == "__main__":
+    main()
             timeout=20,
         )
         resp.raise_for_status()
