@@ -2,11 +2,9 @@
 """
 video_build.py — stable vertical video builder (FINAL)
 
-Creates output.mp4 with:
-- images from ./frames/
-- audio from final_audio.wav
-- burned-in subtitles from subs.srt
-- smooth crossfades
+- Images from ./frames/
+- Audio from final_audio.wav
+- Burned-in subtitles from subs.srt
 """
 
 import os
@@ -19,6 +17,7 @@ from moviepy.editor import (
     AudioFileClip,
     CompositeVideoClip,
 )
+from moviepy.video.tools.subtitles import SubtitlesClip
 from pydub import AudioSegment
 
 FRAMES_DIR = "frames"
@@ -79,6 +78,20 @@ def make_clip(img_path: str, dur: float) -> ImageClip:
     return clip.set_duration(dur)
 
 
+def subtitle_generator(txt):
+    # White text with soft shadow effect
+    return TextClip(
+        txt,
+        font="Arial-Bold",
+        fontsize=42,
+        color="white",
+        stroke_color="black",
+        stroke_width=2,
+        method="caption",
+        size=(TARGET_W - 100, None),
+    )
+
+
 def main() -> None:
     audio_path = sys.argv[1] if len(sys.argv) > 1 else "final_audio.wav"
 
@@ -94,9 +107,6 @@ def main() -> None:
         log(f"Frame {idx}/{n} — {img}")
         clips.append(make_clip(img, per))
 
-    if not clips:
-        raise SystemExit("[VID] No clips created")
-
     video = concatenate_videoclips(
         clips,
         method="compose",
@@ -106,15 +116,18 @@ def main() -> None:
     audio = AudioFileClip(audio_path)
     video = video.set_audio(audio)
 
-    # Burn subtitles if present
+    layers = [video]
+
     if os.path.isfile(SUBS_FILE):
-        log("Adding subtitles")
-        video = CompositeVideoClip(
-            [video]
-        ).subclip(0, audio.duration).with_subtitles(SUBS_FILE)
+        log("Burning subtitles")
+        subs = SubtitlesClip(SUBS_FILE, subtitle_generator)
+        subs = subs.set_position(("center", "bottom"))
+        layers.append(subs)
+
+    final = CompositeVideoClip(layers).set_duration(audio.duration)
 
     log(f"Rendering {OUTPUT_VIDEO} at {FPS} fps...")
-    video.write_videofile(
+    final.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
         codec="libx264",
