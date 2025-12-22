@@ -1,47 +1,22 @@
-#!/usr/bin/env python3
-import re
 from pydub import AudioSegment
 
-def format_time(ms):
-    s = ms//1000
-    cs = (ms%1000)//10
-    m = s//60
-    s = s%60
-    return f"0:{m:02d}:{s:02d}.{cs:02d}"
+audio = AudioSegment.from_wav("final_audio.wav")
+script = open("script.txt", encoding="utf-8").read()
 
-def main():
-    script = open("script.txt","r",encoding="utf-8").read().strip()
-    audio = AudioSegment.from_wav("final_audio.wav")
-    total = len(audio)
+lines = [l.strip() for l in script.split(". ") if l.strip()]
+per = audio.duration_seconds / len(lines)
 
-    sentences = [s.strip() for s in re.split(r"[.!?]\s+", script) if s.strip()]
-    chunk = total // len(sentences)
+def fmt(t):
+    s = int(t)
+    ms = int((t - s) * 1000)
+    return f"00:00:{s:02d},{ms:03d}"
 
-    lines = []
-    cur = 0
-    for s in sentences:
-        start = format_time(cur)
-        end   = format_time(min(cur+chunk, total-100))
-        cur += chunk
-        lines.append((start,end,s))
+with open("subs.srt", "w", encoding="utf-8") as f:
+    t = 0.0
+    for i, line in enumerate(lines, 1):
+        f.write(f"{i}\n")
+        f.write(f"{fmt(t)} --> {fmt(t+per)}\n")
+        f.write(line + "\n\n")
+        t += per
 
-    out = []
-    out.append("[Script Info]")
-    out.append("PlayResX:1080")
-    out.append("PlayResY:1920")
-    out.append("")
-    out.append("[V4+ Styles]")
-    out.append("Style: sub,Arial,46,&H00FFFFFF,&H00000000,&H00101010,&H32000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,80,1")
-    out.append("")
-    out.append("[Events]")
-    out.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
-
-    for st,en,txt in lines:
-        out.append(f"Dialogue: 0,{st},{en},sub,,0,0,0,,{txt}")
-
-    open("subtitles.ass","w",encoding="utf-8").write("\n".join(out))
-    print("[SUBS] subtitles.ass created.")
-
-if __name__ == "__main__":
-    main()
-
+print("[OK] Subtitles generated")
