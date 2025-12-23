@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
-    # 🔴 CRITICAL: force ML caches into /tmp (auto-cleaned)
     env:
       HF_HOME: /tmp/huggingface
       TRANSFORMERS_CACHE: /tmp/huggingface
@@ -34,7 +33,7 @@ jobs:
           fetch-depth: 0
 
       # ----------------------------
-      # FREE DISK SPACE (MANDATORY)
+      # Free disk space (CRITICAL)
       # ----------------------------
       - name: Free disk space
         run: |
@@ -55,7 +54,7 @@ jobs:
           python-version: "3.10"
 
       # ----------------------------
-      # System deps
+      # System dependencies
       # ----------------------------
       - name: Install system dependencies
         run: |
@@ -95,7 +94,7 @@ jobs:
           python tts_generate.py
 
       # ----------------------------
-      # Mix ambience
+      # Mix ambience (safe auto-discovery)
       # ----------------------------
       - name: Mix ambience
         run: |
@@ -103,7 +102,7 @@ jobs:
           python audio_mix.py
 
       # ----------------------------
-      # Build subtitles
+      # Build ASS subtitles
       # ----------------------------
       - name: Build subtitles
         run: |
@@ -111,29 +110,32 @@ jobs:
           python subtitles_build.py
 
       # ----------------------------
-      # Build video (frames only)
+      # Build raw video (WITH audio)
       # ----------------------------
-      - name: Build video
+      - name: Build raw video
         run: |
           set -euo pipefail
           python video_build.py final_audio.wav
 
       # ----------------------------
-      # Merge audio + subtitles
+      # Burn subtitles (FINAL render)
       # ----------------------------
       - name: Final render
         run: |
           set -euo pipefail
-          DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
+
+          echo "Workspace contents:"
+          ls -la
+
+          mkdir -p .
 
           ffmpeg -y \
             -i video_raw.mp4 \
-            -i final_audio.wav \
-            -vf "subtitles=subtitles.ass" \
-            -t "$DURATION" -shortest \
-            -map 0:v -map 1:a \
-            -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p \
-            -c:a aac -b:a 192k \
+            -vf "ass=subs.ass" \
+            -c:v libx264 \
+            -preset veryfast \
+            -crf 22 \
+            -c:a copy \
             output.mp4
 
       # ----------------------------
@@ -159,5 +161,4 @@ jobs:
           path: |
             output.mp4
             script.txt
-            subtitles.ass
-
+            subs.ass
