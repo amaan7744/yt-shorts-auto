@@ -1,28 +1,18 @@
 #!/usr/bin/env python
 """
-video_build.py — stable vertical video builder (FINAL)
-
-- Images from ./frames/
-- Audio from final_audio.wav
-- Burned-in subtitles from subs.srt
+video_build.py — stable vertical video builder
+NO subtitles here. Subtitles are burned later with ffmpeg.
 """
 
 import os
 import sys
 from typing import List
 
-from moviepy.editor import (
-    ImageClip,
-    concatenate_videoclips,
-    AudioFileClip,
-    CompositeVideoClip,
-)
-from moviepy.video.tools.subtitles import SubtitlesClip
+from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip
 from pydub import AudioSegment
 
 FRAMES_DIR = "frames"
-OUTPUT_VIDEO = "output.mp4"
-SUBS_FILE = "subs.srt"
+OUTPUT_VIDEO = "video_raw.mp4"
 
 TARGET_W, TARGET_H = 1080, 1920
 FPS = 30
@@ -78,20 +68,6 @@ def make_clip(img_path: str, dur: float) -> ImageClip:
     return clip.set_duration(dur)
 
 
-def subtitle_generator(txt):
-    # White text with soft shadow effect
-    return TextClip(
-        txt,
-        font="Arial-Bold",
-        fontsize=42,
-        color="white",
-        stroke_color="black",
-        stroke_width=2,
-        method="caption",
-        size=(TARGET_W - 100, None),
-    )
-
-
 def main() -> None:
     audio_path = sys.argv[1] if len(sys.argv) > 1 else "final_audio.wav"
 
@@ -116,18 +92,8 @@ def main() -> None:
     audio = AudioFileClip(audio_path)
     video = video.set_audio(audio)
 
-    layers = [video]
-
-    if os.path.isfile(SUBS_FILE):
-        log("Burning subtitles")
-        subs = SubtitlesClip(SUBS_FILE, subtitle_generator)
-        subs = subs.set_position(("center", "bottom"))
-        layers.append(subs)
-
-    final = CompositeVideoClip(layers).set_duration(audio.duration)
-
     log(f"Rendering {OUTPUT_VIDEO} at {FPS} fps...")
-    final.write_videofile(
+    video.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
         codec="libx264",
@@ -138,7 +104,7 @@ def main() -> None:
         logger=None,
     )
 
-    log("Done: output.mp4")
+    log("Done:", OUTPUT_VIDEO)
 
 
 if __name__ == "__main__":
