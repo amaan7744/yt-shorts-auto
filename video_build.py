@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 """
 video_build.py — stable vertical video builder
-NO subtitles here. Subtitles are burned later with ffmpeg.
+
+- Reads images from ./frames/
+- Attaches audio from final_audio.wav
+- Outputs video_raw.mp4
+- Subtitles are burned later via FFmpeg (ASS)
 """
 
 import os
@@ -14,8 +18,10 @@ from pydub import AudioSegment
 FRAMES_DIR = "frames"
 OUTPUT_VIDEO = "video_raw.mp4"
 
-TARGET_W, TARGET_H = 1080, 1920
+TARGET_W = 1080
+TARGET_H = 1920
 FPS = 30
+
 MIN_CLIP = 3.0
 MAX_CLIP = 7.0
 CROSSFADE = 0.25
@@ -28,29 +34,32 @@ def log(msg: str) -> None:
 def audio_duration(path: str) -> float:
     if not os.path.isfile(path):
         raise SystemExit(f"[VID] Audio file not found: {path}")
+
     audio = AudioSegment.from_file(path)
-    dur = len(audio) / 1000.0
-    log(f"Audio duration: {dur:.2f} s")
-    return max(dur, MIN_CLIP)
+    duration = len(audio) / 1000.0
+
+    log(f"Audio duration: {duration:.2f}s")
+    return max(duration, MIN_CLIP)
 
 
 def list_frames() -> List[str]:
     if not os.path.isdir(FRAMES_DIR):
         raise SystemExit(f"[VID] Frames directory not found: {FRAMES_DIR}")
 
-    imgs = [
+    frames = [
         os.path.join(FRAMES_DIR, f)
         for f in sorted(os.listdir(FRAMES_DIR))
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     ]
 
-    if not imgs:
-        raise SystemExit("[VID] No images found")
-    log(f"Found {len(imgs)} frames.")
-    return imgs
+    if not frames:
+        raise SystemExit("[VID] No frame images found")
+
+    log(f"Found {len(frames)} frames")
+    return frames
 
 
-def make_clip(img_path: str, dur: float) -> ImageClip:
+def make_clip(img_path: str, duration: float) -> ImageClip:
     clip = ImageClip(img_path)
     w, h = clip.size
 
@@ -65,23 +74,24 @@ def make_clip(img_path: str, dur: float) -> ImageClip:
         height=TARGET_H,
     )
 
-    return clip.set_duration(dur)
+    return clip.set_duration(duration)
 
 
 def main() -> None:
     audio_path = sys.argv[1] if len(sys.argv) > 1 else "final_audio.wav"
 
-    total = audio_duration(audio_path)
+    total_duration = audio_duration(audio_path)
     frames = list_frames()
-    n = len(frames)
+    frame_count = len(frames)
 
-    per = max(MIN_CLIP, min(MAX_CLIP, total / n))
-    log(f"Per-image duration: {per:.2f} s")
+    per_image = max(MIN_CLIP, min(MAX_CLIP, total_duration / frame_count))
+    log(f"Per-image duration: {per_image:.2f}s")
 
     clips: List[ImageClip] = []
+
     for idx, img in enumerate(frames, 1):
-        log(f"Frame {idx}/{n} — {img}")
-        clips.append(make_clip(img, per))
+        log(f"Processing frame {idx}/{frame_count}: {img}")
+        clips.append(make_clip(img, per_image))
 
     video = concatenate_videoclips(
         clips,
@@ -92,7 +102,7 @@ def main() -> None:
     audio = AudioFileClip(audio_path)
     video = video.set_audio(audio)
 
-    log(f"Rendering {OUTPUT_VIDEO} at {FPS} fps...")
+    log(f"Rendering {OUTPUT_VIDEO} ({FPS} fps)")
     video.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
@@ -104,7 +114,7 @@ def main() -> None:
         logger=None,
     )
 
-    log("Done:", OUTPUT_VIDEO)
+    log(f"Done: {OUTPUT_VIDEO}")
 
 
 if __name__ == "__main__":
