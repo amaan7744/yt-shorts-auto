@@ -4,6 +4,7 @@ import hashlib
 import random
 import time
 import requests
+import re
 
 OUT_SCRIPT = "script.txt"
 USED_TOPICS_FILE = "used_topics.json"
@@ -17,10 +18,10 @@ HEADERS = {
 }
 
 NEWS_QUERIES = [
-    "unsolved crime investigation",
-    "missing person case",
-    "cold case reopened",
-    "unidentified body found",
+    "unsolved cold case mystery details",
+    "missing person forensic evidence",
+    "unidentified remains investigation 2024",
+    "police appeal cold case files"
 ]
 
 def load_used():
@@ -34,75 +35,99 @@ def save_used(used):
 def hash_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+def clean_rss_text(xml_text):
+    """Extracts just titles and descriptions from RSS to give the AI clean data."""
+    titles = re.findall(r'<title>(.*?)</title>', xml_text)
+    descriptions = re.findall(r'<description>(.*?)</description>', xml_text)
+    combined = " ".join(titles[1:5] + descriptions[1:5]) # Skip first item (channel title)
+    return combined[:2000]
+
 def fetch_news_text():
     q = random.choice(NEWS_QUERIES)
     url = f"https://news.google.com/rss/search?q={q}"
-    r = requests.get(url, timeout=15)
-    if r.status_code != 200 or not r.text:
-        return None
-    return r.text[:3000]
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200 and r.text:
+            return clean_rss_text(r.text)
+    except Exception as e:
+        print(f"Error fetching news: {e}")
+    return None
 
-def generate_script(raw):
+def generate_script(raw_context):
+    # This prompt uses 'Chain of Thought' to help the AI structure the narrative
     prompt = f"""
-Write a 40-second true-crime documentary script.
+You are a professional true-crime documentary scriptwriter. 
+Create a 40-60 second script based on the source material provided.
 
-Rules:
-- Mention a person, year, and location
-- Calm, investigative tone
-- No sensational language
-- No supernatural elements
-- End with unresolved facts
-- One short hook at the start
+[STRUCTURE]
+1. HOOK: A gripping first sentence that sets the stakes.
+2. CONTEXT: Name, year, and specific location.
+3. THE MYSTERY: 2-3 sentences explaining what went wrong or what was found.
+4. THE INVESTIGATION: Mention a specific piece of evidence or a dead end.
+5. OUTRO: A haunting question or an unresolved fact.
 
-Source material:
-{raw}
+[STYLE RULES]
+- Tone: Somber, objective, and cinematic.
+- Pacing: Use short, punchy sentences.
+- Vocabulary: Use descriptive, atmospheric words (e.g., "disturbed," "silent," "fragmented").
+- NO clichés like "In a world where..." or "Little did they know..."
+- Word count: Strict 110-140 words.
+
+[SOURCE MATERIAL]
+{raw_context}
 """
 
     payload = {
         "model": "deepseek/deepseek-chat",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
-        "max_tokens": 350,
+        "messages": [
+            {"role": "system", "content": "You are a specialized true-crime scriptwriter."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7, # Increased slightly for better creativity
+        "max_tokens": 500,
     }
 
     for _ in range(3):
-        r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
-        if r.status_code == 200:
-            text = r.json()["choices"][0]["message"]["content"].strip()
-            wc = len(text.split())
-            if 95 <= wc <= 130:
-                return text
+        try:
+            r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
+            if r.status_code == 200:
+                result = r.json()["choices"][0]["message"]["content"].strip()
+                # Clean up any AI 'chatter' (like "Here is your script:")
+                if "---" in result: result = result.split("---")[-1]
+                return result
+        except Exception as e:
+            print(f"API Error: {e}")
         time.sleep(2)
 
-    return (
-        "In 2015, investigators examined the disappearance of a man last seen "
-        "near an industrial road outside the city. Records were incomplete, "
-        "and surveillance footage was missing. The timeline remains unclear. "
-        "What detail was never accounted for?"
-    )
+    return "Error generating script. Please check API settings."
 
 def main():
     used = load_used()
+    print("Searching for new crime cases...")
 
     for _ in range(5):
         raw = fetch_news_text()
-        if not raw:
+        if not raw or len(raw) < 100:
             continue
 
-        h = hash_text(raw)
+        h = hash_text(raw[:100]) # Hash the start of the news to avoid repeats
         if h in used:
             continue
 
         script = generate_script(raw)
-        open(OUT_SCRIPT, "w", encoding="utf-8").write(script)
+        with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
+            f.write(script)
 
         used.add(h)
         save_used(used)
 
-        print("[OK] Script generated")
+        print("-" * 30)
+        print("SCRIPT GENERATED SUCCESSFULLY:")
+        print(script)
+        print("-" * 30)
         return
 
-    raise RuntimeError("No new topics available")
+    print("Could not find new or unique topics.")
 
 if __name__ == "__main__":
     main()
