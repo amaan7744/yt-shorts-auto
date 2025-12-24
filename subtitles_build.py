@@ -5,16 +5,18 @@ AUDIO_FILE = "final_audio.wav"
 SCRIPT_FILE = "script.txt"
 OUT_FILE = "subs.ass"
 
+# Load audio to get exact duration
 audio = AudioSegment.from_wav(AUDIO_FILE)
-duration = audio.duration_seconds
+total_duration = audio.duration_seconds
 
+# Load and clean text
 text = open(SCRIPT_FILE, encoding="utf-8").read().strip()
-
-# Split into short, readable subtitle lines
+# Split by punctuation but keep the punctuation with the sentence
 sentences = re.split(r'(?<=[.!?])\s+', text)
 sentences = [s.strip() for s in sentences if s.strip()]
 
-per = duration / len(sentences)
+# Calculate total characters to determine timing weight
+total_chars = sum(len(s) for s in sentences)
 
 def ass_time(t):
     h = int(t // 3600)
@@ -22,40 +24,40 @@ def ass_time(t):
     s = t % 60
     return f"{h}:{m:02d}:{s:05.2f}"
 
-lines = []
+lines = [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    "PlayResX: 1080",
+    "PlayResY: 1920",
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    # Improved Style: Larger font, Bold, Yellow Primary color for better visibility
+    "Style: Default,Arial,65,&H0000FFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,2,2,40,40,250,1",
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Text"
+]
 
-lines.append("[Script Info]")
-lines.append("ScriptType: v4.00+")
-lines.append("PlayResX: 1080")
-lines.append("PlayResY: 1920")
-lines.append("ScaledBorderAndShadow: yes")
-lines.append("")
-
-lines.append("[V4+ Styles]")
-lines.append(
-    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
-    "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
-    "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
-    "Alignment, MarginL, MarginR, MarginV, Encoding"
-)
-lines.append(
-    "Style: Default,Arial,44,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,"
-    "0,0,0,0,100,100,0,0,1,2,1,2,40,40,120,1"
-)
-lines.append("")
-
-lines.append("[Events]")
-lines.append("Format: Layer, Start, End, Style, Text")
-
-t = 0.0
+current_time = 0.0
 for sentence in sentences:
-    start = ass_time(t)
-    end = ass_time(t + per)
-    clean = sentence.replace("{", "").replace("}", "").replace("\n", " ")
-    lines.append(f"Dialogue: 0,{start},{end},Default,{clean}")
-    t += per
+    # Calculate duration based on how many characters are in this sentence
+    char_count = len(sentence)
+    # duration = (sentence_chars / total_chars) * total_audio_time
+    sentence_duration = (char_count / total_chars) * total_duration
+    
+    start = ass_time(current_time)
+    end = ass_time(current_time + sentence_duration)
+    
+    # Clean up text
+    clean_text = sentence.replace("{", "").replace("}", "").replace("\n", " ")
+    
+    lines.append(f"Dialogue: 0,{start},{end},Default,{clean_text}")
+    
+    current_time += sentence_duration
 
-open(OUT_FILE, "w", encoding="utf-8").write("\n".join(lines))
+with open(OUT_FILE, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines))
 
-print("[SUBS] Valid ASS subtitles written:", OUT_FILE)
-
+print(f"[SUBS] Weighted subtitles written to {OUT_FILE}")
