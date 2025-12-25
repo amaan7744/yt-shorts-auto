@@ -1,9 +1,9 @@
-name: Auto YouTube Shorts – Dark Crime (Full Automation)
+name: Auto YouTube Shorts – Dark Crime (Stable)
 
 on:
   workflow_dispatch:
   schedule:
-    # High-traffic global Shorts windows (5x/day)
+    # 5 high-traffic global Shorts windows
     - cron: "0 3,7,11,15,19 * * *"
 
 concurrency:
@@ -13,7 +13,7 @@ concurrency:
 jobs:
   build-and-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     permissions:
       contents: write
@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 0
 
       # ----------------------------------------------------
-      # FREE DISK SPACE (CRITICAL)
+      # FREE DISK SPACE (MANDATORY)
       # ----------------------------------------------------
       - name: Free disk space
         run: |
@@ -65,7 +65,7 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
 
       # ----------------------------------------------------
-      # SCRIPT (NO REPEATS)
+      # GENERATE SCRIPT
       # ----------------------------------------------------
       - name: Generate script
         env:
@@ -75,7 +75,23 @@ jobs:
           python script_generate.py
 
       # ----------------------------------------------------
-      # DARK IMAGES ONLY
+      # VALIDATE SCRIPT (CRITICAL FIX)
+      # ----------------------------------------------------
+      - name: Validate script.txt
+        run: |
+          set -euo pipefail
+          if [ ! -f script.txt ]; then
+            echo "❌ ERROR: script.txt was not created"
+            exit 1
+          fi
+          echo "✅ script.txt exists"
+          echo "Word count:"
+          wc -w script.txt
+          echo "Preview:"
+          sed -n '1,5p' script.txt
+
+      # ----------------------------------------------------
+      # FETCH DARK IMAGES
       # ----------------------------------------------------
       - name: Fetch dark images
         env:
@@ -85,7 +101,24 @@ jobs:
           python image_fetch.py
 
       # ----------------------------------------------------
-      # TTS (UNCHANGED – ALREADY STABLE)
+      # VALIDATE FRAMES
+      # ----------------------------------------------------
+      - name: Validate frames
+        run: |
+          set -euo pipefail
+          if [ ! -d frames ]; then
+            echo "❌ ERROR: frames directory missing"
+            exit 1
+          fi
+          COUNT=$(ls frames | wc -l)
+          if [ "$COUNT" -lt 3 ]; then
+            echo "❌ ERROR: Not enough frames ($COUNT)"
+            exit 1
+          fi
+          echo "✅ Found $COUNT frames"
+
+      # ----------------------------------------------------
+      # TTS (READS script.txt)
       # ----------------------------------------------------
       - name: Generate narration
         env:
@@ -95,7 +128,19 @@ jobs:
           python tts_generate.py
 
       # ----------------------------------------------------
-      # AMBIENCE MIX
+      # VALIDATE TTS OUTPUT
+      # ----------------------------------------------------
+      - name: Validate narration
+        run: |
+          set -euo pipefail
+          if [ ! -f narration.wav ]; then
+            echo "❌ ERROR: narration.wav missing"
+            exit 1
+          fi
+          ffprobe -v error narration.wav
+
+      # ----------------------------------------------------
+      # MIX AMBIENCE
       # ----------------------------------------------------
       - name: Mix ambience
         run: |
@@ -103,20 +148,48 @@ jobs:
           python audio_mix.py
 
       # ----------------------------------------------------
-      # SUBTITLES (SYNCED)
+      # VALIDATE FINAL AUDIO
+      # ----------------------------------------------------
+      - name: Validate final audio
+        run: |
+          set -euo pipefail
+          if [ ! -f final_audio.wav ]; then
+            echo "❌ ERROR: final_audio.wav missing"
+            exit 1
+          fi
+          ffprobe -v error final_audio.wav
+
+      # ----------------------------------------------------
+      # BUILD SUBTITLES
       # ----------------------------------------------------
       - name: Build subtitles
         run: |
           set -euo pipefail
           python subtitles_build.py
 
+      - name: Validate subtitles
+        run: |
+          set -euo pipefail
+          if [ ! -f subs.ass ]; then
+            echo "❌ ERROR: subs.ass missing"
+            exit 1
+          fi
+
       # ----------------------------------------------------
-      # VIDEO (FRAMES + AUDIO)
+      # BUILD VIDEO (FRAMES + AUDIO)
       # ----------------------------------------------------
-      - name: Build video
+      - name: Build raw video
         run: |
           set -euo pipefail
           python video_build.py final_audio.wav
+
+      - name: Validate raw video
+        run: |
+          set -euo pipefail
+          if [ ! -f video_raw.mp4 ]; then
+            echo "❌ ERROR: video_raw.mp4 missing"
+            exit 1
+          fi
 
       # ----------------------------------------------------
       # FINAL RENDER (BURN SUBS)
@@ -134,24 +207,17 @@ jobs:
             -c:a copy \
             output.mp4
 
-      # ----------------------------------------------------
-      # YOUTUBE UPLOAD (SEO + THUMBNAIL)
-      # ----------------------------------------------------
-      - name: Upload to YouTube
-        env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
+      - name: Validate output
         run: |
           set -euo pipefail
-          python youtube_upload.py \
-            --video output.mp4 \
-            --thumbnail thumbnail.jpg \
-            --script script.txt
+          if [ ! -f output.mp4 ]; then
+            echo "❌ ERROR: output.mp4 missing"
+            exit 1
+          fi
+          ffprobe -v error output.mp4
 
       # ----------------------------------------------------
-      # SAVE USED TOPICS (NO REPEATS EVER)
+      # SAVE USED TOPICS
       # ----------------------------------------------------
       - name: Save used topics
         run: |
@@ -162,3 +228,15 @@ jobs:
             git commit -m "Update used topics" || true
             git push || true
           fi
+
+      # ----------------------------------------------------
+      # ARTIFACT (DEBUG / BACKUP)
+      # ----------------------------------------------------
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short
+          path: |
+            output.mp4
+            script.txt
+            subs.ass
