@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import json
 import hashlib
@@ -18,72 +19,77 @@ HEADERS = {
 }
 
 NEWS_QUERIES = [
-    "unsolved cold case mystery details",
-    "missing person forensic evidence",
-    "unidentified remains investigation 2024",
-    "police appeal cold case files"
+    "unsolved cold case investigation",
+    "missing person last seen night",
+    "unidentified body police case",
+    "cold case evidence police appeal"
 ]
 
+# ---------------- FALLBACK (GUARANTEED) ----------------
+FALLBACK_SCRIPT = """It was just after midnight on a quiet road in Ohio.
+Thirty-four-year-old Mark Jensen was walking home from work.
+He never arrived.
+His phone last connected to a nearby cell tower.
+No calls were made after that moment.
+Police found no witnesses and no usable camera footage.
+There were no signs of a struggle.
+The case remains unsolved.
+What happened during that short walk home?"""
+
+# ---------------- HELPERS ----------------
 def load_used():
     if os.path.exists(USED_TOPICS_FILE):
-        return set(json.load(open(USED_TOPICS_FILE, "r")))
+        try:
+            return set(json.load(open(USED_TOPICS_FILE, "r", encoding="utf-8")))
+        except Exception:
+            return set()
     return set()
 
 def save_used(used):
-    json.dump(sorted(list(used)), open(USED_TOPICS_FILE, "w"), indent=2)
+    with open(USED_TOPICS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(list(used)), f, indent=2)
 
 def hash_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-def clean_rss_text(xml_text):
-    """Extracts just titles and descriptions from RSS to give the AI clean data."""
-    titles = re.findall(r'<title>(.*?)</title>', xml_text)
-    descriptions = re.findall(r'<description>(.*?)</description>', xml_text)
-    combined = " ".join(titles[1:5] + descriptions[1:5]) # Skip first item (channel title)
-    return combined[:2000]
+def clean_rss_text(xml):
+    titles = re.findall(r"<title>(.*?)</title>", xml)
+    desc = re.findall(r"<description>(.*?)</description>", xml)
+    return " ".join(titles[1:4] + desc[1:4])[:2000]
 
-def fetch_news_text():
+def fetch_news():
     q = random.choice(NEWS_QUERIES)
     url = f"https://news.google.com/rss/search?q={q}"
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200 and r.text:
             return clean_rss_text(r.text)
-    except Exception as e:
-        print(f"Error fetching news: {e}")
+    except Exception:
+        pass
     return None
 
-def generate_script(raw_context):
-    # This prompt uses 'Chain of Thought' to help the AI structure the narrative
+def generate_script(context):
     prompt = f"""
-You are a professional true-crime documentary scriptwriter. 
-Create a 40-60 second script based on the source material provided.
+Write a calm, factual true-crime narration for a 40-second YouTube Short.
 
-[STRUCTURE]
-1. HOOK: A gripping first sentence that sets the stakes.
-2. CONTEXT: Name, year, and specific location.
-3. THE MYSTERY: 2-3 sentences explaining what went wrong or what was found.
-4. THE INVESTIGATION: Mention a specific piece of evidence or a dead end.
-5. OUTRO: A haunting question or an unresolved fact.
+Rules:
+- Mention a real person, place, and time
+- Neutral investigative tone
+- No drama, no exaggeration
+- 110–140 words
+- End with one unresolved question
 
-[STYLE RULES]
-- Tone: Somber, objective, and cinematic.
-- Pacing: Use short, punchy sentences.
-- Vocabulary: Use descriptive, atmospheric words (e.g., "disturbed," "silent," "fragmented").
-- NO clichés like "In a world where..." or "Little did they know..."
-- Word count: Strict 110-140 words.
-
-[SOURCE MATERIAL]
-{raw_context}
+Context:
+{context}
 """
 
     payload = {
         "model": "deepseek/deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a specialized true-crime scriptwriter."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "You write factual true-crime documentaries."},
+            {"role": "user", "content": prompt},
         ],
-        "temperature": 0.7, # Increased slightly for better creativity
+        "temperature": 0.7,
         "max_tokens": 500,
     }
 
@@ -91,43 +97,41 @@ Create a 40-60 second script based on the source material provided.
         try:
             r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
             if r.status_code == 200:
-                result = r.json()["choices"][0]["message"]["content"].strip()
-                # Clean up any AI 'chatter' (like "Here is your script:")
-                if "---" in result: result = result.split("---")[-1]
-                return result
-        except Exception as e:
-            print(f"API Error: {e}")
-        time.sleep(2)
+                return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception:
+            time.sleep(2)
 
-    return "Error generating script. Please check API settings."
+    return None
 
+# ---------------- MAIN ----------------
 def main():
     used = load_used()
-    print("Searching for new crime cases...")
 
     for _ in range(5):
-        raw = fetch_news_text()
+        raw = fetch_news()
         if not raw or len(raw) < 100:
             continue
 
-        h = hash_text(raw[:100]) # Hash the start of the news to avoid repeats
+        h = hash_text(raw[:200])
         if h in used:
             continue
 
         script = generate_script(raw)
-        with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
-            f.write(script)
+        if script:
+            with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
+                f.write(script.strip() + "\n")
+            used.add(h)
+            save_used(used)
+            print("✅ Script generated from news.")
+            return
 
-        used.add(h)
-        save_used(used)
+    # 🚨 GUARANTEED FALLBACK
+    with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
+        f.write(FALLBACK_SCRIPT + "\n")
 
-        print("-" * 30)
-        print("SCRIPT GENERATED SUCCESSFULLY:")
-        print(script)
-        print("-" * 30)
-        return
-
-    print("Could not find new or unique topics.")
+    used.add(hash_text(FALLBACK_SCRIPT))
+    save_used(used)
+    print("⚠️ Used fallback script (safe).")
 
 if __name__ == "__main__":
     main()
