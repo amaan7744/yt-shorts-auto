@@ -2,7 +2,7 @@ import os
 import glob
 from pydub import AudioSegment
 
-VOICE_PATH = "tts.wav"
+VOICE_PATH = "narration.wav"
 AMBIENCE_DIR = "ambience"
 OUTPUT = "final_audio.wav"
 
