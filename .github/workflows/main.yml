@@ -125,7 +125,7 @@ jobs:
           COQUI_TOS_AGREED: "1"
         run: |
           set -euo pipefail
-          python tts_generate.py--output narration.wav
+          python tts_generate.py --output narration.wav
 
       # ----------------------------------------------------
       # VALIDATE TTS OUTPUT
