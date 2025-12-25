@@ -274,7 +274,7 @@ def main() -> None:
     script_text = read_script_text(args.script_path)
     ref_voice = pick_reference_voice()
 
-    output_path = args.output or os.environ.get("TTS_OUTPUT_PATH", "tts.wav")
+    output_path = args.output or os.environ.get("TTS_OUTPUT_PATH", "narration.wav")
     model_name = args.model_name
 
     synthesize_xtts(
