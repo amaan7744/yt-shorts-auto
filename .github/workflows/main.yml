@@ -1,18 +1,22 @@
-name: Auto YouTube Short (Stable Dark Crime)
+name: Auto YouTube Shorts – Dark Crime (Full Automation)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0,3,6,9,12,15,18,21 * * *"
+    # High-traffic global Shorts windows (5x/day)
+    - cron: "0 3,7,11,15,19 * * *"
 
 concurrency:
   group: yt-shorts-auto
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
+
+    permissions:
+      contents: write
 
     env:
       HF_HOME: /tmp/huggingface
@@ -20,21 +24,18 @@ jobs:
       TORCH_HOME: /tmp/torch
       PIP_NO_CACHE_DIR: "1"
 
-    permissions:
-      contents: write
-
     steps:
-      # ----------------------------
-      # Checkout
-      # ----------------------------
+      # ----------------------------------------------------
+      # CHECKOUT
+      # ----------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ----------------------------
-      # Free disk space (CRITICAL)
-      # ----------------------------
+      # ----------------------------------------------------
+      # FREE DISK SPACE (CRITICAL)
+      # ----------------------------------------------------
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -45,17 +46,17 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/*
           df -h
 
-      # ----------------------------
-      # Python
-      # ----------------------------
+      # ----------------------------------------------------
+      # PYTHON
+      # ----------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ----------------------------
-      # System dependencies
-      # ----------------------------
+      # ----------------------------------------------------
+      # SYSTEM DEPENDENCIES
+      # ----------------------------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -63,9 +64,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
 
-      # ----------------------------
-      # Generate script (NO repeats)
-      # ----------------------------
+      # ----------------------------------------------------
+      # SCRIPT (NO REPEATS)
+      # ----------------------------------------------------
       - name: Generate script
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -73,9 +74,9 @@ jobs:
           set -euo pipefail
           python script_generate.py
 
-      # ----------------------------
-      # Fetch dark aesthetic images
-      # ----------------------------
+      # ----------------------------------------------------
+      # DARK IMAGES ONLY
+      # ----------------------------------------------------
       - name: Fetch dark images
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
@@ -83,64 +84,75 @@ jobs:
           set -euo pipefail
           python image_fetch.py
 
-      # ----------------------------
-      # Generate narration (UNCHANGED)
-      # ----------------------------
-      - name: Generate TTS narration
+      # ----------------------------------------------------
+      # TTS (UNCHANGED – ALREADY STABLE)
+      # ----------------------------------------------------
+      - name: Generate narration
         env:
           COQUI_TOS_AGREED: "1"
         run: |
           set -euo pipefail
           python tts_generate.py
 
-      # ----------------------------
-      # Mix ambience (safe auto-discovery)
-      # ----------------------------
+      # ----------------------------------------------------
+      # AMBIENCE MIX
+      # ----------------------------------------------------
       - name: Mix ambience
         run: |
           set -euo pipefail
           python audio_mix.py
 
-      # ----------------------------
-      # Build ASS subtitles
-      # ----------------------------
+      # ----------------------------------------------------
+      # SUBTITLES (SYNCED)
+      # ----------------------------------------------------
       - name: Build subtitles
         run: |
           set -euo pipefail
           python subtitles_build.py
 
-      # ----------------------------
-      # Build raw video (WITH audio)
-      # ----------------------------
-      - name: Build raw video
+      # ----------------------------------------------------
+      # VIDEO (FRAMES + AUDIO)
+      # ----------------------------------------------------
+      - name: Build video
         run: |
           set -euo pipefail
           python video_build.py final_audio.wav
 
-      # ----------------------------
-      # Burn subtitles (FINAL render)
-      # ----------------------------
+      # ----------------------------------------------------
+      # FINAL RENDER (BURN SUBS)
+      # ----------------------------------------------------
       - name: Final render
         run: |
           set -euo pipefail
-
-          echo "Workspace contents:"
-          ls -la
-
-          mkdir -p .
-
           ffmpeg -y \
             -i video_raw.mp4 \
             -vf "ass=subs.ass" \
             -c:v libx264 \
             -preset veryfast \
             -crf 22 \
+            -pix_fmt yuv420p \
             -c:a copy \
             output.mp4
 
-      # ----------------------------
-      # Save used topics (NO repeats)
-      # ----------------------------
+      # ----------------------------------------------------
+      # YOUTUBE UPLOAD (SEO + THUMBNAIL)
+      # ----------------------------------------------------
+      - name: Upload to YouTube
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          python youtube_upload.py \
+            --video output.mp4 \
+            --thumbnail thumbnail.jpg \
+            --script script.txt
+
+      # ----------------------------------------------------
+      # SAVE USED TOPICS (NO REPEATS EVER)
+      # ----------------------------------------------------
       - name: Save used topics
         run: |
           if [ -f used_topics.json ]; then
@@ -150,15 +162,3 @@ jobs:
             git commit -m "Update used topics" || true
             git push || true
           fi
-
-      # ----------------------------
-      # Upload result
-      # ----------------------------
-      - name: Upload output
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-short
-          path: |
-            output.mp4
-            script.txt
-            subs.ass
