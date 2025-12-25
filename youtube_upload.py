@@ -5,9 +5,11 @@ import sys
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 
 VIDEO_FILE = "output.mp4"
 THUMBNAIL_FILE = "thumbnail.jpg"
+
 
 def require_env(name: str) -> str:
     val = os.getenv(name)
@@ -15,6 +17,7 @@ def require_env(name: str) -> str:
         print(f"[YT] ❌ Missing env var: {name}", file=sys.stderr)
         sys.exit(1)
     return val
+
 
 def build_youtube():
     creds = Credentials(
@@ -27,13 +30,14 @@ def build_youtube():
     )
     return build("youtube", "v3", credentials=creds)
 
+
 def upload_video(youtube, title, description, tags):
     body = {
         "snippet": {
             "title": title[:100],
             "description": description,
             "tags": tags,
-            "categoryId": "24",  # Entertainment
+            "categoryId": "24",
         },
         "status": {
             "privacyStatus": "public",
@@ -60,18 +64,32 @@ def upload_video(youtube, title, description, tags):
 
     return response["id"]
 
-def set_thumbnail(youtube, video_id):
-    youtube.thumbnails().set(
-        videoId=video_id,
-        media_body=MediaFileUpload(THUMBNAIL_FILE),
-    ).execute()
+
+def try_set_thumbnail(youtube, video_id):
+    if not os.path.isfile(THUMBNAIL_FILE):
+        print("[YT] ⚠ thumbnail.jpg not found — skipping")
+        return
+
+    try:
+        youtube.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(THUMBNAIL_FILE),
+        ).execute()
+        print("[YT] ✅ Thumbnail uploaded")
+
+    except HttpError as e:
+        if e.resp.status == 403:
+            print("[YT] ⚠ Thumbnail forbidden (channel permission / Shorts limitation). Skipping.")
+        else:
+            print(f"[YT] ⚠ Thumbnail upload failed: {e}")
+
 
 def main():
     if not os.path.isfile(VIDEO_FILE):
         sys.exit("[YT] ❌ output.mp4 missing")
 
-    if not os.path.isfile(THUMBNAIL_FILE):
-        sys.exit("[YT] ❌ thumbnail.jpg missing")
+    if not os.path.isfile("script.txt"):
+        sys.exit("[YT] ❌ script.txt missing")
 
     with open("script.txt", "r", encoding="utf-8") as f:
         script = f.read().strip()
@@ -81,11 +99,13 @@ def main():
     tags = ["true crime", "unsolved mystery", "crime short", "dark documentary"]
 
     youtube = build_youtube()
-    video_id = upload_video(youtube, title, description, tags)
-    set_thumbnail(youtube, video_id)
 
-    print(f"[YT] ✅ Uploaded successfully: https://youtu.be/{video_id}")
+    video_id = upload_video(youtube, title, description, tags)
+    print(f"[YT] ✅ Video uploaded: https://youtu.be/{video_id}")
+
+    # Thumbnail is OPTIONAL
+    try_set_thumbnail(youtube, video_id)
+
 
 if __name__ == "__main__":
     main()
-
