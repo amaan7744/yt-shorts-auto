@@ -1,15 +1,16 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
-video_build.py — stable vertical video builder
+video_build.py — Shorts-safe vertical video builder
 
-- Reads images from ./frames/
-- Attaches audio from final_audio.wav
-- Outputs video_raw.mp4
-- Subtitles are burned later via FFmpeg (ASS)
+Guarantees:
+- Video duration ALWAYS matches audio duration
+- No early cutoffs
+- Stable for GitHub Actions
 """
 
 import os
 import sys
+import random
 from typing import List
 
 from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip
@@ -22,9 +23,10 @@ TARGET_W = 1080
 TARGET_H = 1920
 FPS = 30
 
-MIN_CLIP = 3.0
-MAX_CLIP = 7.0
-CROSSFADE = 0.25
+# Shorts-friendly timing
+MIN_CLIP = 1.8
+MAX_CLIP = 3.5
+MAX_VIDEO_DURATION = 35.0  # Shorts cap
 
 
 def log(msg: str) -> None:
@@ -38,8 +40,9 @@ def audio_duration(path: str) -> float:
     audio = AudioSegment.from_file(path)
     duration = len(audio) / 1000.0
 
-    log(f"Audio duration: {duration:.2f}s")
-    return max(duration, MIN_CLIP)
+    capped = min(duration, MAX_VIDEO_DURATION)
+    log(f"Audio duration: {duration:.2f}s (using {capped:.2f}s)")
+    return capped
 
 
 def list_frames() -> List[str]:
@@ -82,27 +85,42 @@ def main() -> None:
 
     total_duration = audio_duration(audio_path)
     frames = list_frames()
-    frame_count = len(frames)
-
-    per_image = max(MIN_CLIP, min(MAX_CLIP, total_duration / frame_count))
-    log(f"Per-image duration: {per_image:.2f}s")
 
     clips: List[ImageClip] = []
+    remaining = total_duration
 
-    for idx, img in enumerate(frames, 1):
-        log(f"Processing frame {idx}/{frame_count}: {img}")
-        clips.append(make_clip(img, per_image))
+    log(f"Target video duration: {total_duration:.2f}s")
+
+    for idx, img in enumerate(frames):
+        if remaining <= 0:
+            break
+
+        # For last frame OR when few seconds remain → absorb remainder
+        if idx == len(frames) - 1 or remaining <= MAX_CLIP:
+            dur = remaining
+        else:
+            dur = random.uniform(MIN_CLIP, MAX_CLIP)
+            dur = min(dur, remaining)
+
+        log(f"Frame {idx + 1}: {dur:.2f}s")
+        clips.append(make_clip(img, dur))
+        remaining -= dur
+
+    # SAFETY: if frames ran out early, extend last frame
+    if remaining > 0 and clips:
+        log(f"Extending last frame by {remaining:.2f}s to match audio")
+        clips[-1] = clips[-1].set_duration(clips[-1].duration + remaining)
+        remaining = 0
 
     video = concatenate_videoclips(
         clips,
-        method="compose",
-        padding=-CROSSFADE,
+        method="compose"  # hard cuts (best for Shorts)
     )
 
-    audio = AudioFileClip(audio_path)
+    audio = AudioFileClip(audio_path).subclip(0, total_duration)
     video = video.set_audio(audio)
 
-    log(f"Rendering {OUTPUT_VIDEO} ({FPS} fps)")
+    log(f"Rendering {OUTPUT_VIDEO}")
     video.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
@@ -114,7 +132,7 @@ def main() -> None:
         logger=None,
     )
 
-    log(f"Done: {OUTPUT_VIDEO}")
+    log("Done — video length matches audio exactly")
 
 
 if __name__ == "__main__":
