@@ -19,24 +19,23 @@ HEADERS = {
 }
 
 NEWS_QUERIES = [
-    "missing person last seen night",
-    "unsolved disappearance police investigation",
-    "cold case police appeal last seen",
-    "unidentified person found case"
+    "police investigating unexplained disappearance",
+    "missing person case last seen at night",
+    "unsolved police investigation remains open",
+    "unidentified person found police appeal"
 ]
 
-# ---------------- VIRAL-SAFE FALLBACK ----------------
-FALLBACK_SCRIPT = """At 1:42 AM, a 29-year-old man left his apartment in Ohio.
-His security camera recorded him locking the door.
-He never returned.
-His phone stopped moving seven minutes later.
-No calls. No messages. No activity.
-Police traced his last location to a residential street.
-There were no witnesses.
-No nearby cameras showed anything unusual.
-Friends said he had no reason to disappear.
-Investigators still don’t know why he stepped outside that night.
-What happened in those seven minutes?"""
+# ---------------- HARD VIRAL FALLBACK ----------------
+FALLBACK_SCRIPT = """In October 2023, police in Ohio reported a disappearance that made no sense.
+A 29-year-old man left his apartment just after midnight.
+His door was locked behind him.
+Seven minutes later, his phone stopped moving.
+No calls were made.
+No messages were sent.
+Cameras nearby recorded nothing unusual.
+Friends said he had no plans to leave.
+There was no sign of a struggle.
+Police still do not know why his phone activity ended before he vanished."""
 
 # ---------------- HELPERS ----------------
 def load_used():
@@ -57,7 +56,7 @@ def hash_text(text):
 def clean_rss_text(xml):
     titles = re.findall(r"<title>(.*?)</title>", xml)
     desc = re.findall(r"<description>(.*?)</description>", xml)
-    return " ".join(titles[1:4] + desc[1:4])[:1800]
+    return " ".join(titles[1:4] + desc[1:4])[:1600]
 
 def fetch_news():
     q = random.choice(NEWS_QUERIES)
@@ -70,28 +69,40 @@ def fetch_news():
         pass
     return None
 
+def enforce_structure(script: str) -> str:
+    lines = [l.strip() for l in script.split("\n") if l.strip()]
+
+    # Remove any soft questions
+    lines = [l.replace("?", "") for l in lines]
+
+    # Force contradiction ending
+    lines[-1] = "Police still do not know why the evidence contradicts itself."
+
+    return "\n".join(lines)
+
 def generate_script(context):
     prompt = f"""
-Write a HIGH-RETENTION true crime script for a 30–40 second YouTube Short.
+Write a HIGH-RETENTION true crime script optimized for YouTube Shorts.
 
-ABSOLUTE RULES:
-- First sentence MUST start with a specific time (e.g., "At 2:14 AM")
-- Mention one real person (or age if name unknown), one place, and one night
-- Short sentences only (max 12 words per sentence)
-- No introductions, no filler, no scene setting
+NON-NEGOTIABLE RULES:
+- First sentence MUST start with a DATE or EXACT TIME
+- First sentence must include authority or investigation
+- First sentence must describe an abnormal fact
+- First sentence: 8–12 words ONLY
+- Short sentences throughout (max 11 words)
+- No introductions, no atmosphere, no storytelling buildup
 - Every 2–3 sentences must add NEW information
-- Tone: investigative, unsettling, controlled
-- End with ONE unanswered question
-- 90–120 words total
+- End with a contradiction, NOT a question
+- 90–105 words total
 
-STRUCTURE YOU MUST FOLLOW:
-1) Time-based hook (first line)
-2) Who + where (immediately)
-3) Escalation: disappearance / abnormal event
+STRUCTURE:
+1) Date/time + authority + abnormal event
+2) Who and where
+3) Escalation (disappearance or discovery)
 4) One detail that breaks logic
-5) Cliff question
+5) Contradiction ending
 
-Context (facts to adapt, not copy):
+Context (adapt facts, do not copy):
 {context}
 """
 
@@ -100,15 +111,15 @@ Context (facts to adapt, not copy):
         "messages": [
             {
                 "role": "system",
-                "content": "You write high-retention true crime scripts optimized for YouTube Shorts."
+                "content": "You write high-retention true crime scripts that stop scrolling."
             },
             {
                 "role": "user",
                 "content": prompt
             },
         ],
-        "temperature": 0.6,
-        "max_tokens": 450,
+        "temperature": 0.55,
+        "max_tokens": 420,
     }
 
     for _ in range(3):
@@ -116,9 +127,8 @@ Context (facts to adapt, not copy):
             r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
             if r.status_code == 200:
                 text = r.json()["choices"][0]["message"]["content"].strip()
-                # basic sanity check
-                if len(text.split()) >= 80:
-                    return text
+                if 85 <= len(text.split()) <= 115:
+                    return enforce_structure(text)
         except Exception:
             time.sleep(2)
 
@@ -140,13 +150,13 @@ def main():
         script = generate_script(raw)
         if script:
             with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
-                f.write(script.strip() + "\n")
+                f.write(script + "\n")
             used.add(h)
             save_used(used)
-            print("✅ High-retention script generated.")
+            print("✅ High-retention Shorts script generated.")
             return
 
-    # 🚨 VIRAL-SAFE FALLBACK
+    # 🚨 GUARANTEED VIRAL-SAFE FALLBACK
     with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
         f.write(FALLBACK_SCRIPT + "\n")
 
