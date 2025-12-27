@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # 5 global high-traffic Shorts windows (UTC)
-    - cron: "0 3,7,11,15,19 * * *"
+    - cron: "0 3,9,15, * * *"
 
 concurrency:
   group: yt-shorts-auto
