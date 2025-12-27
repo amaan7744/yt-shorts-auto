@@ -19,22 +19,24 @@ HEADERS = {
 }
 
 NEWS_QUERIES = [
-    "unsolved cold case investigation",
     "missing person last seen night",
-    "unidentified body police case",
-    "cold case evidence police appeal"
+    "unsolved disappearance police investigation",
+    "cold case police appeal last seen",
+    "unidentified person found case"
 ]
 
-# ---------------- FALLBACK (GUARANTEED) ----------------
-FALLBACK_SCRIPT = """It was just after midnight on a quiet road in Ohio.
-Thirty-four-year-old Mark Jensen was walking home from work.
-He never arrived.
-His phone last connected to a nearby cell tower.
-No calls were made after that moment.
-Police found no witnesses and no usable camera footage.
-There were no signs of a struggle.
-The case remains unsolved.
-What happened during that short walk home?"""
+# ---------------- VIRAL-SAFE FALLBACK ----------------
+FALLBACK_SCRIPT = """At 1:42 AM, a 29-year-old man left his apartment in Ohio.
+His security camera recorded him locking the door.
+He never returned.
+His phone stopped moving seven minutes later.
+No calls. No messages. No activity.
+Police traced his last location to a residential street.
+There were no witnesses.
+No nearby cameras showed anything unusual.
+Friends said he had no reason to disappear.
+Investigators still don’t know why he stepped outside that night.
+What happened in those seven minutes?"""
 
 # ---------------- HELPERS ----------------
 def load_used():
@@ -55,7 +57,7 @@ def hash_text(text):
 def clean_rss_text(xml):
     titles = re.findall(r"<title>(.*?)</title>", xml)
     desc = re.findall(r"<description>(.*?)</description>", xml)
-    return " ".join(titles[1:4] + desc[1:4])[:2000]
+    return " ".join(titles[1:4] + desc[1:4])[:1800]
 
 def fetch_news():
     q = random.choice(NEWS_QUERIES)
@@ -70,34 +72,53 @@ def fetch_news():
 
 def generate_script(context):
     prompt = f"""
-Write a calm, factual true-crime narration for a 40-second YouTube Short.
+Write a HIGH-RETENTION true crime script for a 30–40 second YouTube Short.
 
-Rules:
-- Mention a real person, place, and time
-- Neutral investigative tone
-- No drama, no exaggeration
-- 110–140 words
-- End with one unresolved question
+ABSOLUTE RULES:
+- First sentence MUST start with a specific time (e.g., "At 2:14 AM")
+- Mention one real person (or age if name unknown), one place, and one night
+- Short sentences only (max 12 words per sentence)
+- No introductions, no filler, no scene setting
+- Every 2–3 sentences must add NEW information
+- Tone: investigative, unsettling, controlled
+- End with ONE unanswered question
+- 90–120 words total
 
-Context:
+STRUCTURE YOU MUST FOLLOW:
+1) Time-based hook (first line)
+2) Who + where (immediately)
+3) Escalation: disappearance / abnormal event
+4) One detail that breaks logic
+5) Cliff question
+
+Context (facts to adapt, not copy):
 {context}
 """
 
     payload = {
         "model": "deepseek/deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You write factual true-crime documentaries."},
-            {"role": "user", "content": prompt},
+            {
+                "role": "system",
+                "content": "You write high-retention true crime scripts optimized for YouTube Shorts."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            },
         ],
-        "temperature": 0.7,
-        "max_tokens": 500,
+        "temperature": 0.6,
+        "max_tokens": 450,
     }
 
     for _ in range(3):
         try:
             r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
             if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"].strip()
+                text = r.json()["choices"][0]["message"]["content"].strip()
+                # basic sanity check
+                if len(text.split()) >= 80:
+                    return text
         except Exception:
             time.sleep(2)
 
@@ -112,7 +133,7 @@ def main():
         if not raw or len(raw) < 100:
             continue
 
-        h = hash_text(raw[:200])
+        h = hash_text(raw[:250])
         if h in used:
             continue
 
@@ -122,16 +143,16 @@ def main():
                 f.write(script.strip() + "\n")
             used.add(h)
             save_used(used)
-            print("✅ Script generated from news.")
+            print("✅ High-retention script generated.")
             return
 
-    # 🚨 GUARANTEED FALLBACK
+    # 🚨 VIRAL-SAFE FALLBACK
     with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
         f.write(FALLBACK_SCRIPT + "\n")
 
     used.add(hash_text(FALLBACK_SCRIPT))
     save_used(used)
-    print("⚠️ Used fallback script (safe).")
+    print("⚠️ Used viral-safe fallback.")
 
 if __name__ == "__main__":
     main()
