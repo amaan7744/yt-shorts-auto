@@ -1,16 +1,21 @@
+# API and Networking
 requests>=2.31.0
-
-TTS==0.22.0
-transformers==4.39.3
-torchcodec>=0.1.0
-
-pydub>=0.25.1
-moviepy>=1.0.3
-Pillow==9.5.0
-beautifulsoup4>=4.12.0
-tqdm>=4.66.0
 google-api-python-client==2.126.0
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
-pip install openai-whisper
+beautifulsoup4>=4.12.0
+
+# Audio and Speech
+TTS==0.22.0
+pydub>=0.25.1
+openai-whisper
+
+# Video and Image Processing
+moviepy>=1.0.3
+Pillow==9.5.0
+
+# Machine Learning and Logic
+transformers==4.39.3
+torchcodec>=0.1.0
+tqdm>=4.66.0
