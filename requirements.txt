@@ -1,16 +1,15 @@
 # --- SPEECH & AI ---
-coqui-tts==0.22.0
+coqui-tts>=0.22.1
 openai-whisper
 transformers==4.39.3
 torch
 torchvision
 torchaudio
-torchcodec>=0.1.0
 
 # --- VIDEO & IMAGE ---
 moviepy>=1.0.3
 pydub>=0.25.1
-Pillow==9.5.0
+Pillow>=9.5.0
 imageio-ffmpeg>=0.4.9
 
 # --- GOOGLE & API ---
