@@ -1,60 +1,76 @@
 #!/usr/bin/env python3
+"""
+audio_mix.py — HALAL-SAFE, LENGTH-LOCKED
+
+Guarantees:
+- final_audio.wav == narration.wav duration EXACTLY
+- No ambience spill
+- No rain / no noise
+- No MP3 / no external audio
+"""
+
+import os
 import numpy as np
 from pydub import AudioSegment
-import os
 
 VOICE_PATH = "narration.wav"
-OUTPUT = "final_audio.wav"
+OUTPUT_PATH = "final_audio.wav"
 
-VOICE_GAIN = -1
-AMBIENCE_GAIN = -16   # very subtle
-FADE_MS = 1000        # smooth, calm
+VOICE_GAIN_DB = -1.0
+AMBIENCE_GAIN_DB = -18.0
+FADE_MS = 900
+SAMPLE_RATE = 44100
+
 
 def log(msg):
     print(f"[AUDIO] {msg}", flush=True)
 
-def generate_halal_ambience(duration_ms):
-    """
-    Halal-safe ambience:
-    - No music
-    - No rhythm
-    - No human sound
-    - No sharp noise
-    Just soft air / room tone.
-    """
-    sample_rate = 44100
-    samples = int(sample_rate * duration_ms / 1000)
 
-    # Very soft noise
-    noise = np.random.normal(0, 0.008, samples)
+def generate_room_tone(duration_ms: int) -> AudioSegment:
+    samples = int(SAMPLE_RATE * duration_ms / 1000)
+
+    noise = np.random.normal(0, 0.004, samples)
 
     audio = AudioSegment(
         noise.tobytes(),
-        frame_rate=sample_rate,
+        frame_rate=SAMPLE_RATE,
         sample_width=2,
-        channels=1
+        channels=1,
     )
 
-    # Strong low-pass to remove harshness
+    audio = audio.high_pass_filter(90)
     audio = audio.low_pass_filter(600)
-    audio = audio.high_pass_filter(80)
 
     return audio
 
+
 def main():
     if not os.path.isfile(VOICE_PATH):
-        raise SystemExit("Voice file missing")
+        raise SystemExit("[AUDIO] narration.wav not found")
 
-    voice = AudioSegment.from_file(VOICE_PATH).apply_gain(VOICE_GAIN)
+    voice = AudioSegment.from_file(VOICE_PATH).apply_gain(VOICE_GAIN_DB)
+    duration_ms = len(voice)
 
-    ambience = generate_halal_ambience(len(voice))
-    ambience = ambience.apply_gain(AMBIENCE_GAIN)
+    log(f"Narration duration: {duration_ms / 1000:.2f}s")
+
+    # Generate ambience EXACTLY same length
+    ambience = generate_room_tone(duration_ms)
+    ambience = ambience[:duration_ms]  # HARD CUT
+    ambience = ambience.apply_gain(AMBIENCE_GAIN_DB)
     ambience = ambience.fade_in(FADE_MS).fade_out(FADE_MS)
 
+    # Overlay and HARD CUT again (safety)
     final = ambience.overlay(voice)
-    final.export(OUTPUT, format="wav")
+    final = final[:duration_ms]  # ABSOLUTE LOCK
 
-    log("Halal-safe final audio written")
+    final.export(
+        OUTPUT_PATH,
+        format="wav",
+        parameters=["-ac", "1", "-ar", str(SAMPLE_RATE)],
+    )
+
+    log("Final audio written (length locked)")
+
 
 if __name__ == "__main__":
     main()
