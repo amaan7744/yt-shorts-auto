@@ -124,21 +124,30 @@ jobs:
           test -f video_raw.mp4 || (echo "❌ video_raw.mp4 missing" && exit 1)
 
       # ----------------------------------------------------
-      # FINAL RENDER (BURN SUBS + AUDIO)
-      # ----------------------------------------------------
-      - name: Final render
-        run: |
-          set -euo pipefail
-          ffmpeg -y \
-            -i video_raw.mp4 \
-            -i final_audio.wav \
-            -vf "ass=subs.ass" \
-            -map 0:v -map 1:a \
-            -c:v libx264 -preset veryfast -crf 22 \
-            -pix_fmt yuv420p \
-            -c:a aac -b:a 192k \
-            output.mp4
-          test -f output.mp4 || (echo "❌ output.mp4 missing" && exit 1)
+# FINAL RENDER (HIGH QUALITY, SHORTS OPTIMIZED)
+# ----------------------------------------------------
+- name: Final render (HQ)
+  run: |
+    set -euo pipefail
+    ffmpeg -y \
+      -i video_raw.mp4 \
+      -i final_audio.wav \
+      -vf "ass=subs.ass,scale=1080:1920:flags=lanczos" \
+      -map 0:v -map 1:a \
+      -c:v libx264 \
+      -profile:v high \
+      -level 4.2 \
+      -pix_fmt yuv420p \
+      -preset slow \
+      -crf 17 \
+      -movflags +faststart \
+      -colorspace bt709 \
+      -color_primaries bt709 \
+      -color_trc bt709 \
+      -color_range 2 \
+      -c:a aac \
+      -b:a 192k \
+      output.mp4
 
       # ----------------------------------------------------
       # UPLOAD TO YOUTUBE SHORTS
