@@ -79,7 +79,7 @@ def try_set_thumbnail(youtube, video_id):
 
     except HttpError as e:
         if e.resp.status == 403:
-            print("[YT] ⚠ Thumbnail forbidden (channel permission / Shorts limitation). Skipping.")
+            print("[YT] ⚠ Thumbnail forbidden — skipping.")
         else:
             print(f"[YT] ⚠ Thumbnail upload failed: {e}")
 
@@ -91,19 +91,35 @@ def main():
     if not os.path.isfile("script.txt"):
         sys.exit("[YT] ❌ script.txt missing")
 
+    # -------- TITLE (from script, first sentence only) --------
     with open("script.txt", "r", encoding="utf-8") as f:
         script = f.read().strip()
 
-    title = script.split(".")[0][:90]
-    description = script + "\n\n#shorts #truecrime #mystery"
-    tags = ["true crime", "unsolved mystery", "crime short", "dark documentary"]
+    title = script.split("\n")[0][:90]
+
+    # -------- DESCRIPTION (TAGS ONLY) --------
+    description = (
+        "#truecrime\n"
+        "#mystery\n"
+        "#crimeshorts\n"
+        "#darkstories\n"
+        "#police\n"
+        "#shorts"
+    )
+
+    tags = [
+        "true crime",
+        "crime shorts",
+        "police investigation",
+        "dark stories",
+        "mystery short",
+    ]
 
     youtube = build_youtube()
 
     video_id = upload_video(youtube, title, description, tags)
     print(f"[YT] ✅ Video uploaded: https://youtu.be/{video_id}")
 
-    # Thumbnail is OPTIONAL
     try_set_thumbnail(youtube, video_id)
 
 
