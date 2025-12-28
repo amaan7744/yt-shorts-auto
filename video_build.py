@@ -12,13 +12,12 @@ from moviepy.editor import (
 from pydub import AudioSegment
 
 # ---------------- CONFIG ----------------
-# Matches your GitHub Action expectation
 OUTPUT_VIDEO = "video_raw.mp4" 
-
 FRAMES_DIR = "frames"
 VOICE_AUDIO = "final_audio.wav"
 BG_MUSIC = "background_music.mp3" 
 
+# Standard 1080p Vertical Dimensions
 TARGET_W, TARGET_H = 1080, 1920
 FPS = 30
 MAX_DURATION = 35.0
@@ -46,27 +45,33 @@ def list_frames() -> List[str]:
     return frames
 
 def prepare_professional_clip(img_path: str, duration: float, index: int) -> ImageClip:
-    """Applies cinematic motion and color grading."""
-    # Add transition padding to duration
+    """Enhanced 1080p processing with high-quality scaling."""
+    # Load image and force it to RGB to avoid color distortion
     clip = ImageClip(img_path).set_duration(duration + TRANSITION_DUR)
 
-    # 1. Professional Crop & Resize
+    # 1. High-Quality Resize & Crop
     w, h = clip.size
     scale = max(TARGET_W / w, TARGET_H / h)
-    clip = clip.resize(scale)
-    clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=TARGET_W, height=TARGET_H)
-
-    # 2. Alternating Ken Burns Effect
-    # Even clips zoom IN, Odd clips zoom OUT
-    if index % 2 == 0:
-        clip = clip.fx(vfx.resize, lambda t: 1.0 + 0.06 * (t / clip.duration))
-    else:
-        clip = clip.fx(vfx.resize, lambda t: 1.06 - 0.06 * (t / clip.duration))
-
-    # 3. Premium Color Polish
-    clip = clip.fx(vfx.colorx, 1.05) 
     
-    # 4. Seamless Transition
+    # We use resize(scale) then crop to ensure 1080x1920 exactly
+    clip = clip.resize(scale)
+    
+    # Precise center crop to maintain 1080p aspect ratio
+    clip = clip.crop(
+        x_center=clip.w/2, 
+        y_center=clip.h/2, 
+        width=TARGET_W, 
+        height=TARGET_H
+    )
+
+    # 2. Alternating Cinematic Motion
+    if index % 2 == 0:
+        clip = clip.fx(vfx.resize, lambda t: 1.0 + 0.08 * (t / clip.duration))
+    else:
+        clip = clip.fx(vfx.resize, lambda t: 1.08 - 0.08 * (t / clip.duration))
+
+    # 3. Visual Polish (Color/Contrast)
+    clip = clip.fx(vfx.colorx, 1.1) # Boost colors for mobile screens
     clip = clip.crossfadein(TRANSITION_DUR)
 
     return clip
@@ -76,46 +81,41 @@ def main():
     total_duration = get_audio_duration(voice_path)
     frames = list_frames()
     
-    # Calculate timing (account for transition overlap)
     frame_duration = total_duration / len(frames)
     
-    log(f"Building {total_duration:.2f}s video with {len(frames)} frames...")
+    log(f"Starting 1080p Production: {total_duration:.2f}s")
 
     clips = []
     for i, img in enumerate(frames):
-        log(f"Processing Frame {i+1}: {img}")
         clips.append(prepare_professional_clip(img, frame_duration, i))
 
-    # Overlap clips for crossfade
     video = concatenate_videoclips(clips, method="compose", padding=-TRANSITION_DUR)
     video = video.set_duration(total_duration)
 
-    # --- AUDIO ENGINE ---
-    log("Layering Audio...")
+    # --- AUDIO MIXING ---
     voice_clip = AudioFileClip(voice_path).subclip(0, total_duration)
     audio_layers = [voice_clip]
 
     if os.path.exists(BG_MUSIC):
-        bg_music = AudioFileClip(BG_MUSIC).volumex(0.12).fx(vfx.loop, duration=total_duration)
+        bg_music = AudioFileClip(BG_MUSIC).volumex(0.15).fx(vfx.loop, duration=total_duration)
         audio_layers.append(bg_music)
-        log("Background music mixed.")
 
     video = video.set_audio(CompositeAudioClip(audio_layers))
 
-    # --- RENDER ---
-    log(f"Starting Professional Render: {OUTPUT_VIDEO}")
+    # --- 1080P HIGH BITRATE RENDER ---
+    log(f"Rendering High-Quality 1080p: {OUTPUT_VIDEO}")
     video.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        temp_audiofile="temp-audio.m4a",
-        remove_temp=True,
-        preset="veryfast", # Kept fast for GitHub Action runners
+        # Adding bitrate ensures it doesn't compress down to 240p quality
+        bitrate="8000k", 
+        preset="medium", 
         threads=4,
         logger=None
     )
-    log("Video Production Complete.")
+    log("Production Complete.")
 
 if __name__ == "__main__":
     main()
