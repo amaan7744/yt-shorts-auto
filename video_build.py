@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-video_build.py — PROFESSIONAL Shorts video builder (FINAL)
+video_build.py — PROFESSIONAL Shorts builder (ERROR-FREE)
 
-Rules enforced:
-- Video ends EXACTLY with script audio
-- Total duration: 30–35 seconds (hard cap at 35)
+Guarantees:
+- Video ends EXACTLY with audio
+- Duration 0–35s
 - No subtitle desync
-- Subtle professional motion only
-- Deterministic, error-free
+- Subtle professional polish
+- MoviePy-safe (no dynamic crop bugs)
 """
 
 import os
@@ -31,7 +31,6 @@ TARGET_W = 1080
 TARGET_H = 1920
 FPS = 30
 
-MIN_DURATION = 30.0
 MAX_DURATION = 35.0
 
 # ---------------------------------------
@@ -48,13 +47,9 @@ def get_audio_duration(path: str) -> float:
     audio = AudioSegment.from_file(path)
     duration = len(audio) / 1000.0
 
-    # HARD ENFORCEMENT
     if duration > MAX_DURATION:
         log(f"Audio {duration:.2f}s > {MAX_DURATION}s — trimming")
         return MAX_DURATION
-
-    if duration < MIN_DURATION:
-        log(f"Audio {duration:.2f}s < {MIN_DURATION}s — using actual length")
 
     log(f"Final audio duration: {duration:.2f}s")
     return duration
@@ -93,24 +88,15 @@ def prepare_clip(img_path: str, duration: float) -> ImageClip:
         height=TARGET_H,
     )
 
-    # ---------- SUBTLE PROFESSIONAL EFFECTS ----------
+    # -------- SAFE PROFESSIONAL EFFECTS --------
 
-    # Slow zoom-in (max 2%)
+    # Slow zoom-in (Ken Burns style)
     clip = clip.fx(
         vfx.resize,
         lambda t: 1.0 + 0.02 * (t / duration)
     )
 
-    # Very light vertical drift (barely noticeable)
-    clip = clip.fx(
-        vfx.crop,
-        x_center=TARGET_W / 2,
-        y_center=lambda t: TARGET_H / 2 - 8 * (t / duration),
-        width=TARGET_W,
-        height=TARGET_H,
-    )
-
-    # Mild contrast / brightness
+    # Mild contrast boost (safe)
     clip = clip.fx(vfx.colorx, 1.04)
 
     return clip.set_duration(duration)
@@ -123,26 +109,23 @@ def main():
     frames = list_frames()
     frame_count = len(frames)
 
-    # Deterministic duration per frame
     base_duration = total_duration / frame_count
 
     clips: List[ImageClip] = []
-    used_time = 0.0
+    used = 0.0
 
     for idx, img in enumerate(frames):
         if idx == frame_count - 1:
-            # Last frame absorbs rounding error
-            dur = max(0.1, total_duration - used_time)
+            dur = max(0.1, total_duration - used)
         else:
             dur = base_duration
 
-        used_time += dur
+        used += dur
         log(f"Frame {idx + 1}/{frame_count}: {dur:.2f}s")
         clips.append(prepare_clip(img, dur))
 
     video = concatenate_videoclips(clips, method="compose")
 
-    # IMPORTANT: audio trimmed to EXACT duration
     audio = AudioFileClip(audio_path).subclip(0, total_duration)
     video = video.set_audio(audio)
 
@@ -158,7 +141,7 @@ def main():
         logger=None,
     )
 
-    log("Done — video ends exactly with script audio")
+    log("Done — video matches audio exactly")
 
 
 if __name__ == "__main__":
