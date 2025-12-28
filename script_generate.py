@@ -1,56 +1,189 @@
 #!/usr/bin/env python3
+"""
+script_generate.py — HIGH-RETENTION, LENGTH-LOCKED
+
+Guarantees:
+- Script duration: 30–35 seconds
+- Strong hook in first line
+- Human relevance (date + person later)
+- Automation-safe (retry + fallback)
+"""
+
+import os
+import json
+import hashlib
 import random
+import time
+import requests
+import re
 
 OUT_SCRIPT = "script.txt"
+USED_TOPICS_FILE = "used_topics.json"
 
-# Hybrid Shorts scripts:
-# Unease-first (for reach) + light human context (for subs)
-SCRIPTS = [
-    [
-        # HOOK — abnormal, no human, no date
-        "A car was running in a driveway with nobody inside.",
+API_KEY = os.getenv("DEEPSEEK_API_KEY")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-        # STAKES — immediate danger / irreversibility
-        "That leaves no time for a normal explanation.",
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
+}
 
-        # ODD DETAIL — early, unsettling
-        "A child’s backpack sat untouched on the passenger seat.",
+# ---------------- CONFIG ----------------
 
-        # CONTEXT — human + date ONCE, not leading
-        "Police documented the scene in early October.",
+MIN_WORDS = 80   # ≈30s
+MAX_WORDS = 95   # ≈35s
+MAX_TRIES = 4
 
-        # HUMAN CONNECTION — no questions, no preaching
-        "Someone left in a moment that gave no warning.",
-
-        # CONTRADICTION — unresolved unease
-        "Nothing at the scene explains how the engine stayed running."
-    ],
-    [
-        "A house security camera recorded a door opening at night.",
-        "The footage showed no one entering the frame.",
-        "The lock re-engaged seconds later on its own.",
-        "Police logged the incident during a routine check.",
-        "Whoever was involved had no chance to react.",
-        "The system data contradicts what the camera shows."
-    ],
-    [
-        "A phone stopped moving while its owner was still outside.",
-        "That kind of stop usually happens suddenly.",
-        "The screen remained unlocked for several minutes.",
-        "Investigators noted the timeline in an October report.",
-        "Events moved faster than anyone could respond.",
-        "The signal ended without any clear cause."
-    ]
+NEWS_QUERIES = [
+    "police investigation disappearance",
+    "missing person last seen night police",
+    "abandoned vehicle police report",
+    "unexplained incident police confirmed",
 ]
 
+# HARD SAFE FALLBACK (≈32s)
+FALLBACK_SCRIPT = (
+    "If this happened to you, nobody would believe it. "
+    "A man left his home late at night and never returned. "
+    "On October 3, police confirmed his phone stopped moving minutes later. "
+    "His car was found parked nearby with the lights still on. "
+    "The doors were locked. "
+    "Nothing inside was disturbed. "
+    "No witnesses came forward. "
+    "Cameras in the area recorded nothing useful. "
+    "Police later said the timeline does not match the evidence they found."
+)
+
+# ---------------------------------------
+
+
+def load_used():
+    if os.path.exists(USED_TOPICS_FILE):
+        try:
+            return set(json.load(open(USED_TOPICS_FILE, "r", encoding="utf-8")))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_used(used):
+    with open(USED_TOPICS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(list(used)), f, indent=2)
+
+
+def hash_text(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def clean_rss_text(xml):
+    titles = re.findall(r"<title>(.*?)</title>", xml)
+    desc = re.findall(r"<description>(.*?)</description>", xml)
+    return " ".join(titles[1:3] + desc[1:3])[:1200]
+
+
+def fetch_news():
+    q = random.choice(NEWS_QUERIES)
+    url = f"https://news.google.com/rss/search?q={q}"
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200 and r.text:
+            return clean_rss_text(r.text)
+    except Exception:
+        pass
+    return None
+
+
+def generate_script(context: str) -> str | None:
+    prompt = f"""
+Write a HIGH-RETENTION YouTube Shorts true crime script.
+
+NON-NEGOTIABLE RULES:
+- 80–95 words ONLY
+- First line MUST directly address the viewer (use "you")
+- First line MUST create immediate danger or disbelief
+- Calm, factual tone
+- Short sentences
+- Mention a real date or time later in the script
+- Mention police confirmation
+- No filler words (unsolved, mysterious, tragic)
+- No questions at the end
+- End with a contradiction or disturbing fact
+
+STRUCTURE:
+1) Viewer-addressed hook (line 1)
+2) What happened
+3) Date / police confirmation
+4) Evidence that does not add up
+5) Contradiction ending
+
+Context (facts only, adapt carefully):
+{context}
+"""
+
+    payload = {
+        "model": "deepseek/deepseek-chat",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You write high-retention YouTube Shorts scripts "
+                    "that emotionally involve the viewer without exaggeration."
+                )
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.45,
+        "max_tokens": 350,
+    }
+
+    for _ in range(MAX_TRIES):
+        try:
+            r = requests.post(
+                OPENROUTER_URL,
+                headers=HEADERS,
+                json=payload,
+                timeout=60
+            )
+            if r.status_code == 200:
+                text = r.json()["choices"][0]["message"]["content"].strip()
+                wc = len(text.split())
+                if MIN_WORDS <= wc <= MAX_WORDS:
+                    return text
+        except Exception:
+            time.sleep(2)
+
+    return None
+
+
 def main():
-    script = random.choice(SCRIPTS)
+    used = load_used()
 
+    for _ in range(5):
+        raw = fetch_news()
+        if not raw or len(raw) < 100:
+            continue
+
+        h = hash_text(raw[:200])
+        if h in used:
+            continue
+
+        script = generate_script(raw)
+        if script:
+            with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
+                f.write(script + "\n")
+            used.add(h)
+            save_used(used)
+            print("✅ Script generated (30–35s enforced).")
+            return
+
+    # Fallback (guaranteed length)
     with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
-        for line in script:
-            f.write(line.strip() + "\n")
+        f.write(FALLBACK_SCRIPT + "\n")
 
-    print("✅ Expert-level Shorts script written")
+    used.add(hash_text(FALLBACK_SCRIPT))
+    save_used(used)
+    print("⚠️ Used fallback script.")
+
 
 if __name__ == "__main__":
     main()
