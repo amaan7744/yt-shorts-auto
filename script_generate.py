@@ -20,19 +20,19 @@ HEADERS = {
 
 NEWS_QUERIES = [
     "police investigating disappearance",
-    "missing person last seen at night",
-    "unsolved police case remains open",
-    "unidentified person investigation police",
+    "missing person last seen late night",
+    "police report unexplained event",
+    "unidentified person police investigation",
 ]
 
-# ---------------- SAFE FALLBACK (RETENTION-FIRST) ----------------
+# ---------------- SAFE FALLBACK (STAKES-FIRST) ----------------
 FALLBACK_SCRIPT = """This person vanished in less than seven minutes.
+That means whatever happened started immediately.
 Their phone stopped moving while they were still outside.
-That should not happen unless the phone was shut off or taken.
+That only happens when a device is shut off or taken.
 Police later confirmed this occurred late at night.
-Nearby cameras recorded nothing useful.
-No witnesses came forward.
-Friends said there was no reason to leave.
+Nearby cameras showed no one approaching or leaving.
+No witnesses reported anything unusual.
 Investigators found no signs of a struggle.
 Police still do not know why the evidence contradicts itself."""
 
@@ -55,7 +55,7 @@ def hash_text(text):
 def clean_rss_text(xml):
     titles = re.findall(r"<title>(.*?)</title>", xml)
     desc = re.findall(r"<description>(.*?)</description>", xml)
-    return " ".join(titles[1:4] + desc[1:4])[:1500]
+    return " ".join(titles[1:4] + desc[1:4])[:1400]
 
 def fetch_news():
     q = random.choice(NEWS_QUERIES)
@@ -70,13 +70,14 @@ def fetch_news():
 
 def enforce_structure(text: str) -> str:
     """
-    Hard safety + retention enforcement:
+    Final retention enforcement:
     - No questions
+    - Guaranteed early stakes
     - Hard contradiction ending
     """
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Remove questions entirely
+    # Remove all questions
     lines = [l.replace("?", "") for l in lines]
 
     # Force contradiction ending
@@ -85,28 +86,28 @@ def enforce_structure(text: str) -> str:
 
     return "\n".join(lines)
 
-def generate_script(context: str) -> str | None:
+def generate_script(context: str):
     prompt = f"""
 Write a HIGH-RETENTION true crime script for a YouTube Short (28–35 seconds).
 
 NON-NEGOTIABLE RULES:
 1. Line 1 MUST describe a visual impossibility or abnormal event.
-   - No dates, no names, no locations in line 1.
-2. Line 2 MUST explain why this violates logic or safety.
-3. Dates, locations, or police confirmation may appear ONLY after line 2.
-4. Every 2–3 lines must remove a normal explanation.
-   - Use implication language like:
-     "That would only happen if..."
-     "Normally this means..., but..."
-5. Introduce ONE detail early (within first 10 seconds) that clearly does not belong.
-6. No filler words (unsolved, mysterious, tragic).
-7. Short sentences only (max 11 words).
-8. No dramatic language or exaggeration.
-9. End with a contradiction, NOT a question.
-10. 85–105 words total.
+   - No dates, no names, no locations.
+2. Line 2 MUST introduce an irreversible consequence or immediate risk.
+   - Example logic: loss of time, loss of control, evidence compromised.
+3. Line 3 MUST explain why this should not normally happen.
+4. Dates, locations, or police confirmation may appear ONLY after line 3.
+5. Every 2–3 lines must remove a normal explanation.
+6. Introduce ONE detail early (within first 8–10 seconds) that does not belong.
+7. No filler words (unsolved, mysterious, tragic).
+8. Short sentences only (max 11 words).
+9. Calm, factual tone. No dramatic language.
+10. End with a contradiction, NOT a question.
+11. 85–100 words total.
 
-STRUCTURE:
+STRUCTURE (STRICT):
 - Abnormal event
+- Immediate stakes
 - Implication
 - Authority/context
 - Escalation
@@ -122,8 +123,8 @@ Context (facts only, adapt carefully):
             {
                 "role": "system",
                 "content": (
-                    "You write suspense-driven, implication-based true crime "
-                    "scripts optimized for YouTube Shorts retention."
+                    "You write high-retention true crime scripts for YouTube Shorts. "
+                    "You prioritize early stakes over explanation."
                 )
             },
             {
@@ -131,8 +132,8 @@ Context (facts only, adapt carefully):
                 "content": prompt
             },
         ],
-        "temperature": 0.5,
-        "max_tokens": 420,
+        "temperature": 0.45,
+        "max_tokens": 400,
     }
 
     for _ in range(3):
@@ -146,7 +147,7 @@ Context (facts only, adapt carefully):
             if r.status_code == 200:
                 text = r.json()["choices"][0]["message"]["content"].strip()
                 wc = len(text.split())
-                if 85 <= wc <= 110:
+                if 85 <= wc <= 100:
                     return enforce_structure(text)
         except Exception:
             time.sleep(2)
@@ -175,7 +176,7 @@ def main():
             print("✅ High-retention script generated.")
             return
 
-    # Fallback (guaranteed safe)
+    # Guaranteed fallback
     with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
         f.write(FALLBACK_SCRIPT + "\n")
 
