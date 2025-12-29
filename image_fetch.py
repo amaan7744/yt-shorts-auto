@@ -15,15 +15,13 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 HEADERS = {"Authorization": PEXELS_KEY}
 
-# Visual beats (same structure, different assets)
 BEATS = [
     ("01_hook.jpg", "car headlights night empty"),
     ("02_detail.jpg", "abandoned object night ground"),
     ("03_context.jpg", "quiet residential street night"),
-    ("04_contradiction.jpg", "empty road fog night"),
+    ("04_contradiction.jpg", "empty road night high contrast"),
 ]
 
-# Strict halal filter
 BANNED_TERMS = [
     "woman", "women", "girl", "female",
     "man", "men", "person", "people",
@@ -31,26 +29,20 @@ BANNED_TERMS = [
     "model", "face", "hands"
 ]
 
-def load_used_images():
+def load_used():
     if os.path.exists(USED_IMAGES_FILE):
         try:
             return set(json.load(open(USED_IMAGES_FILE, "r", encoding="utf-8")))
-        except Exception:
+        except:
             return set()
     return set()
 
-def save_used_images(used):
+def save_used(used):
     with open(USED_IMAGES_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(list(used)), f, indent=2)
 
-def image_hash(url: str) -> str:
+def img_hash(url):
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
-
-def make_vertical(img):
-    img.thumbnail((1080, 1920), Image.Resampling.LANCZOS)
-    bg = Image.new("RGB", (1080, 1920), (0, 0, 0))
-    bg.paste(img, ((1080 - img.width)//2, (1920 - img.height)//2))
-    return bg
 
 def halal(photo):
     text = " ".join([
@@ -58,47 +50,48 @@ def halal(photo):
         photo.get("url", ""),
         photo.get("photographer", "")
     ]).lower()
-    return not any(bad in text for bad in BANNED_TERMS)
+    return not any(b in text for b in BANNED_TERMS)
 
-def fetch_image(query, filename, used_hashes):
-    url = f"https://api.pexels.com/v1/search?query={query}&orientation=portrait&per_page=40"
+def fetch(query, filename, used):
+    url = (
+        "https://api.pexels.com/v1/search"
+        f"?query={query}&orientation=portrait&size=large&per_page=40"
+    )
+
     r = requests.get(url, headers=HEADERS, timeout=20)
     photos = r.json().get("photos", [])
-
-    random.shuffle(photos)  # IMPORTANT
+    random.shuffle(photos)
 
     for p in photos:
         if not halal(p):
             continue
 
-        img_url = p["src"]["large2x"]
-        h = image_hash(img_url)
+        src = p["src"]["original"]  # <-- IMPORTANT
+        h = img_hash(src)
 
-        if h in used_hashes:
-            continue  # Skip previously used images
-
-        try:
-            img_data = requests.get(img_url, timeout=15).content
-            img = Image.open(BytesIO(img_data)).convert("RGB")
-            img = make_vertical(img)
-            img.save(os.path.join(OUT_DIR, filename), quality=90)
-
-            used_hashes.add(h)
-            print(f"[IMG] Saved {filename}")
-            return
-
-        except Exception:
+        if h in used:
             continue
 
-    raise RuntimeError(f"No NEW halal-safe image found for: {query}")
+        try:
+            img_data = requests.get(src, timeout=20).content
+            img = Image.open(BytesIO(img_data)).convert("RGB")
+
+            # DO NOT RESIZE HERE
+            img.save(os.path.join(OUT_DIR, filename), quality=95)
+
+            used.add(h)
+            print(f"[IMG] Saved high-res {filename}")
+            return
+        except:
+            continue
+
+    raise RuntimeError(f"No new halal image for {query}")
 
 def main():
-    used_hashes = load_used_images()
-
-    for fname, query in BEATS:
-        fetch_image(query, fname, used_hashes)
-
-    save_used_images(used_hashes)
+    used = load_used()
+    for name, query in BEATS:
+        fetch(query, name, used)
+    save_used(used)
 
 if __name__ == "__main__":
     main()
