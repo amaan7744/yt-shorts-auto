@@ -21,7 +21,7 @@ TARGET_W, TARGET_H = 1080, 1920
 FPS = 30
 MAX_DURATION = 35.0
 
-# VERY SMALL motion to help compression (do NOT increase)
+# Small motion to help compression (DO NOT increase)
 MICRO_MOTION = 0.025
 # ----------------------------------------
 
@@ -32,7 +32,7 @@ def log(msg: str):
 
 def get_audio_duration(path: str) -> float:
     if not os.path.isfile(path):
-        raise SystemExit(f"[VID] Audio file not found: {path}")
+        raise SystemExit(f"[VID] Missing audio file: {path}")
 
     audio = AudioSegment.from_file(path)
     duration = len(audio) / 1000.0
@@ -47,7 +47,7 @@ def get_audio_duration(path: str) -> float:
 
 def list_frames() -> List[str]:
     if not os.path.isdir(FRAMES_DIR):
-        raise SystemExit(f"[VID] Frames directory missing: {FRAMES_DIR}")
+        raise SystemExit(f"[VID] Missing frames directory: {FRAMES_DIR}")
 
     frames = sorted(
         os.path.join(FRAMES_DIR, f)
@@ -64,14 +64,14 @@ def list_frames() -> List[str]:
 
 def prepare_clip(img_path: str, duration: float, index: int) -> ImageClip:
     """
-    Quality-preserving image → video clip:
-    - ONE resize
-    - ONE crop
+    Quality-safe image → video clip
+    - Single resize
+    - Single crop
     - Micro motion only
     """
     clip = ImageClip(img_path).set_duration(duration)
 
-    # --- Single high-quality resize ---
+    # --- ONE high-quality resize ---
     w, h = clip.size
     scale = max(TARGET_W / w, TARGET_H / h)
     clip = clip.resize(scale)
@@ -84,7 +84,7 @@ def prepare_clip(img_path: str, duration: float, index: int) -> ImageClip:
         height=TARGET_H,
     )
 
-    # --- Micro motion (codec-friendly) ---
+    # --- Micro motion (compression-safe) ---
     if index % 2 == 0:
         clip = clip.fx(
             vfx.resize,
@@ -104,35 +104,38 @@ def main():
 
     total_duration = get_audio_duration(audio_path)
     frames = list_frames()
-
     per_frame = total_duration / len(frames)
+
     log(f"Per-frame duration: {per_frame:.2f}s")
 
-    clips = []
-    for i, img in enumerate(frames):
-        clips.append(prepare_clip(img, per_frame, i))
+    clips = [
+        prepare_clip(img, per_frame, i)
+        for i, img in enumerate(frames)
+    ]
 
-    # --- Concatenate ---
+    # --- Concatenate clips ---
     video = concatenate_videoclips(clips, method="compose")
     video = video.set_duration(total_duration)
 
-    # --- Attach audio (HARD CUT to video length) ---
+    # --- Attach audio (hard-cut to video length) ---
     voice = AudioFileClip(audio_path).subclip(0, total_duration)
     video = video.set_audio(CompositeAudioClip([voice]))
 
     # --- FINAL HIGH-QUALITY RENDER ---
-    log("Rendering true 1080p Shorts master (CRF-based)")
+    log("Rendering 1080p Shorts master (CRF-based FFmpeg encode)")
 
     video.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        crf=16,                 # KEY: quality-first encode
-        preset="slow",          # better compression efficiency
+        preset="slow",
         threads=4,
         ffmpeg_params=[
-            # Force high-quality scaling & sharpness
+            # Quality-first encode
+            "-crf", "16",
+
+            # High-quality scaling + light sharpening
             "-vf",
             "scale=1080:1920:flags=lanczos,"
             "unsharp=5:5:0.8:3:3:0.4",
@@ -149,7 +152,7 @@ def main():
         logger=None,
     )
 
-    log("Done — 1080p master preserved for YouTube")
+    log("Done — true 1080p master preserved")
 
 
 if __name__ == "__main__":
