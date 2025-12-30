@@ -101,15 +101,6 @@ jobs:
           test -f narration.wav
 
       # ----------------------------------------------------
-      # MIX AUDIO (LENGTH LOCKED)
-      # ----------------------------------------------------
-      - name: Mix ambience
-        run: |
-          set -euo pipefail
-          python audio_mix.py
-          test -f final_audio.wav
-
-      # ----------------------------------------------------
       # BUILD SUBTITLES
       # ----------------------------------------------------
       - name: Build subtitles
