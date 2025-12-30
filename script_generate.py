@@ -2,50 +2,34 @@
 import os
 import json
 import random
-import time
-import hashlib
 import requests
+import time
 import re
-from datetime import datetime, timedelta
+import hashlib
 
+# ---------------- CONFIG ----------------
 OUT_SCRIPT = "script.txt"
+OUT_IMAGES = "image_prompts.json"
 USED_FILE = "used_scripts.json"
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json",
-}
+MODEL = "deepseek/deepseek-r2t1"  # IMPORTANT
+MIN_WORDS, MAX_WORDS = 65, 85
 
-HOOKS = [
-    "If this happened outside your house, you would panic.",
-    "Imagine stepping outside at night and never coming back.",
-    "This started like a normal night, and ended without answers.",
-    "Police say this case could happen to anyone.",
-    "Nothing about this night seemed unusual at first.",
+NEWS_CONTEXTS = [
+    "police incident night investigation",
+    "missing person last seen evening police",
+    "unexplained vehicle discovery police report",
 ]
 
-US_LOCATIONS = [
-    "Ohio", "Texas", "Florida", "California",
-    "Pennsylvania", "Illinois", "Georgia",
-    "Arizona", "Michigan", "New York"
-]
-
-NEWS_QUERIES = [
-    "police responded late night call",
-    "missing person last seen night",
-    "abandoned vehicle police report",
-    "unusual police investigation night",
-]
-
-# ---------------- UTILS ----------------
+# ---------------------------------------
 
 def load_used():
     if os.path.exists(USED_FILE):
         try:
-            return set(json.load(open(USED_FILE, "r")))
+            return set(json.load(open(USED_FILE)))
         except:
             return set()
     return set()
@@ -54,98 +38,99 @@ def save_used(used):
     with open(USED_FILE, "w") as f:
         json.dump(sorted(list(used)), f, indent=2)
 
-def hash_text(text):
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def hash_text(t):
+    return hashlib.sha256(t.encode()).hexdigest()
 
-def random_date():
-    days_ago = random.randint(365, 3650)
-    d = datetime.now() - timedelta(days=days_ago)
-    return d.strftime("%B %d, %Y")
+def generate():
+    context = random.choice(NEWS_CONTEXTS)
 
-def fetch_context():
-    q = random.choice(NEWS_QUERIES)
-    try:
-        r = requests.get(
-            f"https://news.google.com/rss/search?q={q}",
-            timeout=15
-        )
-        if r.status_code == 200:
-            titles = re.findall(r"<title>(.*?)</title>", r.text)
-            return " ".join(titles[1:4])
-    except:
-        pass
-    return "police investigating a late night disappearance"
-
-# ---------------- GENERATION ----------------
-
-def generate_ai_script(context, hook, date, place):
     prompt = f"""
-Write a TRUE CRIME YouTube Short narration (22–30 seconds).
+Write a TRUE CRIME YouTube Shorts script.
 
-MANDATORY:
-- First line EXACTLY this hook:
-"{hook}"
-- Second line MUST include this date and location:
-"On {date}, police in {place} responded to a late-night call."
-- Mention a man or woman
-- Short sentences
-- Calm, serious tone
-- End unresolved
-- Make the viewer imagine it happening to them
+ABSOLUTE RULES:
+- 22–28 seconds ONLY
+- First line MUST contain:
+  • Date
+  • City or state
+  • Immediate abnormal event
+- Calm, factual tone
+- No metaphors
+- No filler
+- No questions
+- End with a contradiction
+
+STRUCTURE:
+1. Date + location + incident
+2. Why this is dangerous or wrong
+3. Police confirmation
+4. One detail that does NOT belong
+5. Another detail that removes explanation
+6. Final contradiction
+
+AFTER THE SCRIPT:
+Output IMAGE PROMPTS for each beat as JSON.
+Images must be:
+- Night
+- Empty
+- No people
+- No faces
+- Realistic
+- Tense
 
 Context:
 {context}
 """
 
     payload = {
-        "model": "deepseek/deepseek-chat",
+        "model": MODEL,
         "messages": [
-            {"role": "system", "content": "You write high-retention true crime Shorts."},
+            {"role": "system", "content": "You write high-retention Shorts that stop scrolling."},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.65,
-        "max_tokens": 240,
+        "temperature": 0.45,
+        "max_tokens": 450,
     }
 
     r = requests.post(
         OPENROUTER_URL,
-        headers=HEADERS,
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
         json=payload,
         timeout=60,
     )
 
-    if r.status_code == 200:
-        text = r.json()["choices"][0]["message"]["content"].strip()
-        return re.sub(r"\s+", " ", text)
+    if r.status_code != 200:
+        return None, None
 
-    return None
+    text = r.json()["choices"][0]["message"]["content"]
 
-def procedural_fallback(hook, date, place):
-    subject = random.choice(["a man", "a woman"])
-    return (
-        f"{hook} "
-        f"On {date}, police in {place} responded to a late-night call. "
-        f"{subject.capitalize()} had stepped outside minutes earlier. "
-        f"Their car was found running with the lights on. "
-        f"The doors were locked. "
-        f"Their phone was still inside. "
-        f"No one nearby saw anything. "
-        f"The case has never been explained."
-    )
+    # Split script + image prompts
+    parts = text.split("IMAGE PROMPTS")
+    if len(parts) != 2:
+        return None, None
 
-# ---------------- MAIN ----------------
+    script = re.sub(r"\s+", " ", parts[0]).strip()
+    wc = len(script.split())
+
+    if wc < MIN_WORDS or wc > MAX_WORDS:
+        return None, None
+
+    try:
+        images = json.loads(parts[1].strip())
+    except:
+        return None, None
+
+    return script, images
 
 def main():
     used = load_used()
 
-    hook = random.choice(HOOKS)
-    date = random_date()
-    place = random.choice(US_LOCATIONS)
-    context = fetch_context()
-
-    for _ in range(3):
-        script = generate_ai_script(context, hook, date, place)
-        if not script or len(script.split()) < 55:
+    for _ in range(5):
+        script, images = generate()
+        if not script:
+            time.sleep(2)
             continue
 
         h = hash_text(script)
@@ -155,20 +140,17 @@ def main():
         with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
             f.write(script)
 
+        with open(OUT_IMAGES, "w", encoding="utf-8") as f:
+            json.dump(images, f, indent=2)
+
         used.add(h)
         save_used(used)
-        print("✅ Hook-optimized script generated.")
+
+        print("✅ High-retention script + image prompts generated")
         return
 
-    fallback = procedural_fallback(hook, date, place)
-    h = hash_text(fallback)
-
-    with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
-        f.write(fallback)
-
-    used.add(h)
-    save_used(used)
-    print("⚠️ Used hook-optimized fallback.")
+    raise SystemExit("❌ Failed to generate valid script")
 
 if __name__ == "__main__":
     main()
+
