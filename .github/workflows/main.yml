@@ -3,10 +3,10 @@ name: Auto YouTube Shorts – Dark Crime (FINAL STABLE)
 on:
   workflow_dispatch:
   schedule:
-  - cron: "30 16 * * *"  # 12:30 PM ET
-  - cron: "30 22 * * *"  # 6:30 PM ET
-  - cron: "30 2 * * *"   # 9:30 PM ET
-
+    # US audience optimized times (UTC)
+    - cron: "30 16 * * *"  # 12:30 PM ET
+    - cron: "30 22 * * *"  # 6:30 PM ET
+    - cron: "30 2 * * *"   # 9:30 PM ET
 
 concurrency:
   group: yt-shorts-auto
@@ -92,13 +92,13 @@ jobs:
           test -d frames
 
       # ----------------------------------------------------
-      # GENERATE TTS
+      # GENERATE TTS (FINAL AUDIO ONLY)
       # ----------------------------------------------------
       - name: Generate narration
         run: |
           set -euo pipefail
-          python tts_generate.py --output narration.wav
-          test -f narration.wav
+          python tts_generate.py --output final_audio.wav
+          test -f final_audio.wav
 
       # ----------------------------------------------------
       # BUILD SUBTITLES
