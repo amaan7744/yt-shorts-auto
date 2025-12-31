@@ -1,48 +1,184 @@
-name: Digistore24 Shorts Automation
+name: Auto YouTube Shorts – Dark Crime (STABLE)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
+    # US-focused Shorts windows (UTC)
+    - cron: "30 16 * * *"  # 12:30 PM ET
+    - cron: "30 22 * * *"  # 6:30 PM ET
+    - cron: "30 2 * * *"   # 9:30 PM ET
+
+concurrency:
+  group: yt-shorts-auto
+  cancel-in-progress: true
 
 jobs:
-  build-and-upload:
+  build-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
+
+    permissions:
+      contents: write
+
+    env:
+      HF_HOME: /tmp/huggingface
+      TRANSFORMERS_CACHE: /tmp/huggingface
+      TORCH_HOME: /tmp/torch
+      PIP_NO_CACHE_DIR: "1"
+      COQUI_TOS_AGREED: "1"
 
     steps:
-      - name: Checkout repo
+      # ----------------------------------------------------
+      # CHECKOUT
+      # ----------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # ----------------------------------------------------
+      # FREE DISK SPACE (REQUIRED)
+      # ----------------------------------------------------
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
+
+      # ----------------------------------------------------
+      # PYTHON SETUP
+      # ----------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # ----------------------------------------------------
+      # SYSTEM DEPENDENCIES
+      # ----------------------------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu
-
-      - name: Install Python dependencies
-        run: |
+          sudo apt-get install -y ffmpeg jq
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+          if [ -f requirements.txt ]; then
+            pip install --no-cache-dir -r requirements.txt
+          fi
 
+      # ----------------------------------------------------
+      # GENERATE SCRIPT (GPT-5 via GitHub Models)
+      # ----------------------------------------------------
       - name: Generate script
-        run: python generate_script.py
-
-      - name: Fetch images (Pexels)
         env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        run: python fetch_images.py
+          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
+        run: |
+          set -euo pipefail
+          python script_generate.py
+          test -f script.txt
 
-      - name: Build video (uses existing voice)
-        run: python make_video.py
+      # ----------------------------------------------------
+      # FETCH IMAGES (NON-REPEATING, HALAL)
+      # ----------------------------------------------------
+      - name: Fetch images
+        env:
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
+        run: |
+          set -euo pipefail
+          python image_fetch.py
+          test -d frames
 
+      # ----------------------------------------------------
+      # GENERATE TTS (NO AMBIENCE)
+      # ----------------------------------------------------
+      - name: Generate narration
+        run: |
+          set -euo pipefail
+          python tts_generate.py --output final_audio.wav
+          test -f final_audio.wav
+
+      # ----------------------------------------------------
+      # BUILD SUBTITLES
+      # ----------------------------------------------------
+      - name: Build subtitles
+        run: |
+          set -euo pipefail
+          python subtitles_build.py
+          test -f subs.ass
+
+      # ----------------------------------------------------
+      # BUILD RAW VIDEO (1080×1920)
+      # ----------------------------------------------------
+      - name: Build raw video
+        run: |
+          set -euo pipefail
+          python video_build.py final_audio.wav
+          test -f video_raw.mp4
+
+      # ----------------------------------------------------
+      # FINAL RENDER (HIGH QUALITY, NO 240P)
+      # ----------------------------------------------------
+      - name: Final render (HQ)
+        run: |
+          set -euo pipefail
+          ffmpeg -y \
+            -i video_raw.mp4 \
+            -i final_audio.wav \
+            -vf "ass=subs.ass,scale=1080:1920:flags=lanczos" \
+            -map 0:v -map 1:a \
+            -c:v libx264 \
+            -profile:v high \
+            -level 4.2 \
+            -pix_fmt yuv420p \
+            -preset slow \
+            -crf 17 \
+            -movflags +faststart \
+            -colorspace bt709 \
+            -color_primaries bt709 \
+            -color_trc bt709 \
+            -color_range 2 \
+            -c:a aac \
+            -b:a 192k \
+            output.mp4
+          test -f output.mp4
+
+      # ----------------------------------------------------
+      # UPLOAD TO YOUTUBE
+      # ----------------------------------------------------
       - name: Upload to YouTube
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-        run: python upload_youtube.py
+          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          python youtube_upload.py
+
+      # ----------------------------------------------------
+      # SAVE USED TOPICS (NO REPEATS)
+      # ----------------------------------------------------
+      - name: Save used topics
+        run: |
+          if [ -f used_topics.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add used_topics.json
+            git commit -m "Update used topics" || true
+            git push || true
+          fi
+
+      # ----------------------------------------------------
+      # ARTIFACT BACKUP
+      # ----------------------------------------------------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-short
+          path: |
+            output.mp4
+            script.txt
+            subs.ass
