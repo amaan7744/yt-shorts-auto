@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-import os
 import json
-import random
-import hashlib
-import requests
+import os
 import re
-import time
-from datetime import datetime
+import requests
 
-# ---------------- FILES ----------------
+CASE_FILE = "case.json"
 OUT_SCRIPT = "script.txt"
-OUT_IMAGE_PROMPTS = "image_prompts.json"
-USED_TOPICS_FILE = "used_topics.json"
+OUT_IMAGES = "image_prompts.json"
 
-# ---------------- API ----------------
 API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "deepseek/deepseek-chat"
@@ -23,138 +17,81 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-# ---------------- SOURCES ----------------
-NEWS_QUERIES = [
-    "police found abandoned vehicle",
-    "missing person last seen night",
-    "unidentified body police investigation",
-]
-
-LOCATIONS = [
-    "Ohio", "Texas", "Florida", "California", "Pennsylvania",
-    "Illinois", "New York", "Michigan", "Georgia"
-]
-
-# ---------------- HELPERS ----------------
-def clean(text: str) -> str:
+def clean(text):
     text = re.sub(r"\n+", " ", text)
     text = re.sub(r"\s+", " ", text)
-    text = text.replace("*", "").replace("#", "")
     return text.strip()
 
-def load_used():
-    if os.path.exists(USED_TOPICS_FILE):
-        try:
-            return set(json.load(open(USED_TOPICS_FILE)))
-        except:
-            return set()
-    return set()
+def main():
+    if not os.path.exists(CASE_FILE):
+        raise SystemExit("❌ case.json missing")
 
-def save_used(used):
-    with open(USED_TOPICS_FILE, "w") as f:
-        json.dump(sorted(list(used)), f, indent=2)
+    facts = json.load(open(CASE_FILE))
 
-def hash_text(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
-
-# ---------------- CONTEXT ----------------
-def fetch_news_context():
-    q = random.choice(NEWS_QUERIES)
-    url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            return r.text[:1200]
-    except:
-        pass
-    return "police investigation at night involving an unexplained disappearance"
-
-# ---------------- SCRIPT ----------------
-def generate_raw_script(context: str):
     prompt = f"""
-Write a short true crime narration for YouTube Shorts.
-Tone: calm, factual, serious.
-No questions.
-No fluff.
-Short sentences.
+Rewrite these REAL FACTS into a high-retention YouTube Shorts script.
 
-Context:
-{context}
+GOAL:
+Keep the viewer watching until the final line.
+
+RULES:
+- First line MUST include Date and Location
+- Do NOT invent facts
+- Short sentences
+- Calm, serious tone
+- No questions
+- No dramatic words
+- Each sentence must remove a normal assumption
+- 20–30 seconds spoken
+
+STRUCTURE:
+1. Authority + time
+2. What it looked like at first
+3. Why that assumption fails
+4. New detail that raises tension
+5. Consequence of that detail
+6. Final contradiction
+
+FACTS:
+Date: {facts['Date']}
+Location: {facts['Location']}
+Object: {facts['Object']}
+State: {facts['State']}
+Detail: {facts['Detail']}
+Extra: {facts['Extra']}
+
+Write ONLY the script.
 """
 
     payload = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": "You write realistic true crime narrations."},
+            {"role": "system", "content": "You rewrite factual crime cases to maximize viewer retention."},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.7,
+        "temperature": 0.45,
         "max_tokens": 300,
     }
 
-    try:
-        r = requests.post(
-            OPENROUTER_URL,
-            headers=HEADERS,
-            json=payload,
-            timeout=60
-        )
-        if r.status_code == 200:
-            return clean(r.json()["choices"][0]["message"]["content"])
-    except:
-        pass
-
-    return None
-
-# ---------------- ENFORCE HOOK ----------------
-def enforce_hook(script: str):
-    date = datetime.now().strftime("%B %d, %Y")
-    location = random.choice(LOCATIONS)
-
-    first_line = f"On {date}, police in {location} reported something unusual."
-    lines = script.split(". ")
-    body = ". ".join(lines[:6])
-
-    final = f"{first_line} {body} Police say the timeline still does not make sense."
-    return final
-
-# ---------------- IMAGE PROMPTS ----------------
-def build_image_prompts():
-    return [
-        "abandoned car night headlights on",
-        "empty residential street night",
-        "police tape evidence scene night",
-        "object left behind ground night",
-        "foggy road night no people"
-    ]
-
-# ---------------- MAIN ----------------
-def main():
-    used = load_used()
-    context = fetch_news_context()
-
-    raw = generate_raw_script(context)
-    if not raw:
-        raw = "Police responded to a nighttime incident involving a missing person."
-
-    script = enforce_hook(raw)
-    h = hash_text(script)
-
-    # Prevent exact repetition
-    if h in used:
-        script += " Investigators later confirmed no clear explanation was found."
+    r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
+    text = clean(r.json()["choices"][0]["message"]["content"])
 
     with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
-        f.write(script)
+        f.write(text)
 
-    with open(OUT_IMAGE_PROMPTS, "w", encoding="utf-8") as f:
-        json.dump(build_image_prompts(), f, indent=2)
+    # Visuals tied to escalation
+    image_prompts = [
+        "abandoned car night headlights on",
+        "locked car door interior night",
+        "police tape residential street night",
+        "phone recording empty seat night",
+        "empty road fog night"
+    ]
 
-    used.add(h)
-    save_used(used)
+    with open(OUT_IMAGES, "w", encoding="utf-8") as f:
+        json.dump(image_prompts, f, indent=2)
 
-    print("✅ Script and image prompts written successfully")
+    print("✅ Retention-optimized script generated")
 
 if __name__ == "__main__":
     main()
-
