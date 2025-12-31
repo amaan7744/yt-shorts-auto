@@ -13,7 +13,7 @@ from azure.core.exceptions import HttpResponseError
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
-MODEL_NAME = "meta-llama/llama-3.1-70b-instruct"
+MODEL_NAME = "openai/gpt-4o-mini"
 ENDPOINT = "https://models.github.ai/inference"
 OUT_FILE = "script.txt"
 USED_TOPICS_FILE = "used_topics.json"
