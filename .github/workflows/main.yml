@@ -1,9 +1,9 @@
-name: Auto YouTube Shorts – Dark Crime (FINAL STABLE)
+name: Auto YouTube Shorts – Dark Crime (Stable + Case Driven)
 
 on:
   workflow_dispatch:
   schedule:
-    # US audience optimized times (UTC)
+    # US-focused Shorts windows (UTC)
     - cron: "30 16 * * *"  # 12:30 PM ET
     - cron: "30 22 * * *"  # 6:30 PM ET
     - cron: "30 2 * * *"   # 9:30 PM ET
@@ -21,11 +21,7 @@ jobs:
       contents: write
 
     env:
-      HF_HOME: /tmp/huggingface
-      TRANSFORMERS_CACHE: /tmp/huggingface
-      TORCH_HOME: /tmp/torch
       PIP_NO_CACHE_DIR: "1"
-      COQUI_TOS_AGREED: "1"
 
     steps:
       # ----------------------------------------------------
@@ -44,7 +40,6 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
           sudo rm -rf /usr/share/swift
           sudo rm -rf /var/lib/apt/lists/*
           df -h
@@ -70,7 +65,16 @@ jobs:
           fi
 
       # ----------------------------------------------------
-      # GENERATE SCRIPT
+      # 🔍 FETCH REAL CASE (CRITICAL STEP)
+      # ----------------------------------------------------
+      - name: Fetch real crime case
+        run: |
+          set -euo pipefail
+          python case_search.py
+          test -f case.json || (echo "❌ case.json missing" && exit 1)
+
+      # ----------------------------------------------------
+      # ✍️ GENERATE SCRIPT (FROM REAL CASE)
       # ----------------------------------------------------
       - name: Generate script
         env:
@@ -78,10 +82,10 @@ jobs:
         run: |
           set -euo pipefail
           python script_generate.py
-          test -f script.txt
+          test -f script.txt || (echo "❌ script.txt missing" && exit 1)
 
       # ----------------------------------------------------
-      # FETCH IMAGES
+      # 🖼 FETCH IMAGES (CASE-AWARE)
       # ----------------------------------------------------
       - name: Fetch images
         env:
@@ -89,39 +93,39 @@ jobs:
         run: |
           set -euo pipefail
           python image_fetch.py
-          test -d frames
+          test -d frames || (echo "❌ frames/ missing" && exit 1)
 
       # ----------------------------------------------------
-      # GENERATE TTS (FINAL AUDIO ONLY)
+      # 🔊 GENERATE TTS
       # ----------------------------------------------------
       - name: Generate narration
         run: |
           set -euo pipefail
           python tts_generate.py --output final_audio.wav
-          test -f final_audio.wav
+          test -f final_audio.wav || (echo "❌ final_audio.wav missing" && exit 1)
 
       # ----------------------------------------------------
-      # BUILD SUBTITLES
+      # 📝 BUILD SUBTITLES (SYNCED)
       # ----------------------------------------------------
       - name: Build subtitles
         run: |
           set -euo pipefail
           python subtitles_build.py
-          test -f subs.ass
+          test -f subs.ass || (echo "❌ subs.ass missing" && exit 1)
 
       # ----------------------------------------------------
-      # BUILD RAW VIDEO
+      # 🎬 BUILD RAW VIDEO (IMAGE → VIDEO)
       # ----------------------------------------------------
       - name: Build raw video
         run: |
           set -euo pipefail
           python video_build.py final_audio.wav
-          test -f video_raw.mp4
+          test -f video_raw.mp4 || (echo "❌ video_raw.mp4 missing" && exit 1)
 
       # ----------------------------------------------------
-      # FINAL RENDER (HIGH QUALITY)
+      # 🎞 FINAL RENDER (1080×1920 HQ)
       # ----------------------------------------------------
-      - name: Final render (HQ)
+      - name: Final render
         run: |
           set -euo pipefail
           ffmpeg -y \
@@ -139,27 +143,25 @@ jobs:
             -colorspace bt709 \
             -color_primaries bt709 \
             -color_trc bt709 \
-            -color_range 2 \
             -c:a aac \
             -b:a 192k \
             output.mp4
-          test -f output.mp4
+          test -f output.mp4 || (echo "❌ output.mp4 missing" && exit 1)
 
       # ----------------------------------------------------
-      # UPLOAD TO YOUTUBE
+      # 🚀 UPLOAD TO YOUTUBE
       # ----------------------------------------------------
       - name: Upload to YouTube
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
         run: |
           set -euo pipefail
           python youtube_upload.py
 
       # ----------------------------------------------------
-      # SAVE USED TOPICS
+      # 💾 SAVE USED TOPICS (NO REPEATS)
       # ----------------------------------------------------
       - name: Save used topics
         run: |
@@ -172,7 +174,7 @@ jobs:
           fi
 
       # ----------------------------------------------------
-      # ARTIFACT BACKUP
+      # 📦 ARTIFACT BACKUP
       # ----------------------------------------------------
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -182,3 +184,4 @@ jobs:
             output.mp4
             script.txt
             subs.ass
+            case.json
