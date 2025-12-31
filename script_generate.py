@@ -3,6 +3,8 @@ import json
 import os
 import re
 import requests
+import time
+import sys
 
 CASE_FILE = "case.json"
 OUT_SCRIPT = "script.txt"
@@ -17,16 +19,22 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-def clean(text):
+MAX_RETRIES = 4
+
+def clean(text: str) -> str:
     text = re.sub(r"\n+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+def fail(msg):
+    print(f"❌ {msg}", file=sys.stderr)
+
 def main():
     if not os.path.exists(CASE_FILE):
-        raise SystemExit("❌ case.json missing")
+        fail("case.json missing")
+        sys.exit(1)
 
-    facts = json.load(open(CASE_FILE))
+    facts = json.load(open(CASE_FILE, encoding="utf-8"))
 
     prompt = f"""
 Rewrite these REAL FACTS into a high-retention YouTube Shorts script.
@@ -73,25 +81,61 @@ Write ONLY the script.
         "max_tokens": 300,
     }
 
-    r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
-    text = clean(r.json()["choices"][0]["message"]["content"])
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = requests.post(
+                OPENROUTER_URL,
+                headers=HEADERS,
+                json=payload,
+                timeout=60,
+            )
 
-    with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
-        f.write(text)
+            if r.status_code != 200:
+                fail(f"API HTTP {r.status_code}: {r.text}")
+                time.sleep(3)
+                continue
 
-    # Visuals tied to escalation
-    image_prompts = [
-        "abandoned car night headlights on",
-        "locked car door interior night",
-        "police tape residential street night",
-        "phone recording empty seat night",
-        "empty road fog night"
-    ]
+            data = r.json()
 
-    with open(OUT_IMAGES, "w", encoding="utf-8") as f:
-        json.dump(image_prompts, f, indent=2)
+            # 🔒 CRITICAL FIX
+            if "choices" not in data or not data["choices"]:
+                fail(f"Invalid API response (no choices): {data}")
+                time.sleep(3)
+                continue
 
-    print("✅ Retention-optimized script generated")
+            content = data["choices"][0]["message"]["content"]
+            script = clean(content)
+
+            if len(script.split()) < 40:
+                fail("Generated script too short, retrying")
+                time.sleep(2)
+                continue
+
+            # ✅ SUCCESS
+            with open(OUT_SCRIPT, "w", encoding="utf-8") as f:
+                f.write(script)
+
+            image_prompts = [
+                "abandoned car night headlights on",
+                "locked car door interior night",
+                "police tape residential street night",
+                "phone recording empty seat night",
+                "empty road fog night"
+            ]
+
+            with open(OUT_IMAGES, "w", encoding="utf-8") as f:
+                json.dump(image_prompts, f, indent=2)
+
+            print("✅ Script generated successfully")
+            return
+
+        except Exception as e:
+            fail(f"Exception: {e}")
+            time.sleep(3)
+
+    # ❌ Only after ALL retries
+    fail("Unable to generate valid script after retries")
+    sys.exit(1)
 
 if __name__ == "__main__":
     main()
