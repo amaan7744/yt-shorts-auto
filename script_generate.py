@@ -4,7 +4,6 @@ import sys
 import json
 import time
 import random
-import requests
 
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
@@ -15,105 +14,108 @@ from azure.core.exceptions import HttpResponseError
 # --------------------------------------------------
 MODEL_NAME = "openai/gpt-4o-mini"
 ENDPOINT = "https://models.github.ai/inference"
-OUT_FILE = "script.txt"
+
+SCRIPT_FILE = "script.txt"
+IMAGE_PROMPTS_FILE = "image_prompts.json"
 USED_TOPICS_FILE = "used_topics.json"
 
 MAX_RETRIES = 3
-TIMEOUT = 30
 
 # --------------------------------------------------
-# ENV CHECK
+# ENV
 # --------------------------------------------------
 TOKEN = os.getenv("GH_MODELS_TOKEN")
 if not TOKEN:
-    print("❌ GH_MODELS_TOKEN not set", file=sys.stderr)
+    print("❌ GH_MODELS_TOKEN missing", file=sys.stderr)
     sys.exit(1)
 
-# --------------------------------------------------
-# CLIENT
-# --------------------------------------------------
 client = ChatCompletionsClient(
     endpoint=ENDPOINT,
     credential=AzureKeyCredential(TOKEN),
 )
 
 # --------------------------------------------------
-# UTILITIES
+# UTIL
 # --------------------------------------------------
-def load_used_topics():
+def load_used():
     if os.path.exists(USED_TOPICS_FILE):
         try:
-            with open(USED_TOPICS_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+            return set(json.load(open(USED_TOPICS_FILE)))
         except Exception:
             return set()
     return set()
 
-def save_used_topics(topics):
+def save_used(used):
     with open(USED_TOPICS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(list(topics)), f, indent=2)
+        json.dump(sorted(list(used)), f, indent=2)
 
 def clean(text: str) -> str:
-    return (
-        text.replace("```", "")
-        .replace("—", "-")
-        .strip()
-    )
+    return text.replace("```", "").strip()
 
 # --------------------------------------------------
-# CASE SEED (REALISTIC, NON-REPEATING)
+# CASE SEEDS (REAL + NON-GENERIC)
 # --------------------------------------------------
 CASE_SEEDS = [
-    "October 13, 2019 – Springfield, Ohio – abandoned car found with engine running and doors locked",
-    "March 22, 2016 – Delphi, Indiana – two teenagers vanish near a hiking trail",
-    "July 8, 2004 – Moscow, Idaho – late-night house crime with no forced entry",
-    "December 26, 1996 – Boulder, Colorado – child disappearance inside family home",
-    "August 4, 2002 – Laci Peterson disappearance – Modesto, California",
-    "April 19, 2013 – Boston Marathon bombing aftermath – unexplained suspect movement",
-    "September 11, 2006 – Napa Valley, California – jogger disappearance at dawn",
+    "October 13, 2019 — Springfield, Ohio — abandoned car with engine running",
+    "March 22, 2016 — Delphi, Indiana — disappearance near hiking trail",
+    "September 11, 2006 — Napa Valley, California — early morning jogger vanishes",
+    "July 8, 2004 — Moscow, Idaho — late-night home crime with no forced entry",
 ]
 
 # --------------------------------------------------
-# SCRIPT PROMPT
+# PROMPT
 # --------------------------------------------------
-def build_prompt(case_seed: str) -> str:
+def build_prompt(case: str) -> str:
     return f"""
-You are a professional true-crime documentary writer.
+You are a YouTube Shorts true-crime writer.
 
-Write a YouTube Shorts script (35–45 seconds max).
+Write a 30–40 second script.
 
 STRICT RULES:
-- Start with DATE + LOCATION immediately
-- No vague language
+- Start with DATE and LOCATION in first sentence
+- Calm, factual, unsettling tone
 - No filler phrases
-- No repetition
-- No supernatural claims
-- Calm, serious tone
-- High retention hook in first 2 seconds
+- No questions
+- Spoken, short sentences
+- End on contradiction
 
-FORMAT:
-Date:
-Location:
-Key Detail:
-Script (short paragraphs, spoken style):
+After the script, output IMAGE PROMPTS as JSON.
+
+IMAGE RULES:
+- NO PEOPLE
+- Night, objects, empty places only
+- Cinematic, realistic
+- 4 beats: hook, detail, context, contradiction
+
+OUTPUT FORMAT (VERY IMPORTANT):
+
+SCRIPT:
+<text>
+
+IMAGES_JSON:
+[
+  "prompt 1",
+  "prompt 2",
+  "prompt 3",
+  "prompt 4"
+]
 
 CASE:
-{case_seed}
+{case}
 """
 
 # --------------------------------------------------
 # MAIN
 # --------------------------------------------------
 def main():
-    used_topics = load_used_topics()
+    used = load_used()
+    available = [c for c in CASE_SEEDS if c not in used]
 
-    available_cases = [c for c in CASE_SEEDS if c not in used_topics]
-    if not available_cases:
-        print("❌ No unused case seeds left", file=sys.stderr)
+    if not available:
+        print("❌ No unused cases left", file=sys.stderr)
         sys.exit(1)
 
-    case = random.choice(available_cases)
-    prompt = build_prompt(case)
+    case = random.choice(available)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -122,37 +124,44 @@ def main():
             response = client.complete(
                 model=MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": "You write factual true crime narration."},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": "You write factual crime narration."},
+                    {"role": "user", "content": build_prompt(case)},
                 ],
-                temperature=0.6,
-                max_tokens=500,
-                timeout=TIMEOUT,
+                temperature=0.5,
+                max_tokens=700,
             )
 
             text = clean(response.choices[0].message.content)
 
-            if len(text) < 200:
-                raise ValueError("Script too short")
+            if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
+                raise ValueError("Missing required sections")
 
-            with open(OUT_FILE, "w", encoding="utf-8") as f:
-                f.write(text)
+            script_part, images_part = text.split("IMAGES_JSON:")
+            script = script_part.replace("SCRIPT:", "").strip()
 
-            used_topics.add(case)
-            save_used_topics(used_topics)
+            images = json.loads(images_part.strip())
 
-            print("✅ Script generated successfully")
+            if len(images) < 4 or len(script) < 200:
+                raise ValueError("Script or images too weak")
+
+            # Write outputs
+            with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
+                f.write(script)
+
+            with open(IMAGE_PROMPTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(images, f, indent=2)
+
+            used.add(case)
+            save_used(used)
+
+            print("✅ Script + image prompts generated")
             return
 
-        except HttpResponseError as e:
-            print(f"❌ API error: {e.message}", file=sys.stderr)
-
-        except Exception as e:
+        except (HttpResponseError, ValueError, json.JSONDecodeError) as e:
             print(f"⚠️ Retry {attempt}: {e}", file=sys.stderr)
+            time.sleep(2)
 
-        time.sleep(2)
-
-    print("❌ Failed to generate script after retries", file=sys.stderr)
+    print("❌ Failed to generate valid script", file=sys.stderr)
     sys.exit(1)
 
 # --------------------------------------------------
