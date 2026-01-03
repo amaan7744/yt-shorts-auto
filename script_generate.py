@@ -3,7 +3,6 @@ import os
 import sys
 import json
 import time
-import random
 
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
@@ -15,9 +14,10 @@ from azure.core.exceptions import HttpResponseError
 MODEL_NAME = "openai/gpt-4o-mini"
 ENDPOINT = "https://models.github.ai/inference"
 
+CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
 IMAGE_PROMPTS_FILE = "image_prompts.json"
-USED_TOPICS_FILE = "used_topics.json"
+USED_CASES_FILE = "used_cases.json"
 
 MAX_RETRIES = 3
 
@@ -37,57 +37,49 @@ client = ChatCompletionsClient(
 # --------------------------------------------------
 # UTIL
 # --------------------------------------------------
-def load_used():
-    if os.path.exists(USED_TOPICS_FILE):
-        try:
-            return set(json.load(open(USED_TOPICS_FILE)))
-        except Exception:
-            return set()
-    return set()
-
-def save_used(used):
-    with open(USED_TOPICS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(list(used)), f, indent=2)
+def load_json(path):
+    if not os.path.exists(path):
+        print(f"❌ Required file missing: {path}", file=sys.stderr)
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def clean(text: str) -> str:
     return text.replace("```", "").strip()
 
 # --------------------------------------------------
-# CASE SEEDS (REAL + NON-GENERIC)
-# --------------------------------------------------
-CASE_SEEDS = [
-    "October 13, 2019 — Springfield, Ohio — abandoned car with engine running",
-    "March 22, 2016 — Delphi, Indiana — disappearance near hiking trail",
-    "September 11, 2006 — Napa Valley, California — early morning jogger vanishes",
-    "July 8, 2004 — Moscow, Idaho — late-night home crime with no forced entry",
-]
-
-# --------------------------------------------------
 # PROMPT
 # --------------------------------------------------
-def build_prompt(case: str) -> str:
+def build_prompt(case: dict) -> str:
     return f"""
-You are a YouTube Shorts true-crime writer.
+You are a professional YouTube Shorts true-crime writer.
 
-Write a 30–40 second script.
+CASE FACTS (REAL — DO NOT CHANGE):
+Date: {case.get("date")}
+Location: {case.get("location")}
+Summary: {case.get("summary")}
+
+TASK:
+Write a 30–40 second narration.
 
 STRICT RULES:
-- Start with DATE and LOCATION in first sentence
+- First sentence MUST include the date and location
 - Calm, factual, unsettling tone
-- No filler phrases
+- Short spoken sentences
 - No questions
-- Spoken, short sentences
-- End on contradiction
+- No filler words
+- No supernatural claims
+- End on a factual contradiction or unresolved detail
 
 After the script, output IMAGE PROMPTS as JSON.
 
 IMAGE RULES:
-- NO PEOPLE
-- Night, objects, empty places only
+- NO people
+- Night scenes, objects, empty places
 - Cinematic, realistic
 - 4 beats: hook, detail, context, contradiction
 
-OUTPUT FORMAT (VERY IMPORTANT):
+OUTPUT FORMAT (EXACT):
 
 SCRIPT:
 <text>
@@ -99,23 +91,13 @@ IMAGES_JSON:
   "prompt 3",
   "prompt 4"
 ]
-
-CASE:
-{case}
 """
 
 # --------------------------------------------------
 # MAIN
 # --------------------------------------------------
 def main():
-    used = load_used()
-    available = [c for c in CASE_SEEDS if c not in used]
-
-    if not available:
-        print("❌ No unused cases left", file=sys.stderr)
-        sys.exit(1)
-
-    case = random.choice(available)
+    case = load_json(CASE_FILE)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -138,21 +120,19 @@ def main():
 
             script_part, images_part = text.split("IMAGES_JSON:")
             script = script_part.replace("SCRIPT:", "").strip()
-
             images = json.loads(images_part.strip())
 
-            if len(images) < 4 or len(script) < 200:
-                raise ValueError("Script or images too weak")
+            if len(script) < 200:
+                raise ValueError("Script too short")
 
-            # Write outputs
+            if len(images) < 4:
+                raise ValueError("Not enough image prompts")
+
             with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
                 f.write(script)
 
             with open(IMAGE_PROMPTS_FILE, "w", encoding="utf-8") as f:
                 json.dump(images, f, indent=2)
-
-            used.add(case)
-            save_used(used)
 
             print("✅ Script + image prompts generated")
             return
