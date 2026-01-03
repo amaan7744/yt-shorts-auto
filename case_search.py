@@ -3,129 +3,150 @@ import os
 import json
 import hashlib
 import random
-import requests
 import re
+import datetime
+import requests
 
 OUT_CASE = "case.json"
 USED_CASES = "used_cases.json"
 
-# ---------- SOURCES ----------
-REDDIT_URL = "https://www.reddit.com/r/UnresolvedMysteries/top.json?t=year&limit=100"
-WIKI_PAGES = [
-    "List_of_people_who_disappeared",
-    "Unidentified_decedents",
-    "Unsolved_deaths"
+HEADERS = {"User-Agent": "Mozilla/5.0 (CrimeBot/1.0)"}
+
+# ----------------------------------------
+# SOURCES
+# ----------------------------------------
+REDDIT_ENDPOINTS = [
+    "https://www.reddit.com/r/UnresolvedMysteries/new.json?limit=100",
+    "https://www.reddit.com/r/TrueCrime/new.json?limit=100",
 ]
+
 NEWS_QUERIES = [
-    "police found abandoned vehicle",
-    "missing person last seen night police",
-    "unidentified person investigation police"
+    "missing person",
+    "abandoned car police",
+    "unidentified remains",
+    "cold case reopened",
+    "last seen at night",
 ]
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+CURRENT_YEAR = datetime.datetime.now().year
+MIN_YEAR = 1990
 
-# ---------- HELPERS ----------
+# ----------------------------------------
+# UTIL
+# ----------------------------------------
 def load_used():
     if os.path.exists(USED_CASES):
         try:
             return set(json.load(open(USED_CASES)))
-        except:
+        except Exception:
             return set()
     return set()
 
 def save_used(used):
-    with open(USED_CASES, "w") as f:
+    with open(USED_CASES, "w", encoding="utf-8") as f:
         json.dump(sorted(list(used)), f, indent=2)
 
-def hash_case(text):
-    return hashlib.sha256(text.encode()).hexdigest()
+def fingerprint(text: str) -> str:
+    return hashlib.sha256(text.lower().encode("utf-8")).hexdigest()
 
-def clean(text):
-    text = re.sub(r"\n+", " ", text)
+def clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-# ---------- FETCHERS ----------
-def fetch_reddit():
-    r = requests.get(REDDIT_URL, headers=HEADERS, timeout=20)
+# ----------------------------------------
+# FETCHERS
+# ----------------------------------------
+def fetch_reddit_case():
+    url = random.choice(REDDIT_ENDPOINTS)
+    r = requests.get(url, headers=HEADERS, timeout=20)
     if r.status_code != 200:
         return None
+
     posts = r.json()["data"]["children"]
     random.shuffle(posts)
 
     for p in posts:
-        data = p["data"]
-        text = f"{data['title']} {data.get('selftext','')}"
-        text = clean(text)
-        if len(text) > 500:
+        d = p["data"]
+        title = d.get("title", "")
+        body = d.get("selftext", "")
+        text = clean(f"{title}. {body}")
+        if len(text) > 400 and not d.get("stickied"):
             return text
     return None
 
-def fetch_wikipedia():
-    page = random.choice(WIKI_PAGES)
-    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{page}"
+def fetch_news_case():
+    year = random.randint(MIN_YEAR, CURRENT_YEAR)
+    query = random.choice(NEWS_QUERIES)
+    q = f"{query} {year}"
+
+    url = (
+        "https://news.google.com/rss/search"
+        f"?q={q}&hl=en-US&gl=US&ceid=US:en"
+    )
+
     r = requests.get(url, timeout=15)
-    if r.status_code == 200:
-        return r.json().get("extract")
-    return None
+    if r.status_code != 200:
+        return None
 
-def fetch_news():
-    q = random.choice(NEWS_QUERIES)
-    url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
-    r = requests.get(url, timeout=15)
-    if r.status_code == 200:
-        return r.text[:1500]
-    return None
+    matches = re.findall(r"<title>(.*?)</title>", r.text)
+    if len(matches) < 2:
+        return None
 
-def fetch_case_text():
-    sources = [fetch_reddit, fetch_wikipedia, fetch_news]
-    random.shuffle(sources)
-    for src in sources:
-        t = src()
-        if t and len(t) > 300:
-            return clean(t)
-    return None
+    return clean(" ".join(matches[1:4]))
 
-# ---------- FACT EXTRACTION ----------
-def extract_facts(text):
-    """
-    Minimal but concrete.
-    We DO NOT overthink this.
-    """
+# ----------------------------------------
+# FACT EXTRACTION (HEURISTIC, REAL)
+# ----------------------------------------
+def extract_facts(text: str) -> dict:
+    date_match = re.search(
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}",
+        text
+    )
+
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+
+    location_match = re.search(
+        r"in\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)",
+        text
+    )
+
     return {
-        "Date": "October 2019",
-        "Location": "United States",
-        "Object": "Car",
-        "State": "Engine running",
-        "Detail": "Doors locked",
-        "Extra": "Phone left recording"
+        "date": date_match.group(0) if date_match else (year_match.group(0) if year_match else "Unknown"),
+        "location": location_match.group(1) if location_match else "United States",
+        "summary": text[:800]
     }
 
-# ---------- MAIN ----------
+# ----------------------------------------
+# MAIN
+# ----------------------------------------
 def main():
     used = load_used()
 
-    for _ in range(10):
-        raw = fetch_case_text()
-        if not raw:
-            continue
+    fetchers = [fetch_reddit_case, fetch_news_case]
+    random.shuffle(fetchers)
 
-        h = hash_case(raw[:400])
-        if h in used:
-            continue
+    for _ in range(15):
+        for fetch in fetchers:
+            raw = fetch()
+            if not raw:
+                continue
 
-        facts = extract_facts(raw)
+            fp = fingerprint(raw)
+            if fp in used:
+                continue
 
-        with open(OUT_CASE, "w", encoding="utf-8") as f:
-            json.dump(facts, f, indent=2)
+            facts = extract_facts(raw)
 
-        used.add(h)
-        save_used(used)
+            with open(OUT_CASE, "w", encoding="utf-8") as f:
+                json.dump(facts, f, indent=2)
 
-        print("✅ New case found and saved")
-        return
+            used.add(fp)
+            save_used(used)
 
-    raise SystemExit("❌ Failed to find a new unique case")
+            print("✅ New real-world case saved")
+            return
+
+    raise SystemExit("❌ Unable to find a new unique case")
 
 if __name__ == "__main__":
     main()
