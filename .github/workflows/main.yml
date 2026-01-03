@@ -37,7 +37,7 @@ jobs:
           fetch-depth: 0
 
       # ----------------------------------------------------
-      # FREE DISK SPACE (REQUIRED)
+      # FREE DISK SPACE
       # ----------------------------------------------------
       - name: Free disk space
         run: |
@@ -50,7 +50,7 @@ jobs:
           df -h
 
       # ----------------------------------------------------
-      # PYTHON SETUP
+      # PYTHON
       # ----------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -70,7 +70,16 @@ jobs:
           fi
 
       # ----------------------------------------------------
-      # GENERATE SCRIPT (GPT-5 via GitHub Models)
+      # CASE SEARCH (🔥 REQUIRED)
+      # ----------------------------------------------------
+      - name: Find real crime case
+        run: |
+          set -euo pipefail
+          python case_search.py
+          test -f case.json || (echo "❌ case.json missing" && exit 1)
+
+      # ----------------------------------------------------
+      # GENERATE SCRIPT (USES case.json)
       # ----------------------------------------------------
       - name: Generate script
         env:
@@ -79,9 +88,10 @@ jobs:
           set -euo pipefail
           python script_generate.py
           test -f script.txt
+          test -f image_prompts.json
 
       # ----------------------------------------------------
-      # FETCH IMAGES (NON-REPEATING, HALAL)
+      # FETCH IMAGES (SCRIPT-DRIVEN)
       # ----------------------------------------------------
       - name: Fetch images
         env:
@@ -92,7 +102,7 @@ jobs:
           test -d frames
 
       # ----------------------------------------------------
-      # GENERATE TTS (NO AMBIENCE)
+      # GENERATE TTS
       # ----------------------------------------------------
       - name: Generate narration
         run: |
@@ -110,7 +120,7 @@ jobs:
           test -f subs.ass
 
       # ----------------------------------------------------
-      # BUILD RAW VIDEO (1080×1920)
+      # BUILD RAW VIDEO
       # ----------------------------------------------------
       - name: Build raw video
         run: |
@@ -119,7 +129,7 @@ jobs:
           test -f video_raw.mp4
 
       # ----------------------------------------------------
-      # FINAL RENDER (HIGH QUALITY, NO 240P)
+      # FINAL RENDER (HIGH QUALITY)
       # ----------------------------------------------------
       - name: Final render (HQ)
         run: |
@@ -159,15 +169,15 @@ jobs:
           python youtube_upload.py
 
       # ----------------------------------------------------
-      # SAVE USED TOPICS (NO REPEATS)
+      # SAVE USED CASES
       # ----------------------------------------------------
-      - name: Save used topics
+      - name: Save used cases
         run: |
-          if [ -f used_topics.json ]; then
+          if [ -f used_cases.json ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add used_topics.json
-            git commit -m "Update used topics" || true
+            git add used_cases.json
+            git commit -m "Update used cases" || true
             git push || true
           fi
 
@@ -182,3 +192,4 @@ jobs:
             output.mp4
             script.txt
             subs.ass
+            case.json
