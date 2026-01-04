@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
-from typing import List
+from typing import List, Optional
 
 from moviepy.editor import (
     ImageClip,
@@ -22,7 +22,10 @@ FALLBACK_AUDIO = "narration.wav"
 TARGET_W, TARGET_H = 1080, 1920
 FPS = 30
 MAX_DURATION = 35.0
+
+# Motion tuning
 MICRO_MOTION = 0.025
+LOOP_ZOOM_FACTOR = 1.03   # ensures visual loop
 # ----------------------------------------
 
 
@@ -30,6 +33,7 @@ def log(msg: str):
     print(f"[VID] {msg}", flush=True)
 
 
+# ---------------- AUDIO ----------------
 def get_audio_path() -> str:
     if os.path.isfile(PRIMARY_AUDIO):
         return PRIMARY_AUDIO
@@ -45,6 +49,7 @@ def get_audio_duration(path: str) -> float:
     return min(duration, MAX_DURATION)
 
 
+# ---------------- FRAMES ----------------
 def list_frames() -> List[str]:
     if not os.path.isdir(FRAMES_DIR):
         raise SystemExit("[VID] frames/ directory missing")
@@ -60,15 +65,21 @@ def list_frames() -> List[str]:
     return frames
 
 
-def prepare_clip(img_path: str, duration: float, index: int) -> ImageClip:
+# ---------------- CLIP PREP ----------------
+def prepare_clip(
+    img_path: str,
+    duration: float,
+    index: int,
+    total_frames: int
+) -> ImageClip:
     clip = ImageClip(img_path).set_duration(duration)
 
-    # Single resize
+    # Resize to fill
     w, h = clip.size
     scale = max(TARGET_W / w, TARGET_H / h)
     clip = clip.resize(scale)
 
-    # Exact crop
+    # Center crop
     clip = clip.crop(
         x_center=clip.w / 2,
         y_center=clip.h / 2,
@@ -76,35 +87,56 @@ def prepare_clip(img_path: str, duration: float, index: int) -> ImageClip:
         height=TARGET_H,
     )
 
-    # Micro motion only
+    # Retention-aware micro motion
+    progress = index / max(total_frames - 1, 1)
+
+    # Slightly faster motion at start, slower at end
+    motion_strength = MICRO_MOTION * (1.2 - 0.4 * progress)
+
     if index % 2 == 0:
-        clip = clip.fx(vfx.resize, lambda t: 1.0 + MICRO_MOTION * (t / duration))
+        clip = clip.fx(vfx.resize, lambda t: 1.0 + motion_strength * (t / duration))
     else:
-        clip = clip.fx(vfx.resize, lambda t: 1.0 - MICRO_MOTION * (t / duration))
+        clip = clip.fx(vfx.resize, lambda t: 1.0 - motion_strength * (t / duration))
 
     return clip
 
 
+# ---------------- LOOP VISUAL ----------------
+def apply_loop_visuals(video):
+    """
+    Subtle global zoom so last frame visually aligns with first.
+    Increases rewatch probability.
+    """
+    return video.fx(
+        vfx.resize,
+        lambda t: 1 + (LOOP_ZOOM_FACTOR - 1) * (t / video.duration)
+    )
+
+
+# ---------------- MAIN ----------------
 def main():
     audio_path = get_audio_path()
     total_duration = get_audio_duration(audio_path)
     frames = list_frames()
 
     per_frame = total_duration / len(frames)
-    log(f"Audio duration: {total_duration:.2f}s | Frames: {len(frames)}")
+    log(f"Audio: {total_duration:.2f}s | Frames: {len(frames)}")
 
     clips = [
-        prepare_clip(img, per_frame, i)
+        prepare_clip(img, per_frame, i, len(frames))
         for i, img in enumerate(frames)
     ]
 
     video = concatenate_videoclips(clips, method="compose")
     video = video.set_duration(total_duration)
 
+    # Apply loop-aware visuals
+    video = apply_loop_visuals(video)
+
     voice = AudioFileClip(audio_path).subclip(0, total_duration)
     video = video.set_audio(CompositeAudioClip([voice]))
 
-    log("Rendering 1080p Shorts master")
+    log("Rendering 1080x1920 Shorts master")
 
     video.write_videofile(
         OUTPUT_VIDEO,
@@ -129,7 +161,7 @@ def main():
         logger=None,
     )
 
-    log("Done — clean audio, max quality")
+    log("Done — loop-ready, retention-optimized video")
 
 
 if __name__ == "__main__":
