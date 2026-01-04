@@ -4,8 +4,8 @@ tqdm>=4.66.0
 beautifulsoup4>=4.12.0
 
 # ---------------- AI / LLM ----------------
-azure-ai-inference>=1.0.0
-azure-core>=1.30.0
+azure-ai-inference==1.0.0b9
+azure-core>=1.29.0,<2.0.0
 
 # ---------------- TTS / Audio ----------------
 TTS==0.22.0
@@ -23,7 +23,7 @@ moviepy>=1.0.3
 imageio-ffmpeg>=0.4.9
 Pillow==9.5.0
 
-# ---------------- Speech (optional, but already used in repo) ----------------
+# ---------------- Speech ----------------
 openai-whisper
 
 # ---------------- Google / YouTube API ----------------
