@@ -13,7 +13,7 @@ TTS==0.22.0
 pydub>=0.25.1
 torchaudio
 torchvision
-torchcodec>=0.1.0
+
 
 # ---------------- ML / Transformers ----------------
 transformers==4.39.3
