@@ -8,6 +8,11 @@ from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
+# intelligence layers
+from intelligence.idea_scorer import score_idea
+from intelligence.hook_enforcer import enforce_hook
+from intelligence.loop_engine import apply_loop
+
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
@@ -17,7 +22,6 @@ ENDPOINT = "https://models.github.ai/inference"
 CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
 IMAGE_PROMPTS_FILE = "image_prompts.json"
-USED_CASES_FILE = "used_cases.json"
 
 MAX_RETRIES = 3
 
@@ -48,41 +52,51 @@ def clean(text: str) -> str:
     return text.replace("```", "").strip()
 
 # --------------------------------------------------
-# PROMPT
+# PROMPT (STRICT, SHORTS-FIRST)
 # --------------------------------------------------
 def build_prompt(case: dict) -> str:
     return f"""
 You are a professional YouTube Shorts true-crime writer.
 
-CASE FACTS (REAL — DO NOT CHANGE):
+CASE FACTS (REAL — DO NOT CHANGE FACTS):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
 
-TASK:
-Write a 30–40 second narration.
+MANDATORY STRUCTURE:
 
-STRICT RULES:
-- First sentence MUST include the date and location
-- Calm, factual, unsettling tone
+LINE 1 (HOOK):
+- Outcome or contradiction
+- No date or location
+- Max 12 words
+
+LINE 2 (TENSION):
+- One unsettling factual detail
+
+LINE 3 (CONTEXT):
+- Introduce date and location naturally
+
+STYLE:
+- Calm, factual, unsettling
 - Short spoken sentences
-- No questions
-- No filler words
+- No opinions
 - No supernatural claims
-- End on a factual contradiction or unresolved detail
 
-After the script, output IMAGE PROMPTS as JSON.
+ENDING:
+- End on an unresolved factual contradiction
+- Do NOT explain it
+
+AFTER SCRIPT OUTPUT IMAGE PROMPTS AS JSON.
 
 IMAGE RULES:
 - NO people
-- Night scenes, objects, empty places
-- Cinematic, realistic
+- Night, objects, empty places
 - 4 beats: hook, detail, context, contradiction
 
 OUTPUT FORMAT (EXACT):
 
 SCRIPT:
-<text>
+<each sentence on new line>
 
 IMAGES_JSON:
 [
@@ -94,7 +108,50 @@ IMAGES_JSON:
 """
 
 # --------------------------------------------------
-# MAIN
+# PHASE 1 — GPT DRAFT (ONLY PLACE GPT IS USED)
+# --------------------------------------------------
+def gpt_generate_draft(case: dict) -> tuple[str, list]:
+    response = client.complete(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": "You write factual crime narration."},
+            {"role": "user", "content": build_prompt(case)},
+        ],
+        temperature=0.5,
+        max_tokens=700,
+    )
+
+    text = clean(response.choices[0].message.content)
+
+    if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
+        raise ValueError("Missing SCRIPT or IMAGES_JSON")
+
+    script_part, images_part = text.split("IMAGES_JSON:")
+    script = script_part.replace("SCRIPT:", "").strip()
+    images = json.loads(images_part.strip())
+
+    return script, images
+
+# --------------------------------------------------
+# PHASE 2 — INTELLIGENCE & CONTROL (NO GPT)
+# --------------------------------------------------
+def post_process_script(script: str, case: dict) -> str:
+    # 1. Enforce hook quality
+    script = enforce_hook(script)
+
+    # 2. Score idea (kill weak scripts)
+    score = score_idea(case.get("summary", ""), script)
+    if score["kill"]:
+        raise ValueError(f"Script killed: {score['reasons']}")
+
+    # 3. Force loop ending
+    looped = apply_loop(script)
+    script = looped["script"]
+
+    return script
+
+# --------------------------------------------------
+# MAIN ORCHESTRATOR
 # --------------------------------------------------
 def main():
     case = load_json(CASE_FILE)
@@ -103,33 +160,15 @@ def main():
         try:
             print(f"🧠 Generating script (attempt {attempt})")
 
-            response = client.complete(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": "You write factual crime narration."},
-                    {"role": "user", "content": build_prompt(case)},
-                ],
-                temperature=0.5,
-                max_tokens=700,
-            )
+            # GPT draft (new every run)
+            raw_script, images = gpt_generate_draft(case)
 
-            text = clean(response.choices[0].message.content)
+            # Intelligence processing
+            final_script = post_process_script(raw_script, case)
 
-            if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
-                raise ValueError("Missing required sections")
-
-            script_part, images_part = text.split("IMAGES_JSON:")
-            script = script_part.replace("SCRIPT:", "").strip()
-            images = json.loads(images_part.strip())
-
-            if len(script) < 200:
-                raise ValueError("Script too short")
-
-            if len(images) < 4:
-                raise ValueError("Not enough image prompts")
-
+            # Save outputs
             with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
-                f.write(script)
+                f.write(final_script)
 
             with open(IMAGE_PROMPTS_FILE, "w", encoding="utf-8") as f:
                 json.dump(images, f, indent=2)
