@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
+
 import os
-import sys
-from typing import List, Optional
+from typing import List
 
 from moviepy.editor import (
     ImageClip,
     concatenate_videoclips,
     AudioFileClip,
     CompositeAudioClip,
-    vfx
+    vfx,
 )
 from pydub import AudioSegment
 
@@ -21,12 +21,13 @@ FALLBACK_AUDIO = "narration.wav"
 
 TARGET_W, TARGET_H = 1080, 1920
 FPS = 30
-MAX_DURATION = 35.0
+MAX_DURATION = 38.0
 
 # Motion tuning
-MICRO_MOTION = 0.025
-LOOP_ZOOM_FACTOR = 1.03   # ensures visual loop
-# ----------------------------------------
+OVERSCAN = 1.10          # zoom in slightly for pan room
+FADE_TIME = 0.12         # subtle fades
+FAST_START_FRAMES = 2    # first frames move quicker
+# --------------------------------------
 
 
 def log(msg: str):
@@ -65,52 +66,47 @@ def list_frames() -> List[str]:
     return frames
 
 
-# ---------------- CLIP PREP ----------------
-def prepare_clip(
-    img_path: str,
-    duration: float,
-    index: int,
-    total_frames: int
-) -> ImageClip:
+# ---------------- VISUAL LOGIC ----------------
+def prepare_clip(img_path: str, duration: float, index: int) -> ImageClip:
+    """
+    Creates a clean, cinematic image clip with
+    deterministic motion (NO animated resize).
+    """
+
     clip = ImageClip(img_path).set_duration(duration)
 
-    # Resize to fill
+    # Resize ONCE (critical)
     w, h = clip.size
-    scale = max(TARGET_W / w, TARGET_H / h)
+    scale = max(TARGET_W / w, TARGET_H / h) * OVERSCAN
     clip = clip.resize(scale)
 
-    # Center crop
+    # Compute pan limits
+    x_max = max(0, clip.w - TARGET_W)
+    y_max = max(0, clip.h - TARGET_H)
+
+    # Motion patterns (rotate for variety)
+    pattern = index % 4
+
+    if pattern == 0:       # top-left → center
+        x1, y1 = 0, 0
+    elif pattern == 1:     # bottom-right → center
+        x1, y1 = x_max, y_max
+    elif pattern == 2:     # left vertical pan
+        x1, y1 = 0, y_max // 2
+    else:                  # right vertical pan
+        x1, y1 = x_max, y_max // 2
+
     clip = clip.crop(
-        x_center=clip.w / 2,
-        y_center=clip.h / 2,
+        x1=x1,
+        y1=y1,
         width=TARGET_W,
-        height=TARGET_H,
+        height=TARGET_H
     )
 
-    # Retention-aware micro motion
-    progress = index / max(total_frames - 1, 1)
-
-    # Slightly faster motion at start, slower at end
-    motion_strength = MICRO_MOTION * (1.2 - 0.4 * progress)
-
-    if index % 2 == 0:
-        clip = clip.fx(vfx.resize, lambda t: 1.0 + motion_strength * (t / duration))
-    else:
-        clip = clip.fx(vfx.resize, lambda t: 1.0 - motion_strength * (t / duration))
+    # Subtle fade (hides cuts)
+    clip = clip.fadein(FADE_TIME).fadeout(FADE_TIME)
 
     return clip
-
-
-# ---------------- LOOP VISUAL ----------------
-def apply_loop_visuals(video):
-    """
-    Subtle global zoom so last frame visually aligns with first.
-    Increases rewatch probability.
-    """
-    return video.fx(
-        vfx.resize,
-        lambda t: 1 + (LOOP_ZOOM_FACTOR - 1) * (t / video.duration)
-    )
 
 
 # ---------------- MAIN ----------------
@@ -119,24 +115,38 @@ def main():
     total_duration = get_audio_duration(audio_path)
     frames = list_frames()
 
-    per_frame = total_duration / len(frames)
-    log(f"Audio: {total_duration:.2f}s | Frames: {len(frames)}")
+    log(f"Audio duration: {total_duration:.2f}s | Frames: {len(frames)}")
+
+    # Faster pacing at start (viewer hook)
+    durations = []
+    remaining = total_duration
+
+    for i in range(len(frames)):
+        if i < FAST_START_FRAMES:
+            d = total_duration * 0.12 / FAST_START_FRAMES
+        else:
+            d = (remaining) / (len(frames) - i)
+        durations.append(d)
+        remaining -= d
 
     clips = [
-        prepare_clip(img, per_frame, i, len(frames))
+        prepare_clip(img, durations[i], i)
         for i, img in enumerate(frames)
     ]
 
-    video = concatenate_videoclips(clips, method="compose")
-    video = video.set_duration(total_duration)
+    # Slight overlap = smoother motion
+    video = concatenate_videoclips(
+        clips,
+        method="compose",
+        padding=-0.10
+    )
 
-    # Apply loop-aware visuals
-    video = apply_loop_visuals(video)
+    video = video.set_duration(total_duration)
 
     voice = AudioFileClip(audio_path).subclip(0, total_duration)
     video = video.set_audio(CompositeAudioClip([voice]))
 
-    log("Rendering 1080x1920 Shorts master")
+    log("Rendering Shorts master")
 
     video.write_videofile(
         OUTPUT_VIDEO,
@@ -147,21 +157,18 @@ def main():
         threads=4,
         ffmpeg_params=[
             "-crf", "16",
-            "-vf",
-            "scale=1080:1920:flags=lanczos,"
-            "unsharp=5:5:0.8:3:3:0.4",
             "-pix_fmt", "yuv420p",
             "-profile:v", "high",
             "-level", "4.2",
             "-movflags", "+faststart",
+            "-colorspace", "bt709",
             "-color_primaries", "bt709",
             "-color_trc", "bt709",
-            "-colorspace", "bt709",
         ],
         logger=None,
     )
 
-    log("Done — loop-ready, retention-optimized video")
+    log("Done — clean, cinematic output")
 
 
 if __name__ == "__main__":
