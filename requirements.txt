@@ -1,20 +1,33 @@
+# ---------------- Core HTTP / Utils ----------------
 requests>=2.31.0
-openai-whisper
-TTS==0.22.0
-transformers==4.39.3
-torchcodec>=0.1.0
-torchvision
-torchaudio
-imageio-ffmpeg>=0.4.9
-pydub>=0.25.1
-moviepy>=1.0.3
-Pillow==9.5.0
-beautifulsoup4>=4.12.0
 tqdm>=4.66.0
+beautifulsoup4>=4.12.0
+
+# ---------------- AI / LLM ----------------
+azure-ai-inference>=1.0.0
+azure-core>=1.30.0
+
+# ---------------- TTS / Audio ----------------
+TTS==0.22.0
+pydub>=0.25.1
+torchaudio
+torchvision
+torchcodec>=0.1.0
+
+# ---------------- ML / Transformers ----------------
+transformers==4.39.3
+torch>=2.0.0
+
+# ---------------- Video / Image ----------------
+moviepy>=1.0.3
+imageio-ffmpeg>=0.4.9
+Pillow==9.5.0
+
+# ---------------- Speech (optional, but already used in repo) ----------------
+openai-whisper
+
+# ---------------- Google / YouTube API ----------------
 google-api-python-client==2.126.0
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
-azure-ai-inference
-azure-core
-
