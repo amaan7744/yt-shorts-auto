@@ -10,12 +10,9 @@ from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
-# ---------------- INTELLIGENCE ----------------
-from intelligence.idea_scorer import score_idea
-from intelligence.hook_enforcer import enforce_hook
-from intelligence.loop_engine import apply_loop
-
-# ---------------- CONFIG ----------------
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
 PRIMARY_MODEL = "openai/gpt-4o-mini"
 FALLBACK_MODEL = "openai/gpt-4.1-mini"
 
@@ -28,7 +25,12 @@ IMAGE_PROMPTS_FILE = "image_prompts.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# ---------------- ENV ----------------
+MIN_CASE_LEN = 600
+MIN_SCRIPT_LEN = 220
+
+# --------------------------------------------------
+# ENV
+# --------------------------------------------------
 TOKEN = os.getenv("GH_MODELS_TOKEN")
 if not TOKEN:
     print("❌ GH_MODELS_TOKEN missing", file=sys.stderr)
@@ -39,65 +41,65 @@ client = ChatCompletionsClient(
     credential=AzureKeyCredential(TOKEN),
 )
 
-# ---------------- UTIL ----------------
-def load_json(path: str) -> dict:
-    if not os.path.exists(path):
-        print(f"❌ Required file missing: {path}", file=sys.stderr)
-        sys.exit(1)
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
+# --------------------------------------------------
+# UTIL
+# --------------------------------------------------
 def clean(text) -> str:
     if not text:
         return ""
     return str(text).replace("```", "").strip()
 
 
-# ---------------- PROMPT ----------------
+def load_case() -> dict:
+    if not os.path.exists(CASE_FILE):
+        sys.exit("❌ case.json missing")
+
+    with open(CASE_FILE, "r", encoding="utf-8") as f:
+        case = json.load(f)
+
+    summary = case.get("summary", "")
+    if len(summary) < MIN_CASE_LEN:
+        raise ValueError("Case summary too weak for narration")
+
+    return case
+
+
+# --------------------------------------------------
+# PROMPT
+# --------------------------------------------------
 def build_prompt(case: dict) -> str:
     return f"""
-You are a professional YouTube Shorts true-crime writer.
+You are a professional true-crime narrator writing for YouTube Shorts.
 
-CASE FACTS (REAL — DO NOT CHANGE FACTS):
+FACTS (REAL — DO NOT CHANGE):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
 
-MANDATORY STRUCTURE:
+TASK:
+Write a 30–40 second narration.
 
-LINE 1 (HOOK):
-- Outcome or contradiction
-- No date or location
-- Max 12 words
-
-LINE 2 (TENSION):
-- One unsettling factual detail
-
-LINE 3 (CONTEXT):
-- Introduce date and location naturally
-
-STYLE:
-- Calm, factual, unsettling
+RULES (STRICT):
+- Calm, factual, unsettling tone
 - Short spoken sentences
 - No opinions
-- No supernatural claims
+- No questions
+- No supernatural or speculative claims
+- First line MUST state an outcome or contradiction
+- End with an unresolved factual detail
 
-ENDING:
-- End on an unresolved factual contradiction
-- Do NOT explain it
-
-AFTER SCRIPT OUTPUT IMAGE PROMPTS AS JSON.
+AFTER THE SCRIPT, OUTPUT IMAGE PROMPTS.
 
 IMAGE RULES:
-- NO people
-- Night scenes, empty places, objects
-- 4 beats: hook, detail, context, contradiction
+- No people
+- Night scenes, objects, empty locations
+- Cinematic realism
+- Exactly 4 prompts
 
 OUTPUT FORMAT (EXACT):
 
 SCRIPT:
-<each sentence on a new line>
+<text>
 
 IMAGES_JSON:
 [
@@ -109,7 +111,9 @@ IMAGES_JSON:
 """
 
 
-# ---------------- GPT CALL (SAFE) ----------------
+# --------------------------------------------------
+# GPT CALL (SAFE)
+# --------------------------------------------------
 def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
@@ -118,13 +122,11 @@ def call_gpt(model: str, prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
         temperature=0.5,
-        max_tokens=700,
+        max_tokens=750,
     )
 
-    # Defensive extraction (Azure can return None)
-    message = response.choices[0].message
-    text = message.content if getattr(message, "content", None) else ""
-    text = clean(text)
+    msg = response.choices[0].message
+    text = clean(getattr(msg, "content", None))
 
     if not text:
         raise ValueError("GPT returned empty content")
@@ -132,80 +134,65 @@ def call_gpt(model: str, prompt: str) -> str:
     return text
 
 
-# ---------------- DRAFT GENERATION ----------------
-def gpt_generate_draft(case: dict) -> Tuple[str, list]:
+# --------------------------------------------------
+# GENERATION LOGIC
+# --------------------------------------------------
+def generate_script(case: dict) -> Tuple[str, list]:
     prompt = build_prompt(case)
 
-    # Try primary model first
     try:
         text = call_gpt(PRIMARY_MODEL, prompt)
     except Exception as e:
-        print(f"⚠️ Primary model failed ({PRIMARY_MODEL}): {e}", file=sys.stderr)
-        print("↪ Falling back to secondary model", file=sys.stderr)
+        print(f"⚠️ Primary model failed: {e}", file=sys.stderr)
         text = call_gpt(FALLBACK_MODEL, prompt)
 
     if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
-        raise ValueError("Missing SCRIPT or IMAGES_JSON sections")
+        raise ValueError("GPT output missing required sections")
 
     script_part, images_part = text.split("IMAGES_JSON:", 1)
+
     script = script_part.replace("SCRIPT:", "").strip()
+    if len(script) < MIN_SCRIPT_LEN:
+        raise ValueError("Script too short")
 
     try:
         images = json.loads(images_part.strip())
     except json.JSONDecodeError:
         raise ValueError("Invalid JSON in IMAGES_JSON")
 
-    if len(script) < 200:
-        raise ValueError("Script too short")
-
-    if not isinstance(images, list) or len(images) < 4:
-        raise ValueError("Not enough image prompts")
+    if not isinstance(images, list) or len(images) != 4:
+        raise ValueError("Exactly 4 image prompts required")
 
     return script, images
 
 
-# ---------------- POST PROCESS ----------------
-def post_process_script(script: str, case: dict) -> str:
-    # Enforce hook strength
-    script = enforce_hook(script)
-
-    # Kill weak ideas early
-    score = score_idea(case.get("summary", ""), script)
-    if score.get("kill"):
-        raise ValueError(f"Script killed by idea scorer: {score.get('reasons')}")
-
-    # Force loop ending
-    looped = apply_loop(script)
-    return looped["script"]
-
-
-# ---------------- MAIN ----------------
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 def main():
-    case = load_json(CASE_FILE)
+    case = load_case()
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"🧠 Generating script (attempt {attempt})")
 
-            raw_script, images = gpt_generate_draft(case)
-            final_script = post_process_script(raw_script, case)
+            script, images = generate_script(case)
 
             with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
-                f.write(final_script)
+                f.write(script)
 
             with open(IMAGE_PROMPTS_FILE, "w", encoding="utf-8") as f:
                 json.dump(images, f, indent=2)
 
-            print("✅ Script + image prompts generated")
+            print("✅ Script + image prompts generated successfully")
             return
 
-        except (HttpResponseError, ValueError, json.JSONDecodeError) as e:
+        except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
             print(f"⚠️ Retry {attempt} failed: {e}", file=sys.stderr)
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
 
-    print("❌ Failed to generate valid script after retries", file=sys.stderr)
-    sys.exit(1)
+    sys.exit("❌ Failed to generate a valid script after retries")
 
 
 if __name__ == "__main__":
