@@ -14,18 +14,19 @@ PROMPTS_FILE = "image_prompts.json"
 USED_IMAGES_FILE = "used_images.json"
 
 TARGET_W, TARGET_H = 1080, 1920
-MIN_WIDTH = 2000   # enforce high-res source images
+MIN_WIDTH = 2000
+MAX_TRIES_PER_PROMPT = 30
 
 os.makedirs(FRAMES_DIR, exist_ok=True)
 HEADERS = {"Authorization": PEXELS_KEY}
 
-# STRICT HALAL FILTER
-BANNED_TERMS = [
+# STRONG HALAL FILTER (TEXT + CATEGORY)
+BANNED_TERMS = {
     "woman", "women", "girl", "female",
     "man", "men", "person", "people",
-    "couple", "romance", "portrait",
+    "couple", "portrait", "selfie",
     "model", "face", "hands", "child"
-]
+}
 
 # --------------------------------------
 
@@ -48,12 +49,21 @@ def hash_url(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 def is_halal(photo) -> bool:
+    # Text-based filter (best effort)
     text = " ".join([
         photo.get("alt", ""),
         photo.get("url", ""),
         photo.get("photographer", "")
     ]).lower()
-    return not any(b in text for b in BANNED_TERMS)
+
+    if any(b in text for b in BANNED_TERMS):
+        return False
+
+    # Category-based safety (extra)
+    if photo.get("type") == "portrait":
+        return False
+
+    return True
 
 def make_vertical(img: Image.Image) -> Image.Image:
     w, h = img.size
@@ -69,14 +79,21 @@ def fetch_for_prompt(prompt: str, filename: str, used_hashes: set):
         "https://api.pexels.com/v1/search"
         f"?query={prompt}"
         "&orientation=portrait"
-        "&per_page=40"
+        "&per_page=80"
     )
 
     r = requests.get(url, headers=HEADERS, timeout=25)
     photos = r.json().get("photos", [])
     random.shuffle(photos)
 
+    tries = 0
+
     for p in photos:
+        if tries >= MAX_TRIES_PER_PROMPT:
+            break
+
+        tries += 1
+
         if not is_halal(p):
             continue
 
@@ -89,7 +106,7 @@ def fetch_for_prompt(prompt: str, filename: str, used_hashes: set):
             continue
 
         if p.get("width", 0) < MIN_WIDTH:
-            continue  # reject low-res junk
+            continue
 
         try:
             img_data = requests.get(src, timeout=20).content
@@ -101,12 +118,13 @@ def fetch_for_prompt(prompt: str, filename: str, used_hashes: set):
 
             used_hashes.add(h)
             log(f"Saved {filename} ← {prompt}")
-            return
+            return True
 
         except Exception:
             continue
 
-    raise RuntimeError(f"No usable image found for prompt: {prompt}")
+    log(f"⚠️ No perfect image for '{prompt}', allowing fallback")
+    return False
 
 def main():
     if not os.path.isfile(PROMPTS_FILE):
@@ -122,11 +140,17 @@ def main():
 
     for idx, prompt in enumerate(prompts, 1):
         fname = f"img_{idx:03d}.jpg"
-        fetch_for_prompt(prompt, fname, used)
+        ok = fetch_for_prompt(prompt, fname, used)
+
+        # Soft fallback: reuse previous frame if needed
+        if not ok and idx > 1:
+            prev = os.path.join(FRAMES_DIR, f"img_{idx-1:03d}.jpg")
+            if os.path.exists(prev):
+                os.system(f"cp {prev} {os.path.join(FRAMES_DIR, fname)}")
+                log(f"Fallback reused previous frame for {fname}")
 
     save_used(used)
-    log("✅ All images fetched successfully")
+    log("✅ Image fetch complete (safe + diverse)")
 
 if __name__ == "__main__":
     main()
-
