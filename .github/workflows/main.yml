@@ -26,6 +26,7 @@ jobs:
       TORCH_HOME: /tmp/torch
       PIP_NO_CACHE_DIR: "1"
       COQUI_TOS_AGREED: "1"
+      PYTHONUNBUFFERED: "1"
 
     steps:
       # ----------------------------------------------------
@@ -37,16 +38,14 @@ jobs:
           fetch-depth: 0
 
       # ----------------------------------------------------
-      # FREE DISK SPACE
+      # FREE DISK SPACE (SAFE)
       # ----------------------------------------------------
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
           sudo rm -rf /usr/share/swift
-          sudo rm -rf /var/lib/apt/lists/*
           df -h
 
       # ----------------------------------------------------
@@ -58,28 +57,26 @@ jobs:
           python-version: "3.10"
 
       # ----------------------------------------------------
-      # SYSTEM DEPENDENCIES
+      # SYSTEM DEPENDENCIES + PYTHON
       # ----------------------------------------------------
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install --no-cache-dir -r requirements.txt
-          fi
+          pip install --no-cache-dir -r requirements.txt
 
       # ----------------------------------------------------
-      # CASE SEARCH (🔥 REQUIRED)
+      # CASE SEARCH
       # ----------------------------------------------------
       - name: Find real crime case
         run: |
           set -euo pipefail
           python case_search.py
-          test -f case.json || (echo "❌ case.json missing" && exit 1)
+          test -f case.json
 
       # ----------------------------------------------------
-      # GENERATE SCRIPT (USES case.json)
+      # SCRIPT GENERATION (GPT + INTELLIGENCE)
       # ----------------------------------------------------
       - name: Generate script
         env:
@@ -91,7 +88,7 @@ jobs:
           test -f image_prompts.json
 
       # ----------------------------------------------------
-      # FETCH IMAGES (SCRIPT-DRIVEN)
+      # IMAGE FETCH (RETENTION-SAFE)
       # ----------------------------------------------------
       - name: Fetch images
         env:
@@ -102,7 +99,7 @@ jobs:
           test -d frames
 
       # ----------------------------------------------------
-      # GENERATE TTS
+      # TTS GENERATION
       # ----------------------------------------------------
       - name: Generate narration
         run: |
@@ -111,7 +108,7 @@ jobs:
           test -f final_audio.wav
 
       # ----------------------------------------------------
-      # BUILD SUBTITLES
+      # SUBTITLES
       # ----------------------------------------------------
       - name: Build subtitles
         run: |
@@ -120,18 +117,18 @@ jobs:
           test -f subs.ass
 
       # ----------------------------------------------------
-      # BUILD RAW VIDEO
+      # BUILD VIDEO (LOOP-AWARE)
       # ----------------------------------------------------
       - name: Build raw video
         run: |
           set -euo pipefail
-          python video_build.py final_audio.wav
+          python video_build.py
           test -f video_raw.mp4
 
       # ----------------------------------------------------
-      # FINAL RENDER (HIGH QUALITY)
+      # FINAL RENDER (YT-SAFE)
       # ----------------------------------------------------
-      - name: Final render (HQ)
+      - name: Final render
         run: |
           set -euo pipefail
           ffmpeg -y \
@@ -156,7 +153,7 @@ jobs:
           test -f output.mp4
 
       # ----------------------------------------------------
-      # UPLOAD TO YOUTUBE
+      # UPLOAD (SEO + FATIGUE GUARD)
       # ----------------------------------------------------
       - name: Upload to YouTube
         env:
@@ -169,17 +166,35 @@ jobs:
           python youtube_upload.py
 
       # ----------------------------------------------------
-      # SAVE USED CASES
+      # ANALYTICS (LEARNING LOOP)
       # ----------------------------------------------------
-      - name: Save used cases
+      - name: Fetch analytics (delayed-safe)
+        if: success()
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
         run: |
-          if [ -f used_cases.json ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add used_cases.json
-            git commit -m "Update used cases" || true
-            git push || true
+          set -euo pipefail
+          if [ -f memory/upload_meta.json ]; then
+            tail -n 1 memory/upload_meta.json | jq -r '.video_id' | \
+            xargs -I {} python analytics/analytics_fetch.py {}
+            python analytics/retention_analyzer.py
+          else
+            echo "No upload meta yet, skipping analytics"
           fi
+
+      # ----------------------------------------------------
+      # SAVE USED CASES + MEMORY
+      # ----------------------------------------------------
+      - name: Persist memory
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add used_cases.json memory/*.json || true
+          git commit -m "Update memory" || true
+          git push || true
 
       # ----------------------------------------------------
       # ARTIFACT BACKUP
