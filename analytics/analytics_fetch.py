@@ -2,7 +2,6 @@
 
 import os
 import json
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -20,15 +19,20 @@ SCOPES = [
 ]
 
 MEMORY_DIR = Path("memory")
+UPLOADS_FILE = MEMORY_DIR / "uploads.json"
 PERF_LOG = MEMORY_DIR / "performance_log.json"
 SIGNAL_FILE = MEMORY_DIR / "last_signal.json"
 
-# Performance thresholds (REALISTIC)
+# Performance thresholds
 KILL_COMPLETION_RATE = 0.60
 GOOD_COMPLETION_RATE = 0.75
 VIRAL_COMPLETION_RATE = 0.85
 
-MIN_VIEWS_REQUIRED = 100  # avoid noise
+MIN_VIEWS_REQUIRED = 100
+
+# Time windows
+MIN_AGE_HOURS = 24
+MAX_AGE_HOURS = 72
 
 # ---------------------------------
 # AUTH
@@ -54,11 +58,6 @@ def get_analytics_service():
 # ---------------------------------
 
 def fetch_video_analytics(video_id: str, days_back: int = 7) -> dict | None:
-    """
-    Fetch analytics for a Short.
-    Returns None if analytics not ready yet.
-    """
-
     service = get_analytics_service()
 
     end_date = datetime.utcnow().date()
@@ -75,8 +74,8 @@ def fetch_video_analytics(video_id: str, days_back: int = 7) -> dict | None:
         ).execute()
 
     except HttpError as e:
-        if e.resp.status in (403, 400):
-            print("[ANALYTICS] Analytics not available yet — skipping")
+        if e.resp.status in (400, 403):
+            print(f"[ANALYTICS] Skipping {video_id} (API not ready)")
             return None
         raise
 
@@ -85,7 +84,6 @@ def fetch_video_analytics(video_id: str, days_back: int = 7) -> dict | None:
 
     row = response["rows"][0]
     columns = [c["name"] for c in response["columnHeaders"]]
-
     return dict(zip(columns, row))
 
 
@@ -115,6 +113,7 @@ def evaluate_performance(data: dict) -> dict:
         "likes": int(data.get("likes", 0)),
         "comments": int(data.get("comments", 0)),
         "verdict": verdict,
+        "checked_at": datetime.utcnow().isoformat(),
     }
 
 
@@ -133,56 +132,56 @@ def save_json(path: Path, data: dict):
     path.write_text(json.dumps(data, indent=2))
 
 
-def log_performance(video_id: str, performance: dict):
-    log = load_json(PERF_LOG)
-
-    log[video_id] = {
-        **performance,
-        "checked_at": datetime.utcnow().isoformat(),
-    }
-
-    save_json(PERF_LOG, log)
-
-
-def emit_signal(video_id: str, performance: dict):
-    """
-    Emits the latest decision for downstream automation.
-    """
-    signal = {
-        "video_id": video_id,
-        "verdict": performance["verdict"],
-        "completion_rate": performance["completion_rate"],
-        "views": performance["views"],
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-
-    save_json(SIGNAL_FILE, signal)
-
-
 # ---------------------------------
-# CLI
+# MAIN (BATCH MODE)
 # ---------------------------------
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python analytics_fetch.py <video_id>")
-        sys.exit(1)
-
-    video_id = sys.argv[1]
-
-    data = fetch_video_analytics(video_id)
-    if not data:
-        print(f"[ANALYTICS] No usable data yet for {video_id}")
+    if not UPLOADS_FILE.exists():
+        print("[ANALYTICS] No uploads found — nothing to analyze")
         return
 
-    performance = evaluate_performance(data)
+    uploads = load_json(UPLOADS_FILE)
+    perf_log = load_json(PERF_LOG)
 
-    log_performance(video_id, performance)
-    emit_signal(video_id, performance)
+    now = datetime.utcnow()
+    analyzed = 0
 
-    print(f"[ANALYTICS] {video_id}")
-    for k, v in performance.items():
-        print(f"  {k}: {v}")
+    for video_id, meta in uploads.items():
+        uploaded_at = datetime.fromisoformat(meta["uploaded_at"])
+
+        age_hours = (now - uploaded_at).total_seconds() / 3600
+        if age_hours < MIN_AGE_HOURS or age_hours > MAX_AGE_HOURS:
+            continue
+
+        data = fetch_video_analytics(video_id)
+        if not data:
+            continue
+
+        performance = evaluate_performance(data)
+        perf_log[video_id] = performance
+
+        # Emit latest signal (overwritten each run)
+        save_json(
+            SIGNAL_FILE,
+            {
+                "video_id": video_id,
+                "verdict": performance["verdict"],
+                "completion_rate": performance["completion_rate"],
+                "views": performance["views"],
+                "timestamp": performance["checked_at"],
+            },
+        )
+
+        print(f"[ANALYTICS] {video_id} → {performance['verdict']}")
+        analyzed += 1
+
+    save_json(PERF_LOG, perf_log)
+
+    if analyzed == 0:
+        print("[ANALYTICS] No eligible videos this cycle")
+    else:
+        print(f"[ANALYTICS] Evaluated {analyzed} video(s)")
 
 
 if __name__ == "__main__":
