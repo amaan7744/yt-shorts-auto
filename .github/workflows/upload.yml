@@ -7,8 +7,6 @@ on:
     # 06:30 AM ET
     - cron: "30 10 * * *"
     # 09:00 AM ET
-    - cron: "00 13 * * *"
-    # 12:00 PM ET
     - cron: "00 16 * * *"
     # 02:30 PM ET
     - cron: "30 18 * * *"
@@ -16,8 +14,7 @@ on:
     - cron: "00 21 * * *"
     # 07:30 PM ET
     - cron: "30 23 * * *"
-    # 10:00 PM ET
-    - cron: "00 02 * * *"
+
     
 
 concurrency:
