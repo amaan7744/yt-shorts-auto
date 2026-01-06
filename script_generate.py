@@ -29,7 +29,7 @@ RETRY_DELAY = 2
 TARGET_MIN_WORDS = 85     # ~30s
 TARGET_MAX_WORDS = 105    # ~35s
 
-MIN_CASE_LEN = 500
+MIN_CASE_LEN = 280
 
 # --------------------------------------------------
 # ENV
