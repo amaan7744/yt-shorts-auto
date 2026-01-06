@@ -1,12 +1,24 @@
-name: Auto YouTube Shorts – Upload
+name: Auto YouTube Shorts – Crime (8x Daily | US Peak)
 
 on:
   workflow_dispatch:
   schedule:
-    # Upload windows (UTC)
-    - cron: "30 16 * * *"
-    - cron: "30 22 * * *"
-    - cron: "30 2 * * *"
+    # 🇺🇸 US Peak Shorts Windows (UTC)
+    # 06:30 AM ET
+    - cron: "30 10 * * *"
+    # 09:00 AM ET
+    - cron: "00 13 * * *"
+    # 12:00 PM ET
+    - cron: "00 16 * * *"
+    # 02:30 PM ET
+    - cron: "30 18 * * *"
+    # 05:00 PM ET
+    - cron: "00 21 * * *"
+    # 07:30 PM ET
+    - cron: "30 23 * * *"
+    # 10:00 PM ET
+    - cron: "00 02 * * *"
+    
 
 concurrency:
   group: yt-shorts-upload
@@ -15,25 +27,24 @@ concurrency:
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 65
 
     permissions:
       contents: write
 
-    # 🔒 GLOBAL ENVIRONMENT (NO TORCHCODEC, NO CI CRASH)
     env:
-      # ---- AUDIO BACKEND CONTROL (CRITICAL FIX) ----
+      # ---------------- AUDIO BACKEND (NO TORCHCODEC) ----------------
       TORCHAUDIO_USE_SOUNDFILE: "1"
       TORCHCODEC_DISABLE: "1"
       DISABLE_TORCHCODEC: "1"
 
-      # ---- MODEL / CACHE ----
+      # ---------------- MODEL / CACHE ----------------
       HF_HOME: /tmp/huggingface
       TRANSFORMERS_CACHE: /tmp/huggingface
       TORCH_HOME: /tmp/torch
       COQUI_TOS_AGREED: "1"
 
-      # ---- STABILITY ----
+      # ---------------- STABILITY ----------------
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
 
@@ -68,9 +79,9 @@ jobs:
           python-version: "3.10"
 
       # ----------------------------------------------------
-      # SYSTEM + PYTHON DEPENDENCIES
+      # DEPENDENCIES
       # ----------------------------------------------------
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -87,7 +98,7 @@ jobs:
           test -f case.json
 
       # ----------------------------------------------------
-      # SCRIPT GENERATION
+      # SCRIPT GENERATION (RETENTION OPTIMIZED)
       # ----------------------------------------------------
       - name: Generate script
         env:
@@ -110,7 +121,7 @@ jobs:
           test -d frames
 
       # ----------------------------------------------------
-      # TTS (UNCHANGED, SAFE)
+      # TTS (UNCHANGED)
       # ----------------------------------------------------
       - name: Generate narration
         run: |
@@ -158,7 +169,7 @@ jobs:
           test -f output.mp4
 
       # ----------------------------------------------------
-      # UPLOAD TO YOUTUBE
+      # UPLOAD
       # ----------------------------------------------------
       - name: Upload to YouTube
         env:
@@ -171,12 +182,12 @@ jobs:
           python youtube_upload.py
 
       # ----------------------------------------------------
-      # PERSIST MEMORY
+      # SAVE MEMORY
       # ----------------------------------------------------
-      - name: Save memory
+      - name: Persist memory
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add used_cases.json memory || true
-          git commit -m "chore: update upload memory" || true
+          git add memory used_cases.json || true
+          git commit -m "chore: update memory" || true
           git push || true
