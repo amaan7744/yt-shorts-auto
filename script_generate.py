@@ -25,11 +25,9 @@ IMAGE_PROMPTS_FILE = "image_prompts.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# Length control (spoken Shorts)
-TARGET_MIN_WORDS = 85     # ~30s
-TARGET_MAX_WORDS = 105    # ~35s
-
-MIN_CASE_LEN = 280
+MIN_CASE_LEN = 280          # aligned with normalized summaries
+TARGET_WORDS_MIN = 85       # ~30s
+TARGET_WORDS_MAX = 105      # ~35s
 
 # --------------------------------------------------
 # ENV
@@ -37,8 +35,7 @@ MIN_CASE_LEN = 280
 
 TOKEN = os.getenv("GH_MODELS_TOKEN")
 if not TOKEN:
-    print("❌ GH_MODELS_TOKEN missing", file=sys.stderr)
-    sys.exit(1)
+    sys.exit("❌ GH_MODELS_TOKEN missing")
 
 client = ChatCompletionsClient(
     endpoint=ENDPOINT,
@@ -50,13 +47,7 @@ client = ChatCompletionsClient(
 # --------------------------------------------------
 
 def clean(text) -> str:
-    if not text:
-        return ""
-    return str(text).replace("```", "").strip()
-
-
-def word_count(text: str) -> int:
-    return len(text.split())
+    return str(text or "").replace("```", "").strip()
 
 
 def load_case() -> dict:
@@ -73,69 +64,61 @@ def load_case() -> dict:
     return case
 
 # --------------------------------------------------
-# PROMPT (RETENTION-FIRST)
+# PROMPT (RETENTION-FIRST + AZURE-SAFE)
 # --------------------------------------------------
 
 def build_prompt(case: dict) -> str:
     return f"""
-You are writing a HIGH-RETENTION YouTube Shorts true-crime script.
-Your only goal is to force viewers to WATCH UNTIL THE END and REPLAY.
+You write HIGH-RETENTION YouTube Shorts scripts.
 
-FACTS (REAL — DO NOT CHANGE FACTS):
+The content must feel intense and mysterious,
+but MUST remain factual and non-graphic.
+
+FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
 
-STRICT TARGET:
-- Spoken length: 30–35 seconds
-- 85–105 words total
-- Short, punchy spoken sentences
-- No filler
-- No opinions
-- No speculation
+STRICT REQUIREMENTS:
+- 30–35 seconds spoken length
+- {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words total
+- Short spoken sentences
 - No questions
+- No opinions
+- No violent or graphic wording
 
 MANDATORY STRUCTURE:
 
-1) SHOCK HOOK (first 1–2 seconds)
-- Start with the OUTCOME or DISTURBING FACT
-- No dates
-- No locations
-- No names
-- Must instantly create unease
+1) HOOK (first 1 second)
+- ONE short sentence (max 7 words)
+- Describes a strange outcome or contradiction
+- No date, no location, no names
 
-2) CONTEXT (next 4–6 seconds)
-- Explain how this situation happened
-- Introduce date and location ONLY here
+2) CONTEXT
+- Calm explanation of how this situation began
+- Introduce date and location here
 
 3) ESCALATION
-- Reveal 2–3 unsettling factual details
-- Each sentence must raise tension
+- 2–3 factual details that deepen the mystery
+- Focus on unexplained observations
 
 4) LOOP ENDING (CRITICAL)
-- End with a factual contradiction or unresolved detail
-- The final line MUST naturally connect back to the first line
-- Viewer should feel compelled to rewatch
+- Final line must reinterpret the hook
+- Ending should make the viewer rewatch the first line
 
-LANGUAGE RULES:
-- Calm but intense
-- Spoken, not documentary
-- Every sentence must move the story forward
+AFTER SCRIPT, OUTPUT IMAGE PROMPTS.
 
-AFTER THE SCRIPT, OUTPUT IMAGE PROMPTS.
-
-IMAGE PROMPTS RULES:
+IMAGE RULES:
 - NO people
 - NO faces
-- Empty places, objects, night scenes
+- Empty locations, objects, night scenes
 - Cinematic realism
-- EXACTLY 4 prompts matching:
-  hook → context → escalation → contradiction
+- EXACTLY 4 prompts matching story flow
 
-OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
+OUTPUT FORMAT (EXACT):
 
 SCRIPT:
-<30–35 second script>
+<text>
 
 IMAGES_JSON:
 [
@@ -154,18 +137,16 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write high-retention factual crime Shorts."},
+            {"role": "system", "content": "You write investigative short-form narration."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.6,
-        max_tokens=700,
+        temperature=0.4,
+        max_tokens=650,
     )
 
-    msg = response.choices[0].message
-    text = clean(getattr(msg, "content", None))
-
+    text = clean(getattr(response.choices[0].message, "content", None))
     if not text:
-        raise ValueError("GPT returned empty output")
+        raise ValueError("GPT returned empty content")
 
     return text
 
@@ -178,25 +159,20 @@ def generate_script(case: dict) -> Tuple[str, list]:
 
     try:
         text = call_gpt(PRIMARY_MODEL, prompt)
-    except Exception as e:
-        print(f"⚠️ Primary model failed: {e}", file=sys.stderr)
+    except Exception:
         text = call_gpt(FALLBACK_MODEL, prompt)
 
     if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
-        raise ValueError("Missing SCRIPT or IMAGES_JSON")
+        raise ValueError("Invalid GPT format")
 
     script_part, images_part = text.split("IMAGES_JSON:", 1)
     script = script_part.replace("SCRIPT:", "").strip()
 
-    wc = word_count(script)
-    if wc < TARGET_MIN_WORDS or wc > TARGET_MAX_WORDS:
-        raise ValueError(f"Script word count out of range: {wc}")
+    words = script.split()
+    if not (TARGET_WORDS_MIN <= len(words) <= TARGET_WORDS_MAX):
+        raise ValueError("Script length outside target range")
 
-    try:
-        images = json.loads(images_part.strip())
-    except json.JSONDecodeError:
-        raise ValueError("Invalid IMAGES_JSON")
-
+    images = json.loads(images_part.strip())
     if not isinstance(images, list) or len(images) != 4:
         raise ValueError("Exactly 4 image prompts required")
 
@@ -224,14 +200,11 @@ def main():
             print("✅ High-retention script generated")
             return
 
-        except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
+        except Exception as e:
             print(f"⚠️ Retry {attempt} failed: {e}", file=sys.stderr)
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
+            time.sleep(RETRY_DELAY)
 
-    sys.exit("❌ Failed to generate a valid high-retention script")
-
-# --------------------------------------------------
+    sys.exit("❌ Failed to generate valid script")
 
 if __name__ == "__main__":
     main()
