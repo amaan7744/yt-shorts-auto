@@ -25,9 +25,10 @@ IMAGE_PROMPTS_FILE = "image_prompts.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-MIN_CASE_LEN = 200          # aligned with normalized summaries
-TARGET_WORDS_MIN = 85       # ~30s
-TARGET_WORDS_MAX = 105      # ~35s
+# Case + script constraints
+MIN_CASE_LEN = 200            # soft check only
+TARGET_WORDS_MIN = 85         # ~30 sec
+TARGET_WORDS_MAX = 105        # ~35 sec
 
 # --------------------------------------------------
 # ENV
@@ -58,21 +59,23 @@ def load_case() -> dict:
         case = json.load(f)
 
     summary = case.get("summary", "")
-     if len(summary) < MIN_CASE_LEN:
-    print("⚠️ Case summary short but usable — continuing")
+
+    # Soft validation — never block uploads
+    if len(summary) < MIN_CASE_LEN:
+        print("⚠️ Case summary short but usable — continuing")
 
     return case
 
 # --------------------------------------------------
-# PROMPT (RETENTION-FIRST + AZURE-SAFE)
+# PROMPT (RETENTION-FIRST + AZURE SAFE)
 # --------------------------------------------------
 
 def build_prompt(case: dict) -> str:
     return f"""
-You write HIGH-RETENTION YouTube Shorts scripts.
+You write HIGH-RETENTION YouTube Shorts narration.
 
-The content must feel intense and mysterious,
-but MUST remain factual and non-graphic.
+The content must feel mysterious and unsettling,
+but remain factual and NON-GRAPHIC.
 
 FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
@@ -80,19 +83,19 @@ Location: {case.get("location")}
 Summary: {case.get("summary")}
 
 STRICT REQUIREMENTS:
-- 30–35 seconds spoken length
+- Spoken length: 30–35 seconds
 - {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words total
 - Short spoken sentences
 - No questions
 - No opinions
-- No violent or graphic wording
+- No graphic or violent wording
 
 MANDATORY STRUCTURE:
 
-1) HOOK (first 1 second)
+1) HOOK (first second)
 - ONE short sentence (max 7 words)
-- Describes a strange outcome or contradiction
-- No date, no location, no names
+- Describes a strange or unexplained outcome
+- No names, no dates, no locations
 
 2) CONTEXT
 - Calm explanation of how this situation began
@@ -100,13 +103,13 @@ MANDATORY STRUCTURE:
 
 3) ESCALATION
 - 2–3 factual details that deepen the mystery
-- Focus on unexplained observations
+- Focus on what investigators observed or could not explain
 
 4) LOOP ENDING (CRITICAL)
-- Final line must reinterpret the hook
-- Ending should make the viewer rewatch the first line
+- Final line must reframe the opening hook
+- Ending should make the viewer replay the video
 
-AFTER SCRIPT, OUTPUT IMAGE PROMPTS.
+AFTER THE SCRIPT, OUTPUT IMAGE PROMPTS.
 
 IMAGE RULES:
 - NO people
@@ -115,7 +118,7 @@ IMAGE RULES:
 - Cinematic realism
 - EXACTLY 4 prompts matching story flow
 
-OUTPUT FORMAT (EXACT):
+OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
 
 SCRIPT:
 <text>
@@ -159,11 +162,12 @@ def generate_script(case: dict) -> Tuple[str, list]:
 
     try:
         text = call_gpt(PRIMARY_MODEL, prompt)
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Primary model failed: {e}", file=sys.stderr)
         text = call_gpt(FALLBACK_MODEL, prompt)
 
     if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
-        raise ValueError("Invalid GPT format")
+        raise ValueError("Invalid GPT output format")
 
     script_part, images_part = text.split("IMAGES_JSON:", 1)
     script = script_part.replace("SCRIPT:", "").strip()
@@ -172,7 +176,11 @@ def generate_script(case: dict) -> Tuple[str, list]:
     if not (TARGET_WORDS_MIN <= len(words) <= TARGET_WORDS_MAX):
         raise ValueError("Script length outside target range")
 
-    images = json.loads(images_part.strip())
+    try:
+        images = json.loads(images_part.strip())
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON in IMAGES_JSON")
+
     if not isinstance(images, list) or len(images) != 4:
         raise ValueError("Exactly 4 image prompts required")
 
@@ -197,14 +205,16 @@ def main():
             with open(IMAGE_PROMPTS_FILE, "w", encoding="utf-8") as f:
                 json.dump(images, f, indent=2)
 
-            print("✅ High-retention script generated")
+            print("✅ Script + image prompts generated")
             return
 
-        except Exception as e:
-            print(f"⚠️ Retry {attempt} failed: {e}", file=sys.stderr)
+        except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
+            print(f"⚠️ Attempt {attempt} failed: {e}", file=sys.stderr)
             time.sleep(RETRY_DELAY)
 
-    sys.exit("❌ Failed to generate valid script")
+    sys.exit("❌ Failed to generate valid script after retries")
+
 
 if __name__ == "__main__":
     main()
+    
