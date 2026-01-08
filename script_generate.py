@@ -25,10 +25,12 @@ IMAGE_PROMPTS_FILE = "image_prompts.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# Case + script constraints
-MIN_CASE_LEN = 200            # soft check only
-TARGET_WORDS_MIN = 85         # ~30 sec
-TARGET_WORDS_MAX = 105        # ~35 sec
+# Soft constraints (never block uploads)
+MIN_CASE_LEN = 200
+
+# Shorts timing control
+TARGET_WORDS_MIN = 85   # ~30 sec
+TARGET_WORDS_MAX = 105  # ~35 sec
 
 # --------------------------------------------------
 # ENV
@@ -60,24 +62,31 @@ def load_case() -> dict:
 
     summary = case.get("summary", "")
 
-    # Soft validation — never block uploads
+    # Never block the pipeline
     if len(summary) < MIN_CASE_LEN:
         print("⚠️ Case summary short but usable — continuing")
 
     return case
 
 # --------------------------------------------------
-# PROMPT (RETENTION-FIRST + AZURE SAFE)
+# PROMPT (AZURE-SAFE + RETENTION-OPTIMIZED)
 # --------------------------------------------------
 
-def build_prompt(case: dict) -> str:
+def build_prompt(case: dict, neutral: bool = False) -> str:
+    tone = (
+        "informative and historical"
+        if neutral
+        else "mysterious and intriguing"
+    )
+
     return f"""
-You write HIGH-RETENTION YouTube Shorts narration.
+You write HIGH-RETENTION YouTube Shorts narration
+about REAL HISTORICAL ANOMALIES and UNRESOLVED EVENTS.
 
-The content must feel mysterious and unsettling,
-but remain factual and NON-GRAPHIC.
+These are factual records where outcomes were never fully explained.
+The tone must be {tone}, calm, and NON-GRAPHIC.
 
-FACTS (DO NOT CHANGE):
+FACTUAL RECORD (DO NOT CHANGE FACTS):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
@@ -86,37 +95,38 @@ STRICT REQUIREMENTS:
 - Spoken length: 30–35 seconds
 - {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words total
 - Short spoken sentences
+- Neutral documentary narration
 - No questions
 - No opinions
-- No graphic or violent wording
+- Avoid violent or graphic language entirely
 
 MANDATORY STRUCTURE:
 
-1) HOOK (first second)
+1) OPENING HOOK (first second)
 - ONE short sentence (max 7 words)
 - Describes a strange or unexplained outcome
-- No names, no dates, no locations
+- No names, dates, or locations
 
-2) CONTEXT
+2) BACKGROUND
 - Calm explanation of how this situation began
 - Introduce date and location here
 
-3) ESCALATION
-- 2–3 factual details that deepen the mystery
-- Focus on what investigators observed or could not explain
+3) DETAILS
+- 2–3 factual observations or unresolved elements
+- Focus on what was unclear, missing, or unexplained
 
-4) LOOP ENDING (CRITICAL)
+4) LOOP ENDING
 - Final line must reframe the opening hook
-- Ending should make the viewer replay the video
+- Ending should naturally encourage replay
 
 AFTER THE SCRIPT, OUTPUT IMAGE PROMPTS.
 
-IMAGE RULES:
+IMAGE PROMPT RULES:
 - NO people
 - NO faces
-- Empty locations, objects, night scenes
+- Empty places, objects, night environments
 - Cinematic realism
-- EXACTLY 4 prompts matching story flow
+- EXACTLY 4 prompts following story order
 
 OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
 
@@ -140,7 +150,7 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write investigative short-form narration."},
+            {"role": "system", "content": "You write short-form documentary narration."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.4,
@@ -158,13 +168,18 @@ def call_gpt(model: str, prompt: str) -> str:
 # --------------------------------------------------
 
 def generate_script(case: dict) -> Tuple[str, list]:
-    prompt = build_prompt(case)
+    # First attempt: normal mysterious framing
+    prompt = build_prompt(case, neutral=False)
 
     try:
         text = call_gpt(PRIMARY_MODEL, prompt)
     except Exception as e:
-        print(f"⚠️ Primary model failed: {e}", file=sys.stderr)
-        text = call_gpt(FALLBACK_MODEL, prompt)
+        if "content_filter" in str(e).lower():
+            print("⚠️ Content filter triggered — retrying with neutral framing")
+            prompt = build_prompt(case, neutral=True)
+            text = call_gpt(FALLBACK_MODEL, prompt)
+        else:
+            raise
 
     if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
         raise ValueError("Invalid GPT output format")
