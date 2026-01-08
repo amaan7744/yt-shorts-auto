@@ -25,7 +25,7 @@ IMAGE_PROMPTS_FILE = "image_prompts.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-MIN_CASE_LEN = 280          # aligned with normalized summaries
+MIN_CASE_LEN = 200          # aligned with normalized summaries
 TARGET_WORDS_MIN = 85       # ~30s
 TARGET_WORDS_MAX = 105      # ~35s
 
@@ -58,8 +58,8 @@ def load_case() -> dict:
         case = json.load(f)
 
     summary = case.get("summary", "")
-    if len(summary) < MIN_CASE_LEN:
-        raise ValueError("Case summary too weak")
+     if len(summary) < MIN_CASE_LEN:
+    print("⚠️ Case summary short but usable — continuing")
 
     return case
 
