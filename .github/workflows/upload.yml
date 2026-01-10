@@ -2,13 +2,6 @@ name: Auto YouTube Shorts – Crime (8x Daily | US Peak)
 
 on:
   workflow_dispatch:
-  schedule:
-    # 🇺🇸 US Peak Shorts Windows (UTC)
-    # 06:30 AM ET
-    - cron: "30 10 * * *"
-    # 05:00 PM ET
-    - cron: "00 21 * * *"
-   
 
     
 
