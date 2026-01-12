@@ -25,9 +25,9 @@ BEATS_FILE = "beats.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# Shorts timing control (~30–35 sec)
-TARGET_WORDS_MIN = 85
-TARGET_WORDS_MAX = 105
+# Shorts timing (~30–35 sec)
+TARGET_WORDS_MIN = 90
+TARGET_WORDS_MAX = 110
 
 # --------------------------------------------------
 # ENV
@@ -69,9 +69,9 @@ def normalize_length(script: str) -> str:
 
     if len(words) < TARGET_WORDS_MIN:
         filler = [
-            "The records never clarified what happened.",
-            "Some details were never explained.",
-            "The outcome remained unresolved."
+            "The records never explained why.",
+            "Some details were never resolved.",
+            "The truth was never made clear."
         ]
         i = 0
         while len(words) < TARGET_WORDS_MIN:
@@ -82,53 +82,66 @@ def normalize_length(script: str) -> str:
     return script
 
 # --------------------------------------------------
-# PROMPT (RETENTION-ENGINEERED)
+# PROMPT (AGGRESSIVE HOOK + RETENTION ENGINEERING)
 # --------------------------------------------------
 
 def build_prompt(case: dict, neutral: bool = False) -> str:
-    tone = "calm, tense, and investigative" if not neutral else "neutral and factual"
+    tone = "calm but high-stakes investigative" if not neutral else "neutral factual"
 
     return f"""
 You write HIGH-RETENTION YouTube Shorts narration
-about REAL historical anomalies and unresolved investigations.
+for a True Crime / Unresolved Mystery channel.
+
+This script MUST reduce swipe-away and increase replay.
 
 TONE:
 - {tone}
-- Non-graphic
-- Serious and credible
+- Serious, credible, non-graphic
 - No exaggeration, no opinions
+- Speak to an adult audience (US-focused)
 
-FACTUAL RECORD (DO NOT CHANGE FACTS):
+FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
 Narrative Flags: {case.get("flags")}
 
-STRICT STRUCTURE (MANDATORY):
+MANDATORY STRUCTURE (DO NOT BREAK):
 
-1) OPENING HOOK (0–1s)
-- ONE short sentence (max 7 words)
-- Implies a mistake, failure, or unexplained outcome
+1) SCROLL-STOPPING HOOK (0–3 seconds)
+- ONE sentence only
+- High stakes, emotional, or disturbing implication
+- MUST suggest failure, disappearance, or unanswered outcome
 - NO dates, NO locations, NO names
+- Example style:
+  “She vanished in seconds, and no one saw it happen.”
 
-2) CONTEXT (1–3s)
+2) CONTEXT DROP
 - Introduce date and location calmly
-- One short sentence only
+- ONE sentence
+- Factual and grounded
 
-3) ESCALATION
-- 2–3 short sentences
-- Focus on what was unclear, missed, delayed, or unexplained
-- Maintain forward tension (no repetition)
+3) ESCALATION (CORE RETENTION)
+- 3–4 short sentences
+- Focus on what went wrong, what was missed, or what never made sense
+- Each sentence must ADD new information
+- No repetition
 
-4) LOOP ENDING
+4) CONTEXTUAL CTA (SUBTLE, NOT SALESY)
+- ONE short sentence
+- Tie subscribing to the mystery itself
+- Example:
+  “Following this channel helps keep cases like this alive.”
+
+5) LOOP ENDING (REPLAY ENGINE)
 - Reframe the opening hook
 - No questions
-- Must naturally encourage replay
+- Must feel incomplete but factual
 
 LENGTH RULES:
-- {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words total
-- Short spoken sentences
-- No filler phrasing
+- {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words
+- Short sentences
+- Spoken-friendly rhythm
 
 OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
 
@@ -137,10 +150,11 @@ SCRIPT:
 
 BEATS_JSON:
 [
-  {{ "beat": "hook",    "intent": "failure" }},
-  {{ "beat": "context", "intent": "time_place" }},
-  {{ "beat": "detail",  "intent": "mistake" }},
-  {{ "beat": "loop",    "intent": "reframe" }}
+  {{ "beat": "hook",     "intent": "failure" }},
+  {{ "beat": "context",  "intent": "time_place" }},
+  {{ "beat": "detail",   "intent": "mistake" }},
+  {{ "beat": "cta",      "intent": "attention" }},
+  {{ "beat": "loop",     "intent": "reframe" }}
 ]
 """
 
@@ -152,11 +166,11 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write short-form investigative narration."},
+            {"role": "system", "content": "You write high-retention Shorts narration."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.45,
-        max_tokens=700,
+        temperature=0.48,
+        max_tokens=750,
     )
 
     text = clean(getattr(response.choices[0].message, "content", None))
@@ -193,8 +207,8 @@ def generate_script(case: dict) -> Tuple[str, list]:
     except json.JSONDecodeError:
         raise ValueError("Invalid JSON in BEATS_JSON")
 
-    if not isinstance(beats, list) or len(beats) != 4:
-        raise ValueError("Exactly 4 beats required")
+    if not isinstance(beats, list) or len(beats) != 5:
+        raise ValueError("Exactly 5 beats required")
 
     return script, beats
 
@@ -217,7 +231,7 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ Script + beats generated successfully")
+            print("✅ Script + beats generated (retention-optimized)")
             return
 
         except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
