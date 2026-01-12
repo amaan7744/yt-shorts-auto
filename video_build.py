@@ -25,7 +25,7 @@ AUDIO_FILE = "final_audio.wav"
 OUTPUT_VIDEO = "video_raw.mp4"
 
 TARGET_W, TARGET_H = 1080, 1920
-FPS = 60  # Smooth motion without hurting retention
+FPS = 60
 MAX_DURATION = 35.0
 
 # Motion tuning (Shorts-safe)
@@ -33,6 +33,9 @@ HOOK_ZOOM = 1.10
 MICRO_MOTION = 0.03
 CTA_ZOOM = 1.08
 CTA_EXTRA_TIME = 0.8
+
+# Audio safety margin (MoviePy bug guard)
+AUDIO_SAFETY_MARGIN = 0.2  # seconds
 
 # --------------------------------------------------
 # UTILS
@@ -91,13 +94,13 @@ def prepare_clip(
 
     # Motion logic
     if index == 0:
-        # Strong hook zoom (first 1–2s matter most)
+        # Strong hook zoom
         clip = clip.fx(vfx.resize, HOOK_ZOOM)
     elif is_cta:
         # CTA emphasis
         clip = clip.fx(vfx.resize, CTA_ZOOM)
     else:
-        # Gentle Ken Burns micro-motion
+        # Gentle micro-motion
         clip = clip.fx(vfx.resize, lambda t: 1 + MICRO_MOTION * t)
 
     return force_even_dimensions(clip)
@@ -144,10 +147,28 @@ def main():
     log("Concatenating clips...")
     video = concatenate_videoclips(clips, method="compose")
 
-    log("Adding audio...")
-    audio = AudioFileClip(AUDIO_FILE).subclip(0, video.duration)
+    # --------------------------------------------------
+    # AUDIO (SAFE CLAMP – CRASH FIX)
+    # --------------------------------------------------
+    log("Adding audio (safe clamp)...")
+
+    audio_clip = AudioFileClip(AUDIO_FILE)
+
+    # Never let MoviePy read the final ~200ms
+    safe_audio_end = min(
+        audio_clip.duration - AUDIO_SAFETY_MARGIN,
+        video.duration
+    )
+
+    if safe_audio_end <= 0:
+        raise SystemExit("❌ Audio duration too short after safety clamp")
+
+    audio = audio_clip.subclip(0, safe_audio_end)
     video = video.set_audio(CompositeAudioClip([audio]))
 
+    # --------------------------------------------------
+    # RENDER
+    # --------------------------------------------------
     log("Rendering video...")
     video.write_videofile(
         OUTPUT_VIDEO,
