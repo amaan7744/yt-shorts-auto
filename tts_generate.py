@@ -1,30 +1,9 @@
-#!/usr/bin/env python
-
+#!/usr/bin/env python3
 import os
-
-# Make Coqui TTS non-interactive and compatible with newer torch.load
-os.environ.setdefault("COQUI_TOS_AGREED", "1")
-os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
-
-"""
-Natural voice-cloned TTS using Coqui XTTS-v2.
-
-- Picks ONE random reference voice from voices/ (wav or mp3).
-- Reads narration text from script.txt (or $TTS_SCRIPT_PATH).
-- Splits into short chunks for stable XTTS prosody.
-- Synthesizes each chunk with XTTS-v2 using speaker_wav (true cloning).
-- Joins chunks with short pauses + crossfade to avoid clicks.
-- Normalizes + lightly compresses audio, resamples to 44.1 kHz mono.
-- Writes a single clean WAV file (atomic write) to:
-    - CLI:     --output /path/to/tts.wav
-    - or env:  $TTS_OUTPUT_PATH
-    - or default: tts.wav
-"""
-
-import argparse
-import random
 import re
 import sys
+import random
+import argparse
 import tempfile
 from typing import List, Optional
 
@@ -33,258 +12,179 @@ from TTS.api import TTS
 from pydub import AudioSegment, effects
 from pydub.effects import compress_dynamic_range
 
+# --------------------------------------------------
+# ENV SAFETY
+# --------------------------------------------------
+os.environ.setdefault("COQUI_TOS_AGREED", "1")
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
 VOICES_DIR = "voices"
-DEFAULT_MODEL_NAME = os.environ.get(
-    "TTS_MODEL_NAME", "tts_models/multilingual/multi-dataset/xtts_v2"
+SCRIPT_FILE = "script.txt"
+OUTPUT_DEFAULT = "final_audio.wav"
+
+MODEL_NAME = os.getenv(
+    "TTS_MODEL_NAME",
+    "tts_models/multilingual/multi-dataset/xtts_v2"
 )
 
+# Timing controls (RETENTION FIXES)
+HOOK_SPEED = 1.08          # +8% speed for first 2 seconds
+FINAL_SPEED = 0.95         # −5% speed for final line
+FINAL_PAUSE_MS = 300       # pause before final beat
 
-# ------------------------- logging ------------------------- #
+CHUNK_MAX_WORDS = 45
 
-def log(msg: str) -> None:
+# --------------------------------------------------
+# LOGGING
+# --------------------------------------------------
+def log(msg: str):
     print(f"[TTS] {msg}", flush=True)
 
+# --------------------------------------------------
+# DEVICE
+# --------------------------------------------------
+def detect_device():
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
-# ------------------------- device ------------------------- #
-
-def detect_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    # GitHub Actions typically has only CPU
-    return "cpu"
-
-
-# ------------------------- script reading ------------------------- #
-
-def read_script_text(cli_path: Optional[str]) -> str:
-    script_path = cli_path or os.environ.get("TTS_SCRIPT_PATH", "script.txt")
-
-    if not os.path.isfile(script_path):
-        log(f"ERROR: Script file not found: {script_path}")
-        sys.exit(1)
-
-    with open(script_path, "r", encoding="utf-8") as f:
-        text = f.read().strip()
-
+# --------------------------------------------------
+# SCRIPT
+# --------------------------------------------------
+def read_script(path: Optional[str]) -> str:
+    path = path or SCRIPT_FILE
+    if not os.path.isfile(path):
+        sys.exit(f"[TTS] ❌ Script not found: {path}")
+    text = open(path, encoding="utf-8").read().strip()
     if not text:
-        log(f"ERROR: Script file is empty: {script_path}")
-        sys.exit(1)
+        sys.exit("[TTS] ❌ Script empty")
+    return re.sub(r"\s+", " ", text)
 
-    wc = len(text.split())
-    log(f"Loaded script from {script_path} ({wc} words)")
-    return text
-
-
-# ------------------------- voice selection ------------------------- #
-
-def find_voice_files() -> List[str]:
+# --------------------------------------------------
+# VOICE
+# --------------------------------------------------
+def pick_voice() -> str:
     if not os.path.isdir(VOICES_DIR):
-        log(f"ERROR: Voices directory not found: {VOICES_DIR}")
-        sys.exit(1)
+        sys.exit("[TTS] ❌ voices/ directory missing")
 
-    voices: List[str] = []
-    for name in os.listdir(VOICES_DIR):
-        lower = name.lower()
-        if lower.endswith(".wav") or lower.endswith(".mp3"):
-            voices.append(os.path.join(VOICES_DIR, name))
-
+    voices = [
+        os.path.join(VOICES_DIR, f)
+        for f in os.listdir(VOICES_DIR)
+        if f.lower().endswith((".wav", ".mp3"))
+    ]
     if not voices:
-        log(f"ERROR: No .wav or .mp3 files found in {VOICES_DIR}")
-        sys.exit(1)
+        sys.exit("[TTS] ❌ No voice files found")
 
-    voices.sort()
-    return voices
+    voice = random.choice(voices)
+    log(f"Using voice: {voice}")
+    return voice
 
+# --------------------------------------------------
+# TEXT SPLITTING
+# --------------------------------------------------
+def split_chunks(text: str) -> List[str]:
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    chunks, current, count = [], [], 0
 
-def pick_reference_voice() -> str:
-    voices = find_voice_files()
-    choice = random.choice(voices)
-    log(f"Using reference voice: {choice}")
-    return choice
-
-
-# ------------------------- text chunking ------------------------- #
-
-def split_text_into_chunks(text: str, max_words: int = 45) -> List[str]:
-    """
-    Split into sentence-based chunks of <= max_words to keep XTTS stable.
-    """
-    # Clean weird whitespace
-    text = re.sub(r"\s+", " ", text.strip())
-    # Split on sentence boundaries
-    raw_sents = re.split(r"(?<=[.!?])\s+", text)
-    sents = [s.strip() for s in raw_sents if s.strip()]
-
-    if not sents:
-        return [text]
-
-    chunks: List[str] = []
-    current: List[str] = []
-    count = 0
-
-    for s in sents:
+    for s in sentences:
         words = s.split()
-        if count + len(words) <= max_words:
+        if count + len(words) <= CHUNK_MAX_WORDS:
             current.append(s)
             count += len(words)
         else:
-            if current:
-                chunks.append(" ".join(current))
-            current = [s]
-            count = len(words)
+            chunks.append(" ".join(current))
+            current, count = [s], len(words)
 
     if current:
         chunks.append(" ".join(current))
 
-    # Fallback
-    if not chunks:
-        return [text]
-
     return chunks
 
+# --------------------------------------------------
+# AUDIO HELPERS
+# --------------------------------------------------
+def speed(seg: AudioSegment, factor: float) -> AudioSegment:
+    return seg._spawn(
+        seg.raw_data,
+        overrides={"frame_rate": int(seg.frame_rate * factor)}
+    ).set_frame_rate(seg.frame_rate)
 
-# ------------------------- audio helpers ------------------------- #
-
-def normalize_audio(seg: AudioSegment) -> AudioSegment:
-    """
-    Loudness normalization + gentle compression + standard format.
-    """
+def normalize(seg: AudioSegment) -> AudioSegment:
     seg = effects.normalize(seg)
     seg = compress_dynamic_range(
         seg,
-        threshold=-20.0,  # start compressing above -20 dBFS
-        ratio=3.0,        # 3:1 compression
-        attack=5,         # ms
-        release=50,       # ms
+        threshold=-20.0,
+        ratio=3.0,
+        attack=5,
+        release=50,
     )
-    seg = seg.set_frame_rate(44100).set_channels(1)
-    return seg
+    return seg.set_channels(1).set_frame_rate(44100)
 
+# --------------------------------------------------
+# SYNTHESIS
+# --------------------------------------------------
+def synthesize(script: str, output: str):
+    device = detect_device()
+    voice = pick_voice()
 
-def join_chunks_with_crossfade(
-    pieces: List[AudioSegment],
-    pause_ms: int = 160,
-    crossfade_ms: int = 20,
-) -> AudioSegment:
-    """
-    Join chunks with tiny pauses and crossfade to avoid clicks/pops.
-    """
-    if not pieces:
-        return AudioSegment.empty()
+    log(f"Loading XTTS ({MODEL_NAME}) on {device}")
+    tts = TTS(model_name=MODEL_NAME, progress_bar=False).to(device)
 
-    silence = AudioSegment.silent(duration=pause_ms)
-    out = pieces[0]
-
-    for p in pieces[1:]:
-        segment_with_pause = silence + p
-        out = out.append(segment_with_pause, crossfade=crossfade_ms)
-
-    return out
-
-
-# ------------------------- core synthesis ------------------------- #
-
-def synthesize_xtts(
-    model_name: str,
-    device: str,
-    ref_voice: str,
-    text: str,
-    output_path: str,
-) -> None:
-    log(f"Loading XTTS model: {model_name} on {device}")
-    tts = TTS(model_name=model_name, progress_bar=False).to(device)
-
-    chunks = split_text_into_chunks(text, max_words=45)
+    chunks = split_chunks(script)
     log(f"Script split into {len(chunks)} chunks")
 
-    pieces: List[AudioSegment] = []
+    audio_chunks: List[AudioSegment] = []
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for i, chunk in enumerate(chunks, start=1):
-            chunk_wc = len(chunk.split())
-            log(f"Synthesizing chunk {i}/{len(chunks)} ({chunk_wc} words)")
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, chunk in enumerate(chunks):
+            tmp_wav = os.path.join(tmp, f"chunk_{i}.wav")
 
-            tmp_wav = os.path.join(tmpdir, f"chunk_{i}.wav")
-
-            # Core XTTS voice cloning call
             tts.tts_to_file(
                 text=chunk,
-                speaker_wav=ref_voice,
+                speaker_wav=voice,
                 language="en",
                 file_path=tmp_wav,
             )
 
-            if not os.path.exists(tmp_wav) or os.path.getsize(tmp_wav) == 0:
-                log(f"ERROR: XTTS produced empty audio for chunk {i}")
-                sys.exit(1)
+            seg = AudioSegment.from_file(tmp_wav)
 
-            audio = AudioSegment.from_file(tmp_wav)
-            pieces.append(audio)
+            # 🔥 HOOK SPEED BOOST (first chunk only)
+            if i == 0:
+                seg = speed(seg, HOOK_SPEED)
 
-    if not pieces:
-        log("ERROR: No audio chunks were produced.")
-        sys.exit(1)
+            audio_chunks.append(seg)
 
-    log("Joining chunks with crossfade + pauses...")
-    joined = join_chunks_with_crossfade(pieces, pause_ms=160, crossfade_ms=20)
+    # 🔥 FINAL LINE SLOWDOWN
+    audio_chunks[-1] = speed(audio_chunks[-1], FINAL_SPEED)
 
-    log("Normalizing + compressing audio...")
-    final = normalize_audio(joined)
+    # 🔥 PAUSE BEFORE FINAL BEAT
+    final_pause = AudioSegment.silent(duration=FINAL_PAUSE_MS)
 
-    # Atomic write to avoid broken files
-    tmp_out = output_path + ".tmp"
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    final.export(tmp_out, format="wav")
-    os.replace(tmp_out, output_path)
+    final_audio = AudioSegment.empty()
+    for i, seg in enumerate(audio_chunks):
+        final_audio += seg
+        if i == len(audio_chunks) - 2:
+            final_audio += final_pause
 
-    total_sec = len(final) / 1000.0
-    log(f"Done. Wrote {output_path} ({total_sec:.1f}s)")
+    final_audio = normalize(final_audio)
 
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+    final_audio.export(output, format="wav")
 
-# ------------------------- CLI ------------------------- #
+    log(f"✅ Final narration written: {output} ({len(final_audio)/1000:.1f}s)")
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="XTTS-v2 voice-cloned TTS generator.")
-    p.add_argument(
-        "--script-path",
-        dest="script_path",
-        default=None,
-        help="Path to script text file (default: $TTS_SCRIPT_PATH or script.txt).",
-    )
-    p.add_argument(
-        "--output",
-        dest="output",
-        default=None,
-        help="Output WAV path (default: $TTS_OUTPUT_PATH or tts.wav).",
-    )
-    p.add_argument(
-        "--model",
-        dest="model_name",
-        default=DEFAULT_MODEL_NAME,
-        help=f"TTS model name (default: {DEFAULT_MODEL_NAME}).",
-    )
-    return p.parse_args()
+# --------------------------------------------------
+# CLI
+# --------------------------------------------------
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--script", default=None)
+    p.add_argument("--output", default=OUTPUT_DEFAULT)
+    args = p.parse_args()
 
-
-def main() -> None:
-    args = parse_args()
-
-    device = detect_device()
-    script_text = read_script_text(args.script_path)
-    ref_voice = pick_reference_voice()
-
-    output_path = args.output or os.environ.get("TTS_OUTPUT_PATH", "narration.wav")
-    model_name = args.model_name
-
-    synthesize_xtts(
-        model_name=model_name,
-        device=device,
-        ref_voice=ref_voice,
-        text=script_text,
-        output_path=output_path,
-    )
-
+    script = read_script(args.script)
+    synthesize(script, args.output)
 
 if __name__ == "__main__":
     main()
