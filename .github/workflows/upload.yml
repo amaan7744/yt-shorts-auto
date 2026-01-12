@@ -1,9 +1,7 @@
-name: Auto YouTube Shorts – Crime (8x Daily | US Peak)
+name: Auto YouTube Shorts – Crime (US Peak | Retention Optimized)
 
 on:
   workflow_dispatch:
-
-    
 
 concurrency:
   group: yt-shorts-upload
@@ -12,24 +10,24 @@ concurrency:
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 70
 
     permissions:
       contents: write
 
     env:
-      # ---------------- AUDIO BACKEND (NO TORCHCODEC) ----------------
+      # ---------------- AUDIO / TORCH STABILITY ----------------
       TORCHAUDIO_USE_SOUNDFILE: "1"
       TORCHCODEC_DISABLE: "1"
       DISABLE_TORCHCODEC: "1"
+      COQUI_TOS_AGREED: "1"
 
-      # ---------------- MODEL / CACHE ----------------
+      # ---------------- MODEL CACHE ----------------
       HF_HOME: /tmp/huggingface
       TRANSFORMERS_CACHE: /tmp/huggingface
       TORCH_HOME: /tmp/torch
-      COQUI_TOS_AGREED: "1"
 
-      # ---------------- STABILITY ----------------
+      # ---------------- PYTHON ----------------
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
 
@@ -56,7 +54,7 @@ jobs:
           df -h
 
       # ----------------------------------------------------
-      # PYTHON
+      # PYTHON SETUP
       # ----------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -68,6 +66,7 @@ jobs:
       # ----------------------------------------------------
       - name: Install dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
@@ -76,26 +75,26 @@ jobs:
       # ----------------------------------------------------
       # CASE SEARCH
       # ----------------------------------------------------
-      - name: Find real crime case
+      - name: Find crime case
         run: |
           set -euo pipefail
           python case_search.py
           test -f case.json
 
       # ----------------------------------------------------
-      # SCRIPT GENERATION (RETENTION OPTIMIZED)
+      # SCRIPT + BEATS (RETENTION ENGINE)
       # ----------------------------------------------------
-      - name: Generate script
+      - name: Generate script and beats
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
         run: |
           set -euo pipefail
           python script_generate.py
           test -f script.txt
-          test -f image_prompts.json
+          test -f beats.json
 
       # ----------------------------------------------------
-      # IMAGE FETCH
+      # IMAGE FETCH (BEAT-AWARE)
       # ----------------------------------------------------
       - name: Fetch images
         env:
@@ -104,9 +103,10 @@ jobs:
           set -euo pipefail
           python image_fetch.py
           test -d frames
+          ls frames | wc -l
 
       # ----------------------------------------------------
-      # TTS (UNCHANGED)
+      # TTS (PACED)
       # ----------------------------------------------------
       - name: Generate narration
         run: |
@@ -115,7 +115,7 @@ jobs:
           test -f final_audio.wav
 
       # ----------------------------------------------------
-      # SUBTITLES
+      # SUBTITLES (HIGH CONTRAST)
       # ----------------------------------------------------
       - name: Build subtitles
         run: |
@@ -124,37 +124,34 @@ jobs:
           test -f subs.ass
 
       # ----------------------------------------------------
-      # VIDEO BUILD
+      # VIDEO BUILD (CTA EMPHASIS + LOOP)
       # ----------------------------------------------------
       - name: Build raw video
         run: |
           set -euo pipefail
-          python video_build.py final_audio.wav
+          python video_build.py
           test -f video_raw.mp4
 
       # ----------------------------------------------------
-      # FINAL RENDER
+      # FINAL RENDER (HQ SHORTS EXPORT)
       # ----------------------------------------------------
-      - name: Final render (HQ)
+      - name: Final render
         run: |
           set -euo pipefail
           ffmpeg -y \
             -i video_raw.mp4 \
-            -i final_audio.wav \
             -vf "ass=subs.ass,scale=1080:1920:flags=lanczos" \
-            -map 0:v -map 1:a \
             -c:v libx264 \
             -preset slow \
             -crf 17 \
             -pix_fmt yuv420p \
             -movflags +faststart \
-            -c:a aac \
-            -b:a 192k \
+            -c:a copy \
             output.mp4
           test -f output.mp4
 
       # ----------------------------------------------------
-      # UPLOAD
+      # UPLOAD TO YOUTUBE
       # ----------------------------------------------------
       - name: Upload to YouTube
         env:
@@ -167,10 +164,11 @@ jobs:
           python youtube_upload.py
 
       # ----------------------------------------------------
-      # SAVE MEMORY
+      # PERSIST MEMORY
       # ----------------------------------------------------
       - name: Persist memory
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add memory used_cases.json || true
