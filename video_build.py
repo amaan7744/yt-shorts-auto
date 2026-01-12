@@ -1,128 +1,190 @@
 #!/usr/bin/env python3
-
-import os
-from typing import List
-
-from moviepy.editor import (
-    ImageClip,
-    concatenate_videoclips,
-    AudioFileClip,
-    CompositeAudioClip,
-    vfx,
-)
+import os, json
+from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, vfx, CompositeVideoClip
 from pydub import AudioSegment
+from PIL import Image
 
-# ---------------- CONFIG ----------------
-OUTPUT_VIDEO = "video_raw.mp4"
 FRAMES_DIR = "frames"
-
-PRIMARY_AUDIO = "final_audio.wav"
-FALLBACK_AUDIO = "narration.wav"
-
+BEATS_FILE = "beats.json"
+AUDIO_FILE = "final_audio.wav"
+OUTPUT = "output.mp4"
 TARGET_W, TARGET_H = 1080, 1920
-FPS = 30
-MAX_DURATION = 35.0
+FPS = 60  # Increased for smoother motion
+MAX_FRAME_SEC = 1.3
+CTA_BOOST_SEC = 0.8
+BITRATE = "8000k"  # High bitrate for quality
 
-HOOK_ZOOM = 1.12
-MICRO_MOTION = 0.03
-# ----------------------------------------
+def audio_len():
+    """Get exact audio duration without any limits"""
+    return len(AudioSegment.from_file(AUDIO_FILE)) / 1000
 
-
-def get_audio_path() -> str:
-    if os.path.isfile(PRIMARY_AUDIO):
-        return PRIMARY_AUDIO
-    if os.path.isfile(FALLBACK_AUDIO):
-        return FALLBACK_AUDIO
-    raise SystemExit("❌ No audio file found")
-
-
-def audio_duration(path: str) -> float:
-    audio = AudioSegment.from_file(path)
-    return min(len(audio) / 1000.0, MAX_DURATION)
-
-
-def list_frames() -> List[str]:
-    frames = sorted(
+def frames():
+    return sorted(
         os.path.join(FRAMES_DIR, f)
         for f in os.listdir(FRAMES_DIR)
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     )
-    if not frames:
-        raise SystemExit("❌ No frames found")
-    return frames
 
-
-def force_even_resize(clip: ImageClip) -> ImageClip:
-    """
-    Enforce even dimensions for libx264 safety.
-    """
-    w = int(clip.w // 2 * 2)
-    h = int(clip.h // 2 * 2)
-    return clip.resize((w, h))
-
-
-def prepare_clip(img_path: str, duration: float, index: int) -> ImageClip:
-    clip = ImageClip(img_path).set_duration(duration)
-
-    # Initial scale to cover target
-    scale = max(TARGET_W / clip.w, TARGET_H / clip.h)
-    clip = clip.resize(scale)
-
-    # Center crop to exact vertical format
-    clip = clip.crop(
-        x_center=clip.w / 2,
-        y_center=clip.h / 2,
-        width=TARGET_W,
-        height=TARGET_H,
-    )
-
-    # Strong motion on first frame (hook)
-    if index == 0:
-        clip = clip.fx(vfx.resize, lambda t: HOOK_ZOOM - 0.1 * t)
+def optimize_image(img_path):
+    """Pre-process image for better quality"""
+    img = Image.open(img_path)
+    
+    # Convert to RGB if needed
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    # Calculate aspect ratio and resize
+    aspect = img.width / img.height
+    target_aspect = TARGET_W / TARGET_H
+    
+    if aspect > target_aspect:
+        # Image is wider - fit to height
+        new_h = TARGET_H
+        new_w = int(TARGET_H * aspect)
     else:
-        clip = clip.fx(vfx.resize, lambda t: 1 + MICRO_MOTION * t)
+        # Image is taller - fit to width with extra height
+        new_w = TARGET_W
+        new_h = int(TARGET_W / aspect)
+    
+    # Use high-quality resampling
+    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    # Save optimized version temporarily
+    temp_path = img_path.replace('.jpg', '_opt.jpg').replace('.png', '_opt.jpg')
+    img.save(temp_path, 'JPEG', quality=98, optimize=True)
+    
+    return temp_path
 
-    # 🔒 CRITICAL: force even dimensions AFTER motion
-    clip = force_even_resize(clip)
-
+def prepare(img, dur, is_cta=False):
+    """Prepare clip with enhanced quality settings"""
+    # Optimize image first
+    opt_img = optimize_image(img)
+    
+    clip = ImageClip(opt_img).set_duration(dur)
+    
+    # Smart crop - center focus
+    clip = clip.resize(height=TARGET_H)
+    if clip.w > TARGET_W:
+        clip = clip.crop(x_center=clip.w/2, width=TARGET_W)
+    
+    # Apply effects based on clip type
+    if is_cta:
+        # Attention-grabbing zoom + brightness
+        clip = clip.fx(vfx.resize, lambda t: 1 + 0.08 * (t/dur))
+        clip = clip.fx(vfx.colorx, 1.15)
+    else:
+        # Smooth Ken Burns effect
+        clip = clip.fx(vfx.resize, lambda t: 1 + 0.05 * (t/dur))
+    
+    # Clean up temp file
+    try:
+        os.remove(opt_img)
+    except:
+        pass
+    
     return clip
 
+def add_fade_transitions(clips, fade_dur=0.15):
+    """Add smooth crossfade transitions between clips"""
+    faded = []
+    for i, clip in enumerate(clips):
+        if i == 0:
+            # Fade in first clip
+            faded.append(clip.fadein(fade_dur))
+        elif i == len(clips) - 1:
+            # Fade out last clip
+            faded.append(clip.fadeout(fade_dur))
+        else:
+            # Crossfade middle clips
+            faded.append(clip.crossfadein(fade_dur))
+    return faded
 
 def main():
-    audio_path = get_audio_path()
-    total_duration = audio_duration(audio_path)
-    frames = list_frames()
-
-    per_frame = total_duration / len(frames)
-
-    clips = [
-        prepare_clip(img, per_frame, i)
-        for i, img in enumerate(frames)
-    ]
-
-    # Loop ending (reuse first frame briefly)
-    clips.append(clips[0].set_duration(0.4))
-
+    print("Loading beats and frames...")
+    beats = json.load(open(BEATS_FILE))
+    imgs = frames()
+    
+    if not imgs:
+        print("Error: No frames found!")
+        return
+    
+    # Get exact audio duration
+    audio_duration = audio_len()
+    print(f"Audio duration: {audio_duration:.2f}s")
+    
+    # Calculate how much time each frame should get
+    num_frames = len(imgs)
+    time_per_frame = audio_duration / num_frames
+    
+    print(f"Creating {num_frames} clips, {time_per_frame:.2f}s each...")
+    clips = []
+    
+    for i, (img, beat) in enumerate(zip(imgs, beats)):
+        # Use calculated time per frame, adjusting for attention clips
+        if beat.get("intent") == "attention":
+            # Attention clips can be slightly longer
+            dur = min(time_per_frame * 1.2, time_per_frame + 0.3)
+        else:
+            dur = time_per_frame
+        
+        print(f"Processing frame {i+1}/{num_frames} ({dur:.2f}s)...")
+        clips.append(prepare(img, dur, beat.get("intent") == "attention"))
+    
+    # Add fade transitions
+    print("Adding transitions...")
+    clips = add_fade_transitions(clips)
+    
+    # Concatenate all clips
+    print("Concatenating clips...")
     video = concatenate_videoclips(clips, method="compose")
-    video = video.set_duration(total_duration)
-
-    audio = AudioFileClip(audio_path).subclip(0, total_duration)
-    video = video.set_audio(CompositeAudioClip([audio]))
-
+    
+    # Add audio - match exactly to audio duration
+    print("Adding audio...")
+    audio = AudioFileClip(AUDIO_FILE)
+    
+    # Adjust video duration to match audio exactly
+    if video.duration > audio_duration:
+        # Trim video to match audio
+        video = video.subclip(0, audio_duration)
+    elif video.duration < audio_duration:
+        # Extend last frame to match audio duration
+        last_frame_extension = audio_duration - video.duration
+        print(f"Extending last frame by {last_frame_extension:.2f}s to match audio...")
+        extended_last = clips[-1].set_duration(clips[-1].duration + last_frame_extension)
+        clips[-1] = extended_last
+        video = concatenate_videoclips(clips, method="compose")
+    
+    # Normalize audio for consistent volume
+    audio = audio.fx(vfx.audio_normalize)
+    video = video.set_audio(audio)
+    
+    # Export with optimal YouTube Shorts settings
+    print("Rendering final video...")
     video.write_videofile(
-        OUTPUT_VIDEO,
+        OUTPUT,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        preset="slow",
+        bitrate=BITRATE,
+        audio_bitrate="320k",  # High quality audio
+        preset="slow",  # Better compression quality
         ffmpeg_params=[
-            "-crf", "16",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
+            "-crf", "18",  # Lower CRF = higher quality (18-23 is good)
+            "-pix_fmt", "yuv420p",  # Compatibility
+            "-profile:v", "high",  # H.264 High Profile
+            "-level", "4.2",
+            "-movflags", "+faststart",  # Fast streaming start
+            "-maxrate", "10000k",  # Max bitrate
+            "-bufsize", "20000k"  # Buffer size
         ],
-        logger=None,
+        threads=4,  # Use multiple CPU threads
+        logger=None
     )
-
+    
+    print(f"✓ Video created: {OUTPUT}")
+    print(f"  Duration: {video.duration:.2f}s (Audio: {audio_duration:.2f}s)")
+    print(f"  Resolution: {TARGET_W}x{TARGET_H}")
+    print(f"  FPS: {FPS}")
 
 if __name__ == "__main__":
     main()
