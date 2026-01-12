@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-
 import os, json, random, hashlib, requests
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 PEXELS_KEY = os.getenv("PEXELS_KEY")
 if not PEXELS_KEY:
@@ -15,40 +14,44 @@ BEATS_FILE = "beats.json"
 USED_IMAGES_FILE = "used_images.json"
 
 TARGET_W, TARGET_H = 1080, 1920
-MIN_WIDTH = 2000
-MAX_TRIES = 40
+MIN_WIDTH = 2200
+MAX_TRIES = 50
 
 os.makedirs(FRAMES_DIR, exist_ok=True)
 
 # ---------------- HALAL FILTER ----------------
 BANNED_TERMS = {
-    "woman","women","girl","female","man","men","person",
-    "people","face","portrait","selfie","model","hands",
-    "child","couple"
+    "woman","women","girl","female","man","men","person","people",
+    "face","portrait","selfie","model","hands","child","couple",
+    "body","human"
 }
 
-# ---------------- INTENT MAP ----------------
+# ---------------- INTENT MAP (CLARITY-FIRST) ----------------
 INTENT_PROMPTS = {
     "failure": [
         "empty road at night",
-        "abandoned street dark",
+        "abandoned street night",
+        "deserted parking lot night"
     ],
     "time_place": [
         "city skyline night",
-        "old map texture dark",
+        "town street night exterior",
+        "urban neighborhood night"
     ],
     "mistake": [
         "case files on desk",
         "documents under desk lamp",
+        "evidence folder on table"
     ],
     "attention": [
-        "case file stamped unresolved",
-        "evidence board dark room",
-        "cold case folder under light",
+        "evidence board with notes",
+        "cold case file folder",
+        "unsolved case documents"
     ],
     "reframe": [
-        "dark hallway fading",
+        "dark hallway with light",
         "empty room single light",
+        "open door dark corridor"
     ],
 }
 
@@ -66,7 +69,8 @@ def load_used():
 def save_used(u):
     json.dump(sorted(u), open(USED_IMAGES_FILE, "w"), indent=2)
 
-def hash_url(u): return hashlib.sha256(u.encode()).hexdigest()
+def hash_url(u):
+    return hashlib.sha256(u.encode()).hexdigest()
 
 def is_halal(p):
     text = " ".join([
@@ -74,17 +78,29 @@ def is_halal(p):
         p.get("url",""),
         p.get("photographer","")
     ]).lower()
-    if any(b in text for b in BANNED_TERMS): return False
-    if p.get("type") == "portrait": return False
+    if any(b in text for b in BANNED_TERMS):
+        return False
+    if p.get("type") == "portrait":
+        return False
     return True
 
+def enhance_image(img):
+    """
+    VERY subtle enhancement.
+    Designed for trust + clarity, not drama.
+    """
+    img = ImageEnhance.Contrast(img).enhance(1.08)
+    img = ImageEnhance.Sharpness(img).enhance(1.08)
+    return img
+
 def make_vertical(img):
-    w,h = img.size
-    s = max(TARGET_W/w, TARGET_H/h)
-    img = img.resize((int(w*s), int(h*s)), Image.Resampling.LANCZOS)
-    x = (img.width - TARGET_W)//2
-    y = (img.height - TARGET_H)//2
-    return img.crop((x,y,x+TARGET_W,y+TARGET_H))
+    w, h = img.size
+    scale = max(TARGET_W / w, TARGET_H / h)
+    img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+    x = (img.width - TARGET_W) // 2
+    y = max(0, (img.height - TARGET_H) // 2 - int(TARGET_H * 0.08))
+    return img.crop((x, y, x + TARGET_W, y + TARGET_H))
 
 # ---------------- FETCH ----------------
 def fetch(intent, filename, used):
@@ -97,24 +113,26 @@ def fetch(intent, filename, used):
     for prompt in prompts:
         url = f"https://api.pexels.com/v1/search?query={prompt}&orientation=portrait&per_page=80"
         try:
-            photos = requests.get(url, headers=HEADERS, timeout=25).json().get("photos",[])
+            photos = requests.get(url, headers=HEADERS, timeout=25).json().get("photos", [])
         except:
             continue
 
-        random.shuffle(photos)
+        candidates = [p for p in photos if is_halal(p) and p.get("width",0) >= MIN_WIDTH]
+        random.shuffle(candidates)
 
-        for p in photos[:MAX_TRIES]:
-            if not is_halal(p): continue
+        for p in candidates[:MAX_TRIES]:
             src = p["src"].get("original") or p["src"].get("large2x")
-            if not src: continue
-            if p.get("width",0) < MIN_WIDTH: continue
+            if not src:
+                continue
 
             h = hash_url(src)
-            if h in used: continue
+            if h in used:
+                continue
 
             try:
-                img = Image.open(BytesIO(requests.get(src,timeout=20).content)).convert("RGB")
+                img = Image.open(BytesIO(requests.get(src, timeout=20).content)).convert("RGB")
                 img = make_vertical(img)
+                img = enhance_image(img)
                 img.save(os.path.join(FRAMES_DIR, filename), quality=95, subsampling=0)
                 used.add(h)
                 log(f"Saved {filename} ({intent})")
@@ -122,10 +140,13 @@ def fetch(intent, filename, used):
             except:
                 continue
 
-    raise SystemExit(f"❌ No image for intent {intent}")
+    raise SystemExit(f"❌ No image found for intent {intent}")
 
 # ---------------- MAIN ----------------
 def main():
+    if not os.path.isfile(BEATS_FILE):
+        raise SystemExit("❌ beats.json missing")
+
     beats = json.load(open(BEATS_FILE))
     used = load_used()
 
@@ -134,7 +155,7 @@ def main():
         fetch(intent, f"img_{i:03d}.jpg", used)
 
     save_used(used)
-    log("✅ Beat-aligned images generated")
+    log("✅ Retention-safe images generated")
 
 if __name__ == "__main__":
     main()
