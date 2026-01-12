@@ -14,21 +14,18 @@ from azure.core.exceptions import HttpResponseError
 # CONFIG
 # --------------------------------------------------
 
+ENDPOINT = "https://models.github.ai/inference"
 PRIMARY_MODEL = "openai/gpt-4o-mini"
 FALLBACK_MODEL = "openai/gpt-4.1-mini"
-ENDPOINT = "https://models.github.ai/inference"
 
 CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
-IMAGE_PROMPTS_FILE = "image_prompts.json"
+BEATS_FILE = "beats.json"
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# Soft constraints (never block uploads)
-MIN_CASE_LEN = 200
-
-# Shorts timing control (≈30–35 sec)
+# Shorts timing control (~30–35 sec)
 TARGET_WORDS_MIN = 85
 TARGET_WORDS_MAX = 105
 
@@ -49,117 +46,101 @@ client = ChatCompletionsClient(
 # UTIL
 # --------------------------------------------------
 
-def clean(text) -> str:
+def clean(text: str) -> str:
     return str(text or "").replace("```", "").strip()
 
-
 def load_case() -> dict:
-    if not os.path.exists(CASE_FILE):
+    if not os.path.isfile(CASE_FILE):
         sys.exit("❌ case.json missing")
 
     with open(CASE_FILE, "r", encoding="utf-8") as f:
         case = json.load(f)
 
-    summary = case.get("summary", "")
-    if len(summary) < MIN_CASE_LEN:
-        print("⚠️ Case summary short but usable — continuing")
+    if not case.get("summary"):
+        sys.exit("❌ Case summary missing")
 
     return case
 
-
 def normalize_length(script: str) -> str:
-    """
-    Soft-adjust script length to fit Shorts timing
-    without rejecting usable content.
-    """
     words = script.split()
 
-    # Too long → trim
     if len(words) > TARGET_WORDS_MAX:
         return " ".join(words[:TARGET_WORDS_MAX])
 
-    # Too short → pad subtly
     if len(words) < TARGET_WORDS_MIN:
-        filler_sentences = [
-            "The records never fully explained what happened.",
-            "The details remain incomplete.",
-            "The outcome was never clarified."
+        filler = [
+            "The records never clarified what happened.",
+            "Some details were never explained.",
+            "The outcome remained unresolved."
         ]
         i = 0
         while len(words) < TARGET_WORDS_MIN:
-            words.extend(filler_sentences[i % len(filler_sentences)].split())
+            words.extend(filler[i % len(filler)].split())
             i += 1
         return " ".join(words[:TARGET_WORDS_MIN])
 
     return script
 
 # --------------------------------------------------
-# PROMPT (AZURE-SAFE + RETENTION-OPTIMIZED)
+# PROMPT (RETENTION-ENGINEERED)
 # --------------------------------------------------
 
 def build_prompt(case: dict, neutral: bool = False) -> str:
-    tone = "informative and historical" if neutral else "mysterious and intriguing"
+    tone = "calm, tense, and investigative" if not neutral else "neutral and factual"
 
     return f"""
 You write HIGH-RETENTION YouTube Shorts narration
-about REAL HISTORICAL ANOMALIES and UNRESOLVED EVENTS.
+about REAL historical anomalies and unresolved investigations.
 
-These are factual records where outcomes were never fully explained.
-The tone must be {tone}, calm, and NON-GRAPHIC.
+TONE:
+- {tone}
+- Non-graphic
+- Serious and credible
+- No exaggeration, no opinions
 
 FACTUAL RECORD (DO NOT CHANGE FACTS):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
+Narrative Flags: {case.get("flags")}
 
-STRICT REQUIREMENTS:
-- Spoken length: 30–35 seconds
-- {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words total
-- Short spoken sentences
-- Neutral documentary narration
-- No questions
-- No opinions
-- Avoid violent or graphic language entirely
+STRICT STRUCTURE (MANDATORY):
 
-MANDATORY STRUCTURE:
-
-1) OPENING HOOK (first second)
+1) OPENING HOOK (0–1s)
 - ONE short sentence (max 7 words)
-- Describes a strange or unexplained outcome
-- No names, dates, or locations
+- Implies a mistake, failure, or unexplained outcome
+- NO dates, NO locations, NO names
 
-2) BACKGROUND
-- Calm explanation of how this situation began
-- Introduce date and location here
+2) CONTEXT (1–3s)
+- Introduce date and location calmly
+- One short sentence only
 
-3) DETAILS
-- 2–3 factual observations or unresolved elements
-- Focus on what was unclear, missing, or unexplained
+3) ESCALATION
+- 2–3 short sentences
+- Focus on what was unclear, missed, delayed, or unexplained
+- Maintain forward tension (no repetition)
 
 4) LOOP ENDING
-- Final line must reframe the opening hook
-- Ending should naturally encourage replay
+- Reframe the opening hook
+- No questions
+- Must naturally encourage replay
 
-AFTER THE SCRIPT, OUTPUT IMAGE PROMPTS.
-
-IMAGE PROMPT RULES:
-- NO people
-- NO faces
-- Empty places, objects, night environments
-- Cinematic realism
-- EXACTLY 4 prompts following story order
+LENGTH RULES:
+- {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words total
+- Short spoken sentences
+- No filler phrasing
 
 OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
 
 SCRIPT:
-<text>
+<full narration>
 
-IMAGES_JSON:
+BEATS_JSON:
 [
-  "prompt 1",
-  "prompt 2",
-  "prompt 3",
-  "prompt 4"
+  {{ "beat": "hook",    "intent": "failure" }},
+  {{ "beat": "context", "intent": "time_place" }},
+  {{ "beat": "detail",  "intent": "mistake" }},
+  {{ "beat": "loop",    "intent": "reframe" }}
 ]
 """
 
@@ -171,16 +152,16 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write short-form documentary narration."},
+            {"role": "system", "content": "You write short-form investigative narration."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.4,
-        max_tokens=650,
+        temperature=0.45,
+        max_tokens=700,
     )
 
     text = clean(getattr(response.choices[0].message, "content", None))
     if not text:
-        raise ValueError("GPT returned empty content")
+        raise ValueError("Empty response from model")
 
     return text
 
@@ -189,37 +170,33 @@ def call_gpt(model: str, prompt: str) -> str:
 # --------------------------------------------------
 
 def generate_script(case: dict) -> Tuple[str, list]:
-    # First attempt: normal framing
     prompt = build_prompt(case, neutral=False)
 
     try:
         text = call_gpt(PRIMARY_MODEL, prompt)
     except Exception as e:
         if "content_filter" in str(e).lower():
-            print("⚠️ Content filter triggered — retrying with neutral framing")
             prompt = build_prompt(case, neutral=True)
             text = call_gpt(FALLBACK_MODEL, prompt)
         else:
             raise
 
-    if "SCRIPT:" not in text or "IMAGES_JSON:" not in text:
+    if "SCRIPT:" not in text or "BEATS_JSON:" not in text:
         raise ValueError("Invalid GPT output format")
 
-    script_part, images_part = text.split("IMAGES_JSON:", 1)
+    script_part, beats_part = text.split("BEATS_JSON:", 1)
     script = script_part.replace("SCRIPT:", "").strip()
-
-    # 🔥 CRITICAL FIX: normalize length instead of failing
     script = normalize_length(script)
 
     try:
-        images = json.loads(images_part.strip())
+        beats = json.loads(beats_part.strip())
     except json.JSONDecodeError:
-        raise ValueError("Invalid JSON in IMAGES_JSON")
+        raise ValueError("Invalid JSON in BEATS_JSON")
 
-    if not isinstance(images, list) or len(images) != 4:
-        raise ValueError("Exactly 4 image prompts required")
+    if not isinstance(beats, list) or len(beats) != 4:
+        raise ValueError("Exactly 4 beats required")
 
-    return script, images
+    return script, beats
 
 # --------------------------------------------------
 # MAIN
@@ -230,25 +207,24 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            print(f"🧠 Generating script (attempt {attempt})")
+            print(f"🧠 Generating high-retention script (attempt {attempt})")
 
-            script, images = generate_script(case)
+            script, beats = generate_script(case)
 
             with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
                 f.write(script)
 
-            with open(IMAGE_PROMPTS_FILE, "w", encoding="utf-8") as f:
-                json.dump(images, f, indent=2)
+            with open(BEATS_FILE, "w", encoding="utf-8") as f:
+                json.dump(beats, f, indent=2)
 
-            print("✅ Script + image prompts generated")
+            print("✅ Script + beats generated successfully")
             return
 
         except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
             print(f"⚠️ Attempt {attempt} failed: {e}", file=sys.stderr)
             time.sleep(RETRY_DELAY)
 
-    sys.exit("❌ Failed to generate valid script after retries")
-
+    sys.exit("❌ Failed to generate script after retries")
 
 if __name__ == "__main__":
     main()
