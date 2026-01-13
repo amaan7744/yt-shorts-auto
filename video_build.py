@@ -2,14 +2,14 @@
 
 import os
 import json
+import subprocess
 from typing import List
 
 from moviepy.editor import (
-    ImageClip,
+    VideoFileClip,
     concatenate_videoclips,
     AudioFileClip,
     CompositeAudioClip,
-    vfx,
 )
 
 from pydub import AudioSegment
@@ -19,23 +19,20 @@ from pydub import AudioSegment
 # --------------------------------------------------
 
 FRAMES_DIR = "frames"
+CLIPS_DIR = "clips"
 BEATS_FILE = "beats.json"
 
 AUDIO_FILE = "final_audio.wav"
 OUTPUT_VIDEO = "video_raw.mp4"
 
 TARGET_W, TARGET_H = 1080, 1920
-FPS = 60
+FPS = 30
 MAX_DURATION = 35.0
 
-# Motion tuning (Shorts-safe)
-HOOK_ZOOM = 1.10
-MICRO_MOTION = 0.03
-CTA_ZOOM = 1.08
 CTA_EXTRA_TIME = 0.8
+AUDIO_SAFETY_MARGIN = 0.2
 
-# Audio safety margin (MoviePy bug guard)
-AUDIO_SAFETY_MARGIN = 0.2  # seconds
+os.makedirs(CLIPS_DIR, exist_ok=True)
 
 # --------------------------------------------------
 # UTILS
@@ -63,54 +60,47 @@ def audio_duration(path: str) -> float:
     audio = AudioSegment.from_file(path)
     return min(len(audio) / 1000.0, MAX_DURATION)
 
-def force_even_dimensions(clip: ImageClip) -> ImageClip:
-    w = int(clip.w // 2 * 2)
-    h = int(clip.h // 2 * 2)
-    return clip.resize((w, h))
-
 # --------------------------------------------------
-# CLIP PREPARATION
+# AI-STYLE IMAGE ANIMATION (NO GEOMETRY CHANGE)
 # --------------------------------------------------
 
-def prepare_clip(
-    img_path: str,
-    duration: float,
-    index: int,
-    is_cta: bool,
-) -> ImageClip:
-    clip = ImageClip(img_path).set_duration(duration)
+def animate_image(input_img: str, output_mp4: str, duration: float):
+    """
+    Creates subtle AI-style motion:
+    - animated grain
+    - light breathing
+    - micro contrast shift
+    NO zoom, NO pan, NO resize
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", input_img,
+        "-t", str(duration),
+        "-vf",
+        (
+            "scale=1080:1920:flags=lanczos,"
+            "format=yuv420p,"
+            "noise=alls=8:allf=t+u,"
+            "eq=brightness=0.015*sin(2*PI*t/{}):contrast=1.02,"
+            "vignette=PI/6"
+        ).format(duration),
+        "-r", str(FPS),
+        "-c:v", "libx264",
+        "-preset", "slow",
+        "-crf", "16",
+        "-pix_fmt", "yuv420p",
+        output_mp4
+    ]
 
-    # Scale to cover vertical canvas
-    scale = max(TARGET_W / clip.w, TARGET_H / clip.h)
-    clip = clip.resize(scale)
-
-    # Center crop
-    clip = clip.crop(
-        x_center=clip.w / 2,
-        y_center=clip.h / 2,
-        width=TARGET_W,
-        height=TARGET_H,
-    )
-
-    # Motion logic
-    if index == 0:
-        # Strong hook zoom
-        clip = clip.fx(vfx.resize, HOOK_ZOOM)
-    elif is_cta:
-        # CTA emphasis
-        clip = clip.fx(vfx.resize, CTA_ZOOM)
-    else:
-        # Gentle micro-motion
-        clip = clip.fx(vfx.resize, lambda t: 1 + MICRO_MOTION * t)
-
-    return force_even_dimensions(clip)
+    subprocess.run(cmd, check=True)
 
 # --------------------------------------------------
 # MAIN
 # --------------------------------------------------
 
 def main():
-    log("Loading beats and frames...")
+    log("Loading beats, frames, and audio...")
 
     beats = load_beats()
     frames = list_frames()
@@ -124,44 +114,46 @@ def main():
     base_duration = audio_len / len(frames)
     clips = []
 
-    for i, (img, beat) in enumerate(zip(frames, beats)):
+    # --------------------------------------------------
+    # BUILD ANIMATED CLIPS
+    # --------------------------------------------------
+
+    for i, (img, beat) in enumerate(zip(frames, beats), 1):
         dur = base_duration
         if beat.get("intent") == "attention":
             dur += CTA_EXTRA_TIME
 
-        log(f"Processing frame {i+1}/{len(frames)} ({dur:.2f}s)...")
+        out_clip = os.path.join(CLIPS_DIR, f"clip_{i:03d}.mp4")
 
-        clips.append(
-            prepare_clip(
-                img_path=img,
-                duration=dur,
-                index=i,
-                is_cta=(beat.get("intent") == "attention"),
-            )
-        )
+        log(f"Animating frame {i}/{len(frames)} ({dur:.2f}s)...")
+        animate_image(img, out_clip, dur)
 
-    # Loop reinforcement (micro replay nudge)
-    log("Adding loop frame...")
-    clips.append(clips[0].set_duration(0.4))
+        clips.append(VideoFileClip(out_clip))
+
+    # --------------------------------------------------
+    # LOOP REINFORCEMENT
+    # --------------------------------------------------
+
+    log("Adding loop reinforcement...")
+    clips.append(clips[0].subclip(0, 0.4))
 
     log("Concatenating clips...")
     video = concatenate_videoclips(clips, method="compose")
 
     # --------------------------------------------------
-    # AUDIO (SAFE CLAMP – CRASH FIX)
+    # AUDIO (SAFE CLAMP)
     # --------------------------------------------------
-    log("Adding audio (safe clamp)...")
 
+    log("Adding audio...")
     audio_clip = AudioFileClip(AUDIO_FILE)
 
-    # Never let MoviePy read the final ~200ms
     safe_audio_end = min(
         audio_clip.duration - AUDIO_SAFETY_MARGIN,
         video.duration
     )
 
     if safe_audio_end <= 0:
-        raise SystemExit("❌ Audio duration too short after safety clamp")
+        raise SystemExit("❌ Audio too short after clamp")
 
     audio = audio_clip.subclip(0, safe_audio_end)
     video = video.set_audio(CompositeAudioClip([audio]))
@@ -169,7 +161,8 @@ def main():
     # --------------------------------------------------
     # RENDER
     # --------------------------------------------------
-    log("Rendering video...")
+
+    log("Rendering final video...")
     video.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
@@ -188,3 +181,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
