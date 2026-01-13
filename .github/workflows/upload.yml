@@ -1,16 +1,4 @@
-name: Auto YouTube Shorts – Crime (US Peak | Retention Optimized)
-
-on:
-  workflow_dispatch:
-
-concurrency:
-  group: yt-shorts-upload
-  cancel-in-progress: true
-
-jobs:
-  upload:
-    runs-on: ubuntu-latest
-    timeout-minutes: 70name: Auto YouTube Shorts – Crime (US Peak | Retention Optimized)
+name: Auto YouTube Shorts - Crime (US Peak | Retention Optimized)
 
 on:
   workflow_dispatch:
@@ -32,253 +20,115 @@ jobs:
       PIP_NO_CACHE_DIR: "1"
 
     steps:
-      # ----------------------------------------------------
+      # ----------------------------
       # CHECKOUT
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ----------------------------------------------------
-      # FREE DISK SPACE (SAFE)
-      # ----------------------------------------------------
+      # ----------------------------
+      # FREE DISK SPACE
+      # ----------------------------
       - name: Free disk space
+        shell: bash
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo rm -rf /usr/share/swift /var/lib/apt/lists/*
           df -h
 
-      # ----------------------------------------------------
+      # ----------------------------
       # PYTHON SETUP
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ----------------------------------------------------
+      # ----------------------------
       # DEPENDENCIES
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Install dependencies
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ----------------------------------------------------
+      # ----------------------------
       # CASE SEARCH
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Find crime case
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           python case_search.py
           test -f case.json
 
-      # ----------------------------------------------------
-      # SCRIPT GENERATION (RETENTION ENGINE)
-      # ----------------------------------------------------
+      # ----------------------------
+      # SCRIPT GENERATION
+      # ----------------------------
       - name: Generate script and beats
+        shell: bash
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
         run: |
-          set -euo pipefail
+          set -e
           python script.py
           test -f script.txt
           test -f beats.json
 
-      # ----------------------------------------------------
+      # ----------------------------
       # IMAGE SELECTION (PUBLIC DOMAIN)
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Prepare images from assets
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           python image_fetch.py
           test -d frames
           test "$(ls frames | wc -l)" -ge 5
 
-      # ----------------------------------------------------
+      # ----------------------------
       # TTS
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Generate narration
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           python tts_generate.py --output final_audio.wav
           test -f final_audio.wav
 
-      # ----------------------------------------------------
+      # ----------------------------
       # SUBTITLES
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Build subtitles
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           python subtitles_build.py
           test -f subs.ass
 
-      # ----------------------------------------------------
+      # ----------------------------
       # VIDEO BUILD
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Build video
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           python video_build.py
           test -f video_raw.mp4
 
-      # ----------------------------------------------------
-      # FINAL RENDER (SHORTS HQ)
-      # ----------------------------------------------------
-      - name: Final render
-        run: |
-          set -euo pipefail
-          ffmpeg -y \
-            -i video_raw.mp4 \
-            -vf "ass=subs.ass,scale=1080:1920:flags=lanczos" \
-            -c:v libx264 \
-            -preset slow \
-            -crf 17 \
-            -pix_fmt yuv420p \
-            -movflags +faststart \
-            -c:a copy \
-            output.mp4
-          test -f output.mp4
-
-      # ----------------------------------------------------
-      # UPLOAD TO YOUTUBE
-      # ----------------------------------------------------
-      - name: Upload to YouTube
-        env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
-        run: |
-          set -euo pipefail
-          python youtube_upload.py
-
-      # ----------------------------------------------------
-      # PERSIST MEMORY
-      # ----------------------------------------------------
-      - name: Persist memory
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add memory used_cases.json || true
-          git commit -m "chore: update memory" || true
-          git push || true
-
-
-    permissions:
-      contents: write
-
-    env:
-      PYTHONUNBUFFERED: "1"
-      PIP_NO_CACHE_DIR: "1"
-      HF_HOME: /tmp/huggingface
-
-    steps:
-      # ----------------------------------------------------
-      # CHECKOUT
-      # ----------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # ----------------------------------------------------
-      # FREE DISK SPACE (SAFE)
-      # ----------------------------------------------------
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo rm -rf /usr/share/swift /var/lib/apt/lists/*
-          df -h
-
-      # ----------------------------------------------------
-      # PYTHON SETUP
-      # ----------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      # ----------------------------------------------------
-      # DEPENDENCIES
-      # ----------------------------------------------------
-      - name: Install dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # ----------------------------------------------------
-      # CASE SEARCH
-      # ----------------------------------------------------
-      - name: Find crime case
-        run: |
-          set -euo pipefail
-          python case_search.py
-          test -f case.json
-
-      # ----------------------------------------------------
-      # SCRIPT + IMAGE PROMPTS
-      # ----------------------------------------------------
-      - name: Generate script and image prompts
-        env:
-          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
-        run: |
-          set -euo pipefail
-          python script.py
-          test -f script.txt
-          test -f beats.json
-
-      # ----------------------------------------------------
-      # IMAGE GENERATION (HF)
-      # ----------------------------------------------------
-      - name: Generate images
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          set -euo pipefail
-          python image_fetch.py
-          test -d frames
-          test "$(ls frames | wc -l)" -ge 5
-
-      # ----------------------------------------------------
-      # TTS
-      # ----------------------------------------------------
-      - name: Generate narration
-        run: |
-          set -euo pipefail
-          python tts_generate.py --output final_audio.wav
-          test -f final_audio.wav
-
-      # ----------------------------------------------------
-      # SUBTITLES
-      # ----------------------------------------------------
-      - name: Build subtitles
-        run: |
-          set -euo pipefail
-          python subtitles_build.py
-          test -f subs.ass
-
-      # ----------------------------------------------------
-      # VIDEO BUILD
-      # ----------------------------------------------------
-      - name: Build video
-        run: |
-          set -euo pipefail
-          python video_build.py
-          test -f video_raw.mp4
-
-      # ----------------------------------------------------
+      # ----------------------------
       # FINAL RENDER
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Final render
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           ffmpeg -y \
             -i video_raw.mp4 \
             -vf "ass=subs.ass,scale=1080:1920:flags=lanczos" \
@@ -291,25 +141,27 @@ jobs:
             output.mp4
           test -f output.mp4
 
-      # ----------------------------------------------------
+      # ----------------------------
       # UPLOAD TO YOUTUBE
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Upload to YouTube
+        shell: bash
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
         run: |
-          set -euo pipefail
+          set -e
           python youtube_upload.py
 
-      # ----------------------------------------------------
+      # ----------------------------
       # PERSIST MEMORY
-      # ----------------------------------------------------
+      # ----------------------------
       - name: Persist memory
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add memory used_cases.json || true
