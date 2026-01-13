@@ -20,24 +20,21 @@ FRAMES_DIR = "frames"
 
 TARGET_W, TARGET_H = 1080, 1920
 MAX_RETRIES = 2
-RETRY_DELAY = 4
-
-# Hugging Face hosted open-source models
-MODELS = [
-    "Qwen/Qwen-Image",
-    "IDEA-CCNL/Taiyi-Stable-Diffusion-XL",
-]
+RETRY_DELAY = 5
 
 HF_ENDPOINT = "https://router.huggingface.co/hf-inference/models"
 
+# VERIFIED WORKING MODELS (FREE)
+MODELS = [
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    "runwayml/stable-diffusion-v1-5",
+]
+
 HEADERS = {
     "Authorization": f"Bearer {HF_TOKEN}",
+    "Accept": "image/png",
     "Content-Type": "application/json",
 }
-
-# --------------------------------------------------
-# GLOBAL STYLE LOCK (RETENTION + HALAL)
-# --------------------------------------------------
 
 STYLE_PROMPT = (
     "dark cinematic crime documentary style, "
@@ -53,12 +50,12 @@ os.makedirs(FRAMES_DIR, exist_ok=True)
 # IMAGE OPS
 # --------------------------------------------------
 
-def enhance(img: Image.Image) -> Image.Image:
+def enhance(img):
     img = ImageEnhance.Contrast(img).enhance(1.08)
     img = ImageEnhance.Sharpness(img).enhance(1.08)
     return img
 
-def make_vertical(img: Image.Image) -> Image.Image:
+def make_vertical(img):
     w, h = img.size
     scale = max(TARGET_W / w, TARGET_H / h)
     img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
@@ -68,14 +65,18 @@ def make_vertical(img: Image.Image) -> Image.Image:
     return img.crop((x, y, x + TARGET_W, y + TARGET_H))
 
 # --------------------------------------------------
-# IMAGE GENERATION
+# GENERATION
 # --------------------------------------------------
 
-def generate_image(prompt: str, filename: str):
+def generate_image(prompt, filename):
     full_prompt = f"{prompt}, {STYLE_PROMPT}"
 
     payload = {
-        "inputs": full_prompt
+        "inputs": full_prompt,
+        "parameters": {
+            "steps": 30,
+            "guidance_scale": 7.5
+        }
     }
 
     for model in MODELS:
@@ -97,17 +98,14 @@ def generate_image(prompt: str, filename: str):
                 img = make_vertical(img)
                 img = enhance(img)
 
-                out_path = os.path.join(FRAMES_DIR, filename)
-                img.save(out_path, quality=95, subsampling=0)
+                out = os.path.join(FRAMES_DIR, filename)
+                img.save(out, quality=95, subsampling=0)
 
                 print(f"[IMG] Saved {filename} via {model}", flush=True)
                 return
 
             except Exception as e:
-                print(
-                    f"[WARN] {model} attempt {attempt} failed: {e}",
-                    flush=True
-                )
+                print(f"[WARN] {model} attempt {attempt} failed: {e}", flush=True)
                 time.sleep(RETRY_DELAY)
 
     raise SystemExit(f"❌ Image generation failed for: {filename}")
@@ -120,22 +118,16 @@ def main():
     if not os.path.isfile(BEATS_FILE):
         raise SystemExit("❌ beats.json missing")
 
-    with open(BEATS_FILE, "r", encoding="utf-8") as f:
-        beats = json.load(f)
-
-    if not isinstance(beats, list) or not beats:
-        raise SystemExit("❌ Invalid beats.json format")
+    beats = json.load(open(BEATS_FILE, "r", encoding="utf-8"))
 
     for i, beat in enumerate(beats, 1):
         prompt = beat.get("image_prompt")
         if not prompt:
             raise SystemExit(f"❌ Missing image_prompt in beat {i}")
 
-        filename = f"img_{i:03d}.jpg"
-        generate_image(prompt, filename)
+        generate_image(prompt, f"img_{i:03d}.jpg")
 
-    print("✅ All story-aligned images generated successfully", flush=True)
+    print("✅ All images generated successfully", flush=True)
 
 if __name__ == "__main__":
     main()
-    
