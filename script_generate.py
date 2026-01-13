@@ -25,7 +25,6 @@ BEATS_FILE = "beats.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# Shorts timing (~30–35 sec)
 TARGET_WORDS_MIN = 90
 TARGET_WORDS_MAX = 110
 
@@ -71,7 +70,7 @@ def normalize_length(script: str) -> str:
         filler = [
             "The records never explained why.",
             "Some details were never resolved.",
-            "The truth was never made clear."
+            "The truth was never documented."
         ]
         i = 0
         while len(words) < TARGET_WORDS_MIN:
@@ -82,23 +81,26 @@ def normalize_length(script: str) -> str:
     return script
 
 # --------------------------------------------------
-# PROMPT (AGGRESSIVE HOOK + RETENTION ENGINEERING)
+# PROMPT (SCRIPT + IMAGE PROMPTS)
 # --------------------------------------------------
 
 def build_prompt(case: dict, neutral: bool = False) -> str:
-    tone = "calm but high-stakes investigative" if not neutral else "neutral factual"
+    tone = "calm, investigative, high-stakes" if not neutral else "neutral factual"
 
     return f"""
-You write HIGH-RETENTION YouTube Shorts narration
+You create HIGH-RETENTION YouTube Shorts narration
 for a True Crime / Unresolved Mystery channel.
 
-This script MUST reduce swipe-away and increase replay.
+Your task has TWO outputs:
+1) A spoken script
+2) Image prompts aligned with each story beat
 
 TONE:
 - {tone}
-- Serious, credible, non-graphic
-- No exaggeration, no opinions
-- Speak to an adult audience (US-focused)
+- Serious, credible, restrained
+- No exaggeration
+- No speculation
+- Adult US audience
 
 FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
@@ -108,53 +110,71 @@ Narrative Flags: {case.get("flags")}
 
 MANDATORY STRUCTURE (DO NOT BREAK):
 
-1) SCROLL-STOPPING HOOK (0–3 seconds)
-- ONE sentence only
-- High stakes, emotional, or disturbing implication
-- MUST suggest failure, disappearance, or unanswered outcome
-- NO dates, NO locations, NO names
-- Example style:
-  “She vanished in seconds, and no one saw it happen.”
-
-2) CONTEXT DROP
-- Introduce date and location calmly
+1) HOOK
 - ONE sentence
-- Factual and grounded
+- Suggest failure or unresolved outcome
+- No names, dates, or locations
 
-3) ESCALATION (CORE RETENTION)
-- 3–4 short sentences
-- Focus on what went wrong, what was missed, or what never made sense
-- Each sentence must ADD new information
-- No repetition
+2) CONTEXT
+- ONE sentence
+- Calmly introduce date and location
 
-4) CONTEXTUAL CTA (SUBTLE, NOT SALESY)
-- ONE short sentence
-- Tie subscribing to the mystery itself
-- Example:
-  “Following this channel helps keep cases like this alive.”
+3) ESCALATION
+- 4 short sentences
+- Each adds a NEW failure, gap, or inconsistency
 
-5) LOOP ENDING (REPLAY ENGINE)
-- Reframe the opening hook
+4) CTA
+- ONE sentence
+- Must include the word "subscribing"
+- Must feel moral, not promotional
+- Example: "Subscribing helps keep cases like this from disappearing."
+
+5) LOOP ENDING
+- ONE sentence
+- Reframe the hook
 - No questions
-- Must feel incomplete but factual
+- Feels incomplete but factual
 
-LENGTH RULES:
+IMAGE PROMPT RULES:
+- No people
+- No faces
+- No bodies
+- No violence
+- Symbolic, documentary style
+- Night, low light, or neutral interiors
+- Each prompt must visually represent the beat
+
+LENGTH:
 - {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words
-- Short sentences
 - Spoken-friendly rhythm
 
 OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
 
 SCRIPT:
-<full narration>
+<full script>
 
 BEATS_JSON:
 [
-  {{ "beat": "hook",     "intent": "failure" }},
-  {{ "beat": "context",  "intent": "time_place" }},
-  {{ "beat": "detail",   "intent": "mistake" }},
-  {{ "beat": "cta",      "intent": "attention" }},
-  {{ "beat": "loop",     "intent": "reframe" }}
+  {{
+    "beat": "hook",
+    "image_prompt": "<visual that represents unresolved failure>"
+  }},
+  {{
+    "beat": "context",
+    "image_prompt": "<visual that represents time and place>"
+  }},
+  {{
+    "beat": "escalation",
+    "image_prompt": "<visual that represents investigation mistake>"
+  }},
+  {{
+    "beat": "cta",
+    "image_prompt": "<visual that represents case being forgotten>"
+  }},
+  {{
+    "beat": "loop",
+    "image_prompt": "<visual that represents unresolved ending>"
+  }}
 ]
 """
 
@@ -166,11 +186,11 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write high-retention Shorts narration."},
+            {"role": "system", "content": "You write retention-optimized crime scripts with image prompts."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.48,
-        max_tokens=750,
+        temperature=0.45,
+        max_tokens=900,
     )
 
     text = clean(getattr(response.choices[0].message, "content", None))
@@ -183,7 +203,7 @@ def call_gpt(model: str, prompt: str) -> str:
 # GENERATION
 # --------------------------------------------------
 
-def generate_script(case: dict) -> Tuple[str, list]:
+def generate(case: dict) -> Tuple[str, list]:
     prompt = build_prompt(case, neutral=False)
 
     try:
@@ -196,16 +216,14 @@ def generate_script(case: dict) -> Tuple[str, list]:
             raise
 
     if "SCRIPT:" not in text or "BEATS_JSON:" not in text:
-        raise ValueError("Invalid GPT output format")
+        raise ValueError("Invalid output format")
 
     script_part, beats_part = text.split("BEATS_JSON:", 1)
+
     script = script_part.replace("SCRIPT:", "").strip()
     script = normalize_length(script)
 
-    try:
-        beats = json.loads(beats_part.strip())
-    except json.JSONDecodeError:
-        raise ValueError("Invalid JSON in BEATS_JSON")
+    beats = json.loads(beats_part.strip())
 
     if not isinstance(beats, list) or len(beats) != 5:
         raise ValueError("Exactly 5 beats required")
@@ -221,9 +239,9 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            print(f"🧠 Generating high-retention script (attempt {attempt})")
+            print(f"🧠 Generating script + image prompts (attempt {attempt})")
 
-            script, beats = generate_script(case)
+            script, beats = generate(case)
 
             with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
                 f.write(script)
@@ -231,14 +249,14 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ Script + beats generated (retention-optimized)")
+            print("✅ Script and image prompts generated")
             return
 
         except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
             print(f"⚠️ Attempt {attempt} failed: {e}", file=sys.stderr)
             time.sleep(RETRY_DELAY)
 
-    sys.exit("❌ Failed to generate script after retries")
+    sys.exit("❌ Failed after retries")
 
 if __name__ == "__main__":
     main()
