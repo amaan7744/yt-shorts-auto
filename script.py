@@ -68,9 +68,9 @@ def normalize_length(script: str) -> str:
 
     if len(words) < TARGET_WORDS_MIN:
         filler = [
-            "The records never explained why.",
-            "Some details were never resolved.",
-            "The truth was never documented."
+            "The official records never explained why.",
+            "Several details were left unresolved.",
+            "The final report did not address the gaps."
         ]
         i = 0
         while len(words) < TARGET_WORDS_MIN:
@@ -81,23 +81,26 @@ def normalize_length(script: str) -> str:
     return script
 
 # --------------------------------------------------
-# PROMPT (SCRIPT + IMAGE PROMPTS)
+# PROMPT (RETENTION + CRIME-REALISTIC + LOOP)
 # --------------------------------------------------
 
 def build_prompt(case: dict, neutral: bool = False) -> str:
     tone = "calm, investigative, high-stakes" if not neutral else "neutral factual"
 
     return f"""
-You create HIGH-RETENTION YouTube Shorts narration
-for a True Crime / Unresolved Mystery channel.
+You write HIGH-RETENTION YouTube Shorts narration
+for a TRUE CRIME / UNRESOLVED MYSTERY channel.
 
-Your task has TWO outputs:
-1) A spoken script
-2) Image prompts aligned with each story beat
+Your output must maximize:
+- Scroll-stop
+- Watch time
+- Replay (loop)
+
+You MUST avoid generic storytelling.
 
 TONE:
 - {tone}
-- Serious, credible, restrained
+- Serious, restrained, documentary
 - No exaggeration
 - No speculation
 - Adult US audience
@@ -110,70 +113,90 @@ Narrative Flags: {case.get("flags")}
 
 MANDATORY STRUCTURE (DO NOT BREAK):
 
-1) HOOK
-- ONE sentence
-- Suggest failure or unresolved outcome
-- No names, dates, or locations
+1) HOOK (1 sentence)
+- Immediate failure or unresolved outcome
+- Feels disturbing or incomplete
+- No names, no dates, no locations
+- Must feel like the END of a case, not the start
 
-2) CONTEXT
-- ONE sentence
+2) CONTEXT (1 sentence)
 - Calmly introduce date and location
+- Neutral, factual grounding
 
-3) ESCALATION
-- 4 short sentences
-- Each adds a NEW failure, gap, or inconsistency
+3) ESCALATION (4 short sentences)
+- Each sentence introduces a NEW procedural failure
+- Focus on:
+  • evidence handling
+  • timeline gaps
+  • ignored records
+  • unanswered inconsistencies
+- No emotional language, only factual tension
 
-4) CTA
-- ONE sentence
+4) CTA (1 sentence)
 - Must include the word "subscribing"
-- Must feel moral, not promotional
-- Example: "Subscribing helps keep cases like this from disappearing."
+- Moral / archival framing
+- Not promotional
+- Example tone:
+  "Subscribing helps keep cases like this from disappearing."
 
-5) LOOP ENDING
-- ONE sentence
-- Reframe the hook
+5) LOOP ENDING (1 sentence)
+- Reframes the hook
+- Mirrors the first sentence thematically
 - No questions
-- Feels incomplete but factual
+- Must feel unfinished so replay feels natural
 
-IMAGE PROMPT RULES:
-- No people
-- No faces
-- No bodies
-- No violence
-- Symbolic, documentary style
-- Night, low light, or neutral interiors
-- Each prompt must visually represent the beat
+IMAGE PROMPT RULES (CRITICAL):
+- Describe PHYSICAL LOCATIONS and OBJECTS only
+- NO abstract words like cinematic, symbolic, mysterious
+- Allowed: men, investigators, police environments
+- BLOCK:
+  • women
+  • girls
+  • nudity
+  • romance
+  • couples
+- No gore
+- No explicit violence
+- Documentary / investigative photography style
+- Night or institutional lighting preferred
+
+IMAGE PROMPTS MUST INCLUDE:
+- Location (room / building / exterior)
+- Crime-related objects (files, evidence, documents, markers)
+- Lighting type (fluorescent, office, night streetlight)
+- Realistic materials (metal, paper, concrete)
 
 LENGTH:
 - {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words
 - Spoken-friendly rhythm
+- Short sentences
 
 OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
 
 SCRIPT:
-<full script>
+<full narration>
 
 BEATS_JSON:
 [
   {{
     "beat": "hook",
-    "image_prompt": "<visual that represents unresolved failure>"
+    "image_prompt": "<forensic or institutional scene that visually implies failure>"
   }},
   {{
     "beat": "context",
-    "image_prompt": "<visual that represents time and place>"
+    "image_prompt": "<realistic location establishing time and place>"
   }},
   {{
     "beat": "escalation",
-    "image_prompt": "<visual that represents investigation mistake>"
+    "image_prompt": "<evidence, documents, or procedural failure scene>"
   }},
   {{
     "beat": "cta",
-    "image_prompt": "<visual that represents case being forgotten>"
+    "image_prompt": "<archival or forgotten case imagery>"
   }},
   {{
     "beat": "loop",
-    "image_prompt": "<visual that represents unresolved ending>"
+    "image_prompt": "<visual that closely echoes the hook image>"
   }}
 ]
 """
@@ -186,10 +209,10 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write retention-optimized crime scripts with image prompts."},
+            {"role": "system", "content": "You write retention-optimized true crime Shorts with realistic image prompts."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.45,
+        temperature=0.4,
         max_tokens=900,
     )
 
@@ -239,7 +262,7 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            print(f"🧠 Generating script + image prompts (attempt {attempt})")
+            print(f"🧠 Generating high-retention script + forensic image prompts (attempt {attempt})")
 
             script, beats = generate(case)
 
@@ -249,7 +272,7 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ Script and image prompts generated")
+            print("✅ Script and beats generated successfully")
             return
 
         except (ValueError, HttpResponseError, json.JSONDecodeError) as e:
