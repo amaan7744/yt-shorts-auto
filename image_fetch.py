@@ -3,10 +3,9 @@
 import os
 import json
 import time
-import requests
-from io import BytesIO
 from typing import List
 from PIL import Image, ImageEnhance
+from huggingface_hub import InferenceClient
 
 # --------------------------------------------------
 # CONFIG
@@ -16,43 +15,56 @@ BEATS_FILE = "beats.json"
 OUTPUT_DIR = "frames"
 
 TARGET_W, TARGET_H = 1080, 1920
-IMAGES_PER_BEAT = 3          # critical for motion + retention
-HF_TIMEOUT = 90
+IMAGES_PER_BEAT = 3          # important for motion + retention
+RETRY_DELAY = 3
+MAX_ATTEMPTS_PER_IMAGE = 4
 
-HF_MODEL = "stabilityai/stable-diffusion-2-1"
-HF_API = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+HF_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+HF_PROVIDER = "nscale"
+
 HF_TOKEN = os.getenv("HF_TOKEN")
-
 if not HF_TOKEN:
     raise SystemExit("❌ HF_TOKEN missing")
-
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --------------------------------------------------
-# SCENE → PROMPT MAP (DO NOT RANDOMIZE THIS)
+# HF CLIENT (CORRECT WAY)
+# --------------------------------------------------
+
+client = InferenceClient(
+    provider=HF_PROVIDER,
+    api_key=HF_TOKEN,
+)
+
+# --------------------------------------------------
+# SCENE → PROMPT MAP
 # --------------------------------------------------
 
 SCENE_PROMPTS = {
-    "HOOK": [
-        "cinematic noir atmosphere, blurred city lights at night, suspenseful mood, film grain, dramatic shadows, no people"
-    ],
-    "CONFLICT": [
-        "dimly lit interior, shadowy environment, tense atmosphere, low key lighting, cinematic noir, no people"
-    ],
-    "CRIME": [
-        "police lights reflecting on wet asphalt, empty alley at night, rain, cinematic noir style, symbolic, no people"
-    ],
-    "INVESTIGATION": [
-        "detective desk, scattered papers, evidence board, rain on window, moody lighting, cinematic style, no people"
-    ],
-    "AFTERMATH": [
-        "empty room at dawn, soft light through window, melancholic mood, cinematic stillness, no people"
-    ],
-    "NEUTRAL": [
+    "HOOK": (
+        "cinematic noir atmosphere, blurred city lights at night, "
+        "suspenseful mood, dramatic shadows, film grain, no people"
+    ),
+    "CONFLICT": (
+        "dimly lit interior, shadowy environment, tense atmosphere, "
+        "low key lighting, cinematic noir, no people"
+    ),
+    "CRIME": (
+        "police lights reflecting on wet asphalt, empty alley at night, "
+        "rain, cinematic noir style, symbolic, no people"
+    ),
+    "INVESTIGATION": (
+        "detective desk, scattered papers, evidence board, rain on window, "
+        "moody lighting, cinematic style, no people"
+    ),
+    "AFTERMATH": (
+        "empty room at dawn, soft light through window, melancholic mood, "
+        "cinematic stillness, no people"
+    ),
+    "NEUTRAL": (
         "dark abstract background, subtle texture, cinematic lighting, minimal, no people"
-    ],
+    ),
 }
 
 NEGATIVE_PROMPT = (
@@ -96,35 +108,20 @@ def make_vertical(img: Image.Image) -> Image.Image:
     return img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
 
 # --------------------------------------------------
-# AI IMAGE GENERATION (HF FREE)
+# IMAGE GENERATION (HF SDK – RELIABLE)
 # --------------------------------------------------
 
 def generate_image(prompt: str) -> Image.Image | None:
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "negative_prompt": NEGATIVE_PROMPT,
-            "guidance_scale": 7.5,
-            "num_inference_steps": 25,
-        },
-    }
-
     try:
-        r = requests.post(
-            HF_API,
-            headers=HEADERS,
-            json=payload,
-            timeout=HF_TIMEOUT,
+        image = client.text_to_image(
+            prompt=prompt,
+            model=HF_MODEL,
+            negative_prompt=NEGATIVE_PROMPT,
         )
-    except requests.RequestException:
-        return None
+        return image.convert("RGB")
 
-    if r.status_code != 200:
-        return None
-
-    try:
-        return Image.open(BytesIO(r.content)).convert("RGB")
-    except Exception:
+    except Exception as e:
+        log(f"⚠️ HF error: {str(e)[:120]}")
         return None
 
 # --------------------------------------------------
@@ -141,19 +138,23 @@ def main():
         if scene not in SCENE_PROMPTS:
             raise SystemExit(f"❌ Unknown scene type: {scene}")
 
-        prompt = SCENE_PROMPTS[scene][0]
+        prompt = SCENE_PROMPTS[scene]
         log(f"Scene {beat_idx}: {scene}")
 
         generated = 0
         attempts = 0
 
-        while generated < IMAGES_PER_BEAT and attempts < IMAGES_PER_BEAT * 3:
+        while generated < IMAGES_PER_BEAT:
+            if attempts >= MAX_ATTEMPTS_PER_IMAGE * IMAGES_PER_BEAT:
+                raise SystemExit(
+                    f"❌ Failed to generate images for scene {beat_idx} ({scene})"
+                )
+
             attempts += 1
             img = generate_image(prompt)
 
             if img is None:
-                log("⚠️ HF generation failed, retrying")
-                time.sleep(2)
+                time.sleep(RETRY_DELAY)
                 continue
 
             img = make_vertical(img)
@@ -166,12 +167,7 @@ def main():
             frame_index += 1
             generated += 1
 
-        if generated < IMAGES_PER_BEAT:
-            raise SystemExit(
-                f"❌ Failed to generate enough images for scene {beat_idx} ({scene})"
-            )
-
-    log("✅ Scene-aware AI images prepared successfully")
+    log("✅ AI image generation completed successfully")
 
 if __name__ == "__main__":
     main()
