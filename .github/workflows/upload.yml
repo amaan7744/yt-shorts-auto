@@ -69,9 +69,9 @@ jobs:
           test -f case.json
 
       # ----------------------------
-      # SCRIPT GENERATION
+      # SCRIPT + BEATS GENERATION
       # ----------------------------
-      - name: Generate script and beats
+      - name: Generate script and visual beats
         shell: bash
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
@@ -82,10 +82,12 @@ jobs:
           test -f beats.json
 
       # ----------------------------
-      # IMAGE SELECTION (PUBLIC DOMAIN)
+      # AI IMAGE GENERATION (HUGGING FACE)
       # ----------------------------
-      - name: Prepare images from assets
+      - name: Generate cinematic images (AI)
         shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -e
           python image_fetch.py
@@ -93,7 +95,7 @@ jobs:
           test "$(ls frames | wc -l)" -ge 5
 
       # ----------------------------
-      # TTS
+      # TEXT TO SPEECH
       # ----------------------------
       - name: Generate narration
         shell: bash
@@ -113,7 +115,7 @@ jobs:
           test -f subs.ass
 
       # ----------------------------
-      # VIDEO BUILD
+      # VIDEO BUILD (RAW)
       # ----------------------------
       - name: Build video
         shell: bash
