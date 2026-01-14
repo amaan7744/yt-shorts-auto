@@ -4,7 +4,7 @@ import os
 import sys
 import json
 import time
-from typing import Tuple
+from typing import Tuple, List
 
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
@@ -81,27 +81,22 @@ def normalize_length(script: str) -> str:
     return script
 
 # --------------------------------------------------
-# PROMPT (RETENTION + LOOP OPTIMIZED)
+# PROMPT — EDITORIAL SCRIPT
 # --------------------------------------------------
 
-def build_prompt(case: dict, neutral: bool = False) -> str:
-    tone = "calm, investigative, high-stakes" if not neutral else "neutral factual"
+def build_script_prompt(case: dict, neutral: bool = False) -> str:
+    tone = "calm, investigative, restrained" if not neutral else "neutral factual"
 
     return f"""
 You write HIGH-RETENTION YouTube Shorts narration
 for a TRUE CRIME / UNRESOLVED MYSTERY channel.
 
-Your goal:
-- Stop scrolling immediately
-- Maintain attention
-- Force natural replay through an incomplete ending
-
 TONE:
 - {tone}
-- Serious, restrained, documentary
+- Documentary style
 - No exaggeration
 - No speculation
-- Adult US audience
+- Adult audience
 
 FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
@@ -109,43 +104,17 @@ Location: {case.get("location")}
 Summary: {case.get("summary")}
 Narrative Flags: {case.get("flags")}
 
-MANDATORY STRUCTURE (DO NOT BREAK):
-
-1) HOOK (1 sentence)
-- Immediate failure or unresolved outcome
-- Feels disturbing or incomplete
-- No names, no dates, no locations
-- Must feel like the END of a case
-
-2) CONTEXT (1 sentence)
-- Calmly introduce date and location
-- Neutral, factual grounding
-
-3) ESCALATION (4 short sentences)
-- Each sentence introduces a NEW procedural failure
-- Focus on evidence handling, timeline gaps, ignored records
-- No emotional language, only factual tension
-
-4) CTA (1 sentence)
-- Must include the word "subscribing"
-- Moral / archival framing
-- Not promotional
-- Example tone:
-  "Subscribing helps keep cases like this from disappearing."
-
-5) LOOP ENDING (1 sentence)
-- Reframes the hook
-- Mirrors the opening sentence
-- No questions
-- Must feel unresolved so replay feels natural
+STRUCTURE:
+- Strong unresolved opening
+- Clear factual grounding
+- Procedural failures and gaps
+- Moral archival CTA
+- Unresolved looping ending
 
 LENGTH:
 - {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words
-- Short, spoken-friendly sentences
 
-OUTPUT FORMAT (EXACT — NO EXTRA TEXT):
-
-SCRIPT:
+OUTPUT (NO LABELS, NO EXPLANATIONS):
 <full narration>
 """
 
@@ -157,44 +126,65 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write high-retention true crime Shorts narration."},
+            {"role": "system", "content": "You write high-retention true crime narration."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.4,
         max_tokens=800,
     )
 
-    text = clean(getattr(response.choices[0].message, "content", None))
+    text = clean(response.choices[0].message.content)
     if not text:
         raise ValueError("Empty response from model")
 
     return text
 
 # --------------------------------------------------
+# VISUAL BEAT DERIVATION (THIS IS THE KEY FIX)
+# --------------------------------------------------
+
+def derive_visual_beats(script: str) -> List[dict]:
+    sentences = [s.strip() for s in script.split(".") if s.strip()]
+
+    beats = []
+
+    for i, sentence in enumerate(sentences):
+        if i == 0:
+            scene = "HOOK"
+        elif i < 3:
+            scene = "CONFLICT"
+        elif i < len(sentences) - 2:
+            scene = "CRIME"
+        elif "subscrib" in sentence.lower():
+            scene = "NEUTRAL"
+        else:
+            scene = "AFTERMATH"
+
+        beats.append({
+            "beat": f"scene_{i+1}",
+            "scene": scene,
+            "text": sentence
+        })
+
+    return beats
+
+# --------------------------------------------------
 # GENERATION
 # --------------------------------------------------
 
 def generate(case: dict) -> Tuple[str, list]:
-    prompt = build_prompt(case, neutral=False)
+    prompt = build_script_prompt(case, neutral=False)
 
     try:
         script = call_gpt(PRIMARY_MODEL, prompt)
     except Exception as e:
         if "content_filter" in str(e).lower():
-            script = call_gpt(FALLBACK_MODEL, build_prompt(case, neutral=True))
+            script = call_gpt(FALLBACK_MODEL, build_script_prompt(case, neutral=True))
         else:
             raise
 
     script = normalize_length(script)
-
-    # Fixed beat order for PD image folders
-    beats = [
-        {"beat": "hook"},
-        {"beat": "context"},
-        {"beat": "escalation"},
-        {"beat": "cta"},
-        {"beat": "loop"},
-    ]
+    beats = derive_visual_beats(script)
 
     return script, beats
 
@@ -207,7 +197,7 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            print(f"🧠 Generating high-retention script (attempt {attempt})")
+            print(f"🧠 Generating script + visual beats (attempt {attempt})")
 
             script, beats = generate(case)
 
@@ -217,7 +207,7 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ Script and beats generated successfully")
+            print("✅ Script and visual beats generated")
             return
 
         except (ValueError, HttpResponseError) as e:
