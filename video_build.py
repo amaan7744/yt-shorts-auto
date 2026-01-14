@@ -25,17 +25,14 @@ BEATS_FILE = "beats.json"
 AUDIO_FILE = "final_audio.wav"
 OUTPUT_VIDEO = "video_raw.mp4"
 
-TARGET_W, TARGET_H = 1080, 1920
 FPS = 30
 MAX_DURATION = 35.0
-
-CTA_EXTRA_TIME = 0.8
 AUDIO_SAFETY_MARGIN = 0.2
 
 os.makedirs(CLIPS_DIR, exist_ok=True)
 
 # --------------------------------------------------
-# UTILS
+# UTIL
 # --------------------------------------------------
 
 def log(msg: str):
@@ -46,11 +43,11 @@ def load_beats():
         raise SystemExit("❌ beats.json missing")
     return json.load(open(BEATS_FILE, "r", encoding="utf-8"))
 
-def list_frames() -> List[str]:
+def load_frames() -> List[str]:
     frames = sorted(
         os.path.join(FRAMES_DIR, f)
         for f in os.listdir(FRAMES_DIR)
-        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        if f.lower().endswith(".jpg")
     )
     if not frames:
         raise SystemExit("❌ No frames found")
@@ -61,38 +58,30 @@ def audio_duration(path: str) -> float:
     return min(len(audio) / 1000.0, MAX_DURATION)
 
 # --------------------------------------------------
-# AI-STYLE IMAGE ANIMATION (NO GEOMETRY CHANGE)
+# MOTION (SUBTLE, CINEMATIC)
 # --------------------------------------------------
 
-def animate_image(input_img: str, output_mp4: str, duration: float):
-    """
-    Creates subtle AI-style motion:
-    - animated grain
-    - light breathing
-    - micro contrast shift
-    NO zoom, NO pan, NO resize
-    """
+def animate_image(img: str, out: str, duration: float):
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
-        "-i", input_img,
-        "-t", str(duration),
+        "-i", img,
+        "-t", f"{duration:.3f}",
         "-vf",
         (
             "scale=1080:1920:flags=lanczos,"
             "format=yuv420p,"
             "noise=alls=8:allf=t+u,"
-            "eq=brightness=0.015*sin(2*PI*t/{}):contrast=1.02,"
+            "eq=brightness=0.015*sin(2*PI*t/{d}):contrast=1.02,"
             "vignette=PI/6"
-        ).format(duration),
+        ).format(d=max(duration, 0.1)),
         "-r", str(FPS),
         "-c:v", "libx264",
         "-preset", "slow",
         "-crf", "16",
         "-pix_fmt", "yuv420p",
-        output_mp4
+        out
     ]
-
     subprocess.run(cmd, check=True)
 
 # --------------------------------------------------
@@ -103,36 +92,23 @@ def main():
     log("Loading beats, frames, and audio...")
 
     beats = load_beats()
-    frames = list_frames()
+    frames = load_frames()
 
-    if len(beats) != len(frames):
-        raise SystemExit("❌ Beats and frames count mismatch")
+    if len(frames) != len(beats):
+        raise SystemExit("❌ Frame count must equal beat count")
 
     audio_len = audio_duration(AUDIO_FILE)
-    log(f"Audio duration: {audio_len:.2f}s")
+    base_duration = audio_len / len(beats)
 
-    base_duration = audio_len / len(frames)
     clips = []
 
-    # --------------------------------------------------
-    # BUILD ANIMATED CLIPS
-    # --------------------------------------------------
-
-    for i, (img, beat) in enumerate(zip(frames, beats), 1):
+    for i, (beat, img) in enumerate(zip(beats, frames), 1):
         dur = base_duration
-        if beat.get("intent") == "attention":
-            dur += CTA_EXTRA_TIME
+        log(f"Animating beat {i}/{len(beats)} ({dur:.2f}s)")
 
         out_clip = os.path.join(CLIPS_DIR, f"clip_{i:03d}.mp4")
-
-        log(f"Animating frame {i}/{len(frames)} ({dur:.2f}s)...")
         animate_image(img, out_clip, dur)
-
         clips.append(VideoFileClip(out_clip))
-
-    # --------------------------------------------------
-    # LOOP REINFORCEMENT
-    # --------------------------------------------------
 
     log("Adding loop reinforcement...")
     clips.append(clips[0].subclip(0, 0.4))
@@ -140,27 +116,11 @@ def main():
     log("Concatenating clips...")
     video = concatenate_videoclips(clips, method="compose")
 
-    # --------------------------------------------------
-    # AUDIO (SAFE CLAMP)
-    # --------------------------------------------------
-
     log("Adding audio...")
     audio_clip = AudioFileClip(AUDIO_FILE)
-
-    safe_audio_end = min(
-        audio_clip.duration - AUDIO_SAFETY_MARGIN,
-        video.duration
-    )
-
-    if safe_audio_end <= 0:
-        raise SystemExit("❌ Audio too short after clamp")
-
-    audio = audio_clip.subclip(0, safe_audio_end)
+    safe_end = min(audio_clip.duration - AUDIO_SAFETY_MARGIN, video.duration)
+    audio = audio_clip.subclip(0, safe_end)
     video = video.set_audio(CompositeAudioClip([audio]))
-
-    # --------------------------------------------------
-    # RENDER
-    # --------------------------------------------------
 
     log("Rendering final video...")
     video.write_videofile(
@@ -177,8 +137,7 @@ def main():
         logger=None,
     )
 
-    log("✅ video_raw.mp4 created successfully")
+    log("✅ video_raw.mp4 created")
 
 if __name__ == "__main__":
     main()
-    
