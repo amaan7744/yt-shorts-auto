@@ -1,7 +1,17 @@
-name: Auto YouTube Shorts - Crime (US Peak | Retention Optimized)
+name: Auto YouTube Shorts – Crime (US Aligned | 3x Daily)
 
 on:
   workflow_dispatch:
+
+  schedule:
+    # US Morning Scroll (8:00 AM ET)
+    - cron: "0 13 * * *"
+
+    # US Lunch Scroll (1:00 PM ET)
+    - cron: "0 18 * * *"
+
+    # US Night Binge (9:00 PM ET)
+    - cron: "0 2 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -59,9 +69,9 @@ jobs:
           pip install -r requirements.txt
 
       # ----------------------------
-      # CASE SEARCH
+      # CASE SELECTION
       # ----------------------------
-      - name: Find crime case
+      - name: Select crime case
         shell: bash
         run: |
           set -e
@@ -69,9 +79,9 @@ jobs:
           test -f case.json
 
       # ----------------------------
-      # SCRIPT + BEATS GENERATION
+      # SCRIPT + VISUAL BEATS
       # ----------------------------
-      - name: Generate script and visual beats
+      - name: Generate script and beats
         shell: bash
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
@@ -82,20 +92,20 @@ jobs:
           test -f beats.json
 
       # ----------------------------
-      # AI IMAGE GENERATION (HUGGING FACE)
+      # IMAGE FETCH (PEXELS | HALAL)
       # ----------------------------
-      - name: Generate cinematic images (AI)
+      - name: Fetch cinematic images
         shell: bash
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
           set -e
           python image_fetch.py
           test -d frames
-          test "$(ls frames | wc -l)" -ge 5
+          test "$(ls frames/*.jpg | wc -l)" -ge 5
 
       # ----------------------------
-      # TEXT TO SPEECH
+      # TEXT TO SPEECH (MALE VOICE)
       # ----------------------------
       - name: Generate narration
         shell: bash
@@ -105,9 +115,9 @@ jobs:
           test -f final_audio.wav
 
       # ----------------------------
-      # SUBTITLES
+      # SUBTITLES (TIKTOK STYLE)
       # ----------------------------
-      - name: Build subtitles
+      - name: Build kinetic subtitles
         shell: bash
         run: |
           set -e
@@ -115,9 +125,19 @@ jobs:
           test -f subs.ass
 
       # ----------------------------
-      # VIDEO BUILD (RAW)
+      # GAMEPLAY VALIDATION
       # ----------------------------
-      - name: Build video
+      - name: Validate gameplay loops
+        shell: bash
+        run: |
+          set -e
+          test -d gameplay/loops
+          test "$(ls gameplay/loops/*.mp4 | wc -l)" -ge 1
+
+      # ----------------------------
+      # VIDEO BUILD (HALF PIXEL / HALF GAMEPLAY)
+      # ----------------------------
+      - name: Build Shorts video
         shell: bash
         run: |
           set -e
@@ -125,7 +145,7 @@ jobs:
           test -f video_raw.mp4
 
       # ----------------------------
-      # FINAL RENDER
+      # FINAL RENDER (SUBTITLES ONLY)
       # ----------------------------
       - name: Final render
         shell: bash
@@ -133,10 +153,10 @@ jobs:
           set -e
           ffmpeg -y \
             -i video_raw.mp4 \
-            -vf "ass=subs.ass,scale=1080:1920:flags=lanczos" \
+            -vf "ass=subs.ass" \
             -c:v libx264 \
             -preset slow \
-            -crf 17 \
+            -crf 16 \
             -pix_fmt yuv420p \
             -movflags +faststart \
             -c:a copy \
@@ -144,9 +164,9 @@ jobs:
           test -f output.mp4
 
       # ----------------------------
-      # UPLOAD TO YOUTUBE
+      # UPLOAD TO YOUTUBE (SHORTS)
       # ----------------------------
-      - name: Upload to YouTube
+      - name: Upload to YouTube Shorts
         shell: bash
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -166,6 +186,6 @@ jobs:
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add memory used_cases.json || true
+          git add memory used_cases.json upload_meta.json || true
           git commit -m "chore: update memory" || true
           git push || true
