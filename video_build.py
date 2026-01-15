@@ -2,17 +2,17 @@
 
 import os
 import json
+import random
 import subprocess
 from typing import List
 
 from moviepy.editor import (
     VideoFileClip,
-    concatenate_videoclips,
     AudioFileClip,
+    CompositeVideoClip,
     CompositeAudioClip,
+    concatenate_videoclips,
 )
-
-from pydub import AudioSegment
 
 # --------------------------------------------------
 # CONFIG
@@ -20,28 +20,32 @@ from pydub import AudioSegment
 
 FRAMES_DIR = "frames"
 CLIPS_DIR = "clips"
-BEATS_FILE = "beats.json"
+GAMEPLAY_DIR = "gameplay/loops"
 
+BEATS_FILE = "beats.json"
 AUDIO_FILE = "final_audio.wav"
 OUTPUT_VIDEO = "video_raw.mp4"
 
+WIDTH, HEIGHT = 1080, 1920
 FPS = 30
-MAX_DURATION = 35.0
-AUDIO_SAFETY_MARGIN = 0.2
+
+TARGET_DURATION = 30.0
+AUDIO_SAFETY_MARGIN = 0.25
 
 os.makedirs(CLIPS_DIR, exist_ok=True)
 
 # --------------------------------------------------
-# UTIL
+# UTILS
 # --------------------------------------------------
 
 def log(msg: str):
-    print(msg, flush=True)
+    print(f"[VIDEO] {msg}", flush=True)
 
 def load_beats():
     if not os.path.isfile(BEATS_FILE):
         raise SystemExit("❌ beats.json missing")
-    return json.load(open(BEATS_FILE, "r", encoding="utf-8"))
+    with open(BEATS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def load_frames() -> List[str]:
     frames = sorted(
@@ -50,15 +54,29 @@ def load_frames() -> List[str]:
         if f.lower().endswith(".jpg")
     )
     if not frames:
-        raise SystemExit("❌ No frames found")
+        raise SystemExit("❌ No frames found in frames/")
     return frames
 
-def audio_duration(path: str) -> float:
-    audio = AudioSegment.from_file(path)
-    return min(len(audio) / 1000.0, MAX_DURATION)
+# --------------------------------------------------
+# GAMEPLAY
+# --------------------------------------------------
+
+def pick_gameplay(duration: float) -> VideoFileClip:
+    files = [f for f in os.listdir(GAMEPLAY_DIR) if f.endswith(".mp4")]
+    if not files:
+        raise SystemExit("❌ No gameplay clips found")
+
+    path = os.path.join(GAMEPLAY_DIR, random.choice(files))
+    clip = VideoFileClip(path).without_audio()
+
+    if clip.duration <= duration:
+        return clip.subclip(0, clip.duration)
+
+    start = random.uniform(0, clip.duration - duration)
+    return clip.subclip(start, start + duration)
 
 # --------------------------------------------------
-# MOTION (SUBTLE, CINEMATIC)
+# PIXEL IMAGE → VIDEO
 # --------------------------------------------------
 
 def animate_image(img: str, out: str, duration: float):
@@ -69,16 +87,12 @@ def animate_image(img: str, out: str, duration: float):
         "-t", f"{duration:.3f}",
         "-vf",
         (
-            "scale=1080:1920:flags=lanczos,"
-            "format=yuv420p,"
-            "noise=alls=8:allf=t+u,"
-            "eq=brightness=0.015*sin(2*PI*t/{d}):contrast=1.02,"
-            "vignette=PI/6"
+            "scale=1080:960:flags=lanczos,"
+            "noise=alls=10:allf=t+u,"
+            "zoompan=z='min(zoom+0.0006,1.07)':d=1,"
+            "eq=brightness=0.015*sin(2*PI*t/{d})"
         ).format(d=max(duration, 0.1)),
         "-r", str(FPS),
-        "-c:v", "libx264",
-        "-preset", "slow",
-        "-crf", "16",
         "-pix_fmt", "yuv420p",
         out
     ]
@@ -89,41 +103,44 @@ def animate_image(img: str, out: str, duration: float):
 # --------------------------------------------------
 
 def main():
-    log("Loading beats, frames, and audio...")
-
     beats = load_beats()
     frames = load_frames()
 
-    if len(frames) != len(beats):
-        raise SystemExit("❌ Frame count must equal beat count")
+    audio = AudioFileClip(AUDIO_FILE)
+    audio_duration = min(audio.duration, TARGET_DURATION)
 
-    audio_len = audio_duration(AUDIO_FILE)
-    base_duration = audio_len / len(beats)
+    per_frame_duration = audio_duration / len(frames)
 
-    clips = []
+    pixel_clips = []
 
-    for i, (beat, img) in enumerate(zip(beats, frames), 1):
-        dur = base_duration
-        log(f"Animating beat {i}/{len(beats)} ({dur:.2f}s)")
+    log("Animating pixel frames...")
+    for i, img in enumerate(frames):
+        out = os.path.join(CLIPS_DIR, f"pixel_{i:03d}.mp4")
+        animate_image(img, out, per_frame_duration)
+        pixel_clips.append(VideoFileClip(out))
 
-        out_clip = os.path.join(CLIPS_DIR, f"clip_{i:03d}.mp4")
-        animate_image(img, out_clip, dur)
-        clips.append(VideoFileClip(out_clip))
+    pixel_video = concatenate_videoclips(pixel_clips)
+    pixel_video = pixel_video.resize((WIDTH, HEIGHT // 2))
+    pixel_video = pixel_video.set_position(("center", 0))
 
-    log("Adding loop reinforcement...")
-    clips.append(clips[0].subclip(0, 0.4))
+    log("Selecting gameplay...")
+    gameplay = pick_gameplay(audio_duration)
+    gameplay = gameplay.resize((WIDTH, HEIGHT // 2))
+    gameplay = gameplay.set_position(("center", HEIGHT // 2))
 
-    log("Concatenating clips...")
-    video = concatenate_videoclips(clips, method="compose")
+    log("Compositing layers...")
+    final = CompositeVideoClip(
+        [pixel_video, gameplay],
+        size=(WIDTH, HEIGHT)
+    )
 
-    log("Adding audio...")
-    audio_clip = AudioFileClip(AUDIO_FILE)
-    safe_end = min(audio_clip.duration - AUDIO_SAFETY_MARGIN, video.duration)
-    audio = audio_clip.subclip(0, safe_end)
-    video = video.set_audio(CompositeAudioClip([audio]))
+    safe_audio = audio.subclip(
+        0, min(audio_duration, final.duration - AUDIO_SAFETY_MARGIN)
+    )
+    final = final.set_audio(CompositeAudioClip([safe_audio]))
 
-    log("Rendering final video...")
-    video.write_videofile(
+    log("Rendering HD Shorts video...")
+    final.write_videofile(
         OUTPUT_VIDEO,
         fps=FPS,
         codec="libx264",
@@ -137,7 +154,7 @@ def main():
         logger=None,
     )
 
-    log("✅ video_raw.mp4 created")
+    log("✅ video_raw.mp4 ready (HD, 9:16, Shorts-safe)")
 
 if __name__ == "__main__":
     main()
