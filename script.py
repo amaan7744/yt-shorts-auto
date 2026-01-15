@@ -151,8 +151,8 @@ def derive_visual_beats(script: str) -> List[dict]:
     for i, sentence in enumerate(sentences):
         if i == 0:
             scene = "HOOK"
-        elif i < 3:
-            scene = "CONFLICT"
+        elif i == 1:
+           scene = "CRIME"
         elif i < len(sentences) - 2:
             scene = "CRIME"
         elif "subscrib" in sentence.lower():
