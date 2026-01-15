@@ -3,13 +3,13 @@
 import os
 import json
 import time
-import cv2
-import numpy as np
+import random
+import requests
+from io import BytesIO
 from PIL import Image, ImageEnhance
-from huggingface_hub import InferenceClient
 
 # --------------------------------------------------
-# CONFIG (FREE SAFE)
+# CONFIG
 # --------------------------------------------------
 
 BEATS_FILE = "beats.json"
@@ -17,42 +17,43 @@ OUTPUT_DIR = "frames"
 
 TARGET_W, TARGET_H = 1080, 1920
 
-IMAGES_PER_BEAT = 1      # ONLY ONE IMAGE
-MAX_ATTEMPTS = 2         # MAX 2 TRIES PER BEAT
-RETRY_DELAY = 2
+MAX_ATTEMPTS = 4
+RETRY_DELAY = 1.5
 
-# FREE HF MODEL (DO NOT CHANGE)
-HF_MODEL = "runwayml/stable-diffusion-v1-5"
+HALAL_MODE = True   # 🔒 ENFORCED
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-if not HF_TOKEN:
-    raise SystemExit("❌ HF_TOKEN missing")
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+if not PEXELS_API_KEY:
+    raise SystemExit("❌ PEXELS_API_KEY missing")
+
+PEXELS_ENDPOINT = "https://api.pexels.com/v1/search"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --------------------------------------------------
-# HF CLIENT (FREE ENDPOINT)
-# --------------------------------------------------
-
-client = InferenceClient(api_key=HF_TOKEN)
-
-# --------------------------------------------------
-# SCENE → PROMPTS (SD 1.5 FRIENDLY)
+# HALAL-SAFE SCENE → SEARCH QUERIES
 # --------------------------------------------------
 
 SCENE_PROMPTS = {
-    "HOOK": "cinematic noir city at night, blurred lights, suspenseful mood, dramatic shadows, film grain, no people",
-    "CONFLICT": "dark interior room, shadows, tense atmosphere, low key lighting, cinematic, no people",
-    "CRIME": "police lights reflecting on wet road, empty alley at night, rain, cinematic noir, no people",
-    "INVESTIGATION": "detective desk with papers, rain on window, moody lighting, cinematic, no people",
-    "AFTERMATH": "empty room at dawn, soft light, melancholic mood, cinematic stillness, no people",
-    "NEUTRAL": "dark abstract background, subtle texture, cinematic lighting, minimal"
+    "HOOK": "dark city night empty street neon rain cinematic no people",
+    "CRIME": "empty alley night police lights wet road cinematic no people",
+    "INVESTIGATION": "empty detective desk papers moody lighting cinematic no people",
+    "CONFLICT": "dark empty room shadows dramatic lighting cinematic no people",
+    "AFTERMATH": "empty room dawn soft light cinematic no people",
+    "NEUTRAL": "dark abstract texture cinematic background no people",
 }
 
-NEGATIVE_PROMPT = (
-    "people, faces, blood, gore, violence, text, watermark, logo, "
-    "low quality, blurry, distorted, cartoon, illustration"
-)
+# --------------------------------------------------
+# HARD FORBIDDEN WORDS (HALAL FILTER)
+# --------------------------------------------------
+
+FORBIDDEN_WORDS = {
+    "woman", "women", "girl", "girls",
+    "female", "lady",
+    "couple", "romantic", "dating",
+    "model", "fashion", "portrait",
+    "wedding", "kiss", "love"
+}
 
 # --------------------------------------------------
 # UTILS
@@ -78,47 +79,47 @@ def make_vertical(img: Image.Image) -> Image.Image:
 
 def enhance(img: Image.Image) -> Image.Image:
     img = ImageEnhance.Contrast(img).enhance(1.08)
-    img = ImageEnhance.Sharpness(img).enhance(1.04)
+    img = ImageEnhance.Sharpness(img).enhance(1.05)
     return img
 
 # --------------------------------------------------
-# QUALITY METRICS (METADATA)
+# HALAL FILTER
 # --------------------------------------------------
 
-def score_image(img: Image.Image) -> dict:
-    gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
-    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-    brightness = gray.mean()
-    contrast = gray.std()
+def is_halal_safe(photo: dict) -> bool:
+    alt = (photo.get("alt") or "").lower()
+    for word in FORBIDDEN_WORDS:
+        if word in alt:
+            return False
+    return True
 
-    return {
-        "score": float(sharpness + contrast),
-        "sharpness": float(sharpness),
-        "brightness": float(brightness),
-        "contrast": float(contrast),
+# --------------------------------------------------
+# PEXELS API
+# --------------------------------------------------
+
+def search_pexels(query: str):
+    headers = {"Authorization": PEXELS_API_KEY}
+    params = {
+        "query": f"{query} -woman -girl -couple -portrait -fashion",
+        "orientation": "portrait",
+        "size": "large",
+        "per_page": 15,
     }
 
-# --------------------------------------------------
-# IMAGE GENERATION (FREE SAFE)
-# --------------------------------------------------
+    r = requests.get(PEXELS_ENDPOINT, headers=headers, params=params, timeout=10)
+    if r.status_code != 200:
+        log(f"⚠️ Pexels error {r.status_code}")
+        return []
 
-def generate_image(prompt: str):
+    return r.json().get("photos", [])
+
+def download_image(url: str):
     try:
-        img = client.text_to_image(
-            prompt=prompt,
-            model=HF_MODEL,
-            negative_prompt=NEGATIVE_PROMPT,
-        )
-        return img.convert("RGB")
-
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        return Image.open(BytesIO(r.content)).convert("RGB")
     except Exception as e:
-        msg = str(e)
-        log(f"⚠️ HF error: {msg[:100]}")
-
-        # STOP immediately if paid limit is hit
-        if "402" in msg or "Payment Required" in msg:
-            raise RuntimeError("HF paid limit reached")
-
+        log(f"⚠️ Download failed: {e}")
         return None
 
 # --------------------------------------------------
@@ -131,7 +132,7 @@ def main():
 
     for idx, beat in enumerate(beats, 1):
         scene = beat.get("scene", "NEUTRAL").upper()
-        prompt = SCENE_PROMPTS.get(scene, SCENE_PROMPTS["NEUTRAL"])
+        query = SCENE_PROMPTS.get(scene, SCENE_PROMPTS["NEUTRAL"])
 
         log(f"Scene {idx}: {scene}")
 
@@ -140,43 +141,52 @@ def main():
 
         while img is None and attempts < MAX_ATTEMPTS:
             attempts += 1
-            try:
-                img = generate_image(prompt)
-            except RuntimeError:
-                log("❌ Paid HF limit hit — switching to fallback")
-                break
+
+            photos = search_pexels(query)
+            if HALAL_MODE:
+                photos = [p for p in photos if is_halal_safe(p)]
+
+            if not photos:
+                time.sleep(RETRY_DELAY)
+                continue
+
+            photo = random.choice(photos)
+            img = download_image(photo["src"]["large"])
 
             if img is None:
                 time.sleep(RETRY_DELAY)
 
         # ----------------------------
-        # FALLBACK (NEVER FAIL)
+        # SAFE FALLBACK (ALWAYS HALAL)
         # ----------------------------
         if img is None:
-            log("⚠️ Using fallback neutral image")
-            img = Image.new("RGB", (TARGET_W, TARGET_H), color=(12, 12, 12))
+            log("⚠️ Using fallback abstract image")
+            img = Image.new("RGB", (TARGET_W, TARGET_H), (10, 10, 10))
 
         img = enhance(make_vertical(img))
-        metrics = score_image(img)
 
         img_name = f"img_{frame_index:04d}.jpg"
         meta_name = f"img_{frame_index:04d}.json"
 
-        img.save(os.path.join(OUTPUT_DIR, img_name), quality=95, subsampling=0)
+        img.save(
+            os.path.join(OUTPUT_DIR, img_name),
+            quality=95,
+            subsampling=0
+        )
 
         with open(os.path.join(OUTPUT_DIR, meta_name), "w", encoding="utf-8") as f:
             json.dump({
                 "frame": img_name,
                 "scene": scene,
-                "prompt": prompt,
-                "quality": metrics,
-                "model": HF_MODEL,
+                "query": query,
+                "source": "pexels",
+                "halal_mode": HALAL_MODE
             }, f, indent=2)
 
-        log(f"Selected {img_name} | score={metrics['score']:.2f}")
+        log(f"Saved {img_name}")
         frame_index += 1
 
-    log("✅ Image generation completed safely")
+    log("✅ Image fetch completed (HALAL MODE ON)")
 
 if __name__ == "__main__":
     main()
