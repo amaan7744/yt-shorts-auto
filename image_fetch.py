@@ -22,8 +22,12 @@ RETRY_DELAY = 1.5
 
 HALAL_MODE = True   # 🔒 ENFORCED
 
+# --------------------------------------------------
+# ENV (MATCHES GITHUB SECRET)
+# --------------------------------------------------
+
 PEXELS_API_KEY = os.getenv("PEXELS_KEY")
-if not PEXELS_KEY:
+if not PEXELS_API_KEY:
     raise SystemExit("❌ PEXELS_KEY missing")
 
 PEXELS_ENDPOINT = "https://api.pexels.com/v1/search"
@@ -106,9 +110,11 @@ def search_pexels(query: str):
         "per_page": 15,
     }
 
-    r = requests.get(PEXELS_ENDPOINT, headers=headers, params=params, timeout=10)
-    if r.status_code != 200:
-        log(f"⚠️ Pexels error {r.status_code}")
+    try:
+        r = requests.get(PEXELS_ENDPOINT, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        log(f"⚠️ Pexels request failed: {e}")
         return []
 
     return r.json().get("photos", [])
