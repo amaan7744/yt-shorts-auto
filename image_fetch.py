@@ -22,9 +22,9 @@ RETRY_DELAY = 1.5
 
 HALAL_MODE = True   # 🔒 ENFORCED
 
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
-if not PEXELS_API_KEY:
-    raise SystemExit("❌ PEXELS_API_KEY missing")
+PEXELS_API_KEY = os.getenv("PEXELS_KEY")
+if not PEXELS_KEY:
+    raise SystemExit("❌ PEXELS_KEY missing")
 
 PEXELS_ENDPOINT = "https://api.pexels.com/v1/search"
 
