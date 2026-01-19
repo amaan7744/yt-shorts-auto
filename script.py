@@ -61,27 +61,27 @@ def load_case() -> dict:
     return case
 
 def normalize_length(script: str) -> str:
+    """
+    Enforces length WITHOUT repeating any sentence.
+    Adds at most ONE unique archival closer if needed.
+    """
     words = script.split()
 
     if len(words) > TARGET_WORDS_MAX:
         return " ".join(words[:TARGET_WORDS_MAX])
 
     if len(words) < TARGET_WORDS_MIN:
-        filler = [
-            "The official records never explained why.",
-            "Several details were left unresolved.",
-            "The final report did not address the gaps."
-        ]
-        i = 0
-        while len(words) < TARGET_WORDS_MIN:
-            words.extend(filler[i % len(filler)].split())
-            i += 1
-        return " ".join(words[:TARGET_WORDS_MIN])
+        closer = (
+            "To this day, no official explanation has fully accounted "
+            "for what happened, and the unanswered questions remain part "
+            "of the public record."
+        )
+        words.extend(closer.split())
 
-    return script
+    return " ".join(words)
 
 # --------------------------------------------------
-# PROMPT — EDITORIAL SCRIPT
+# PROMPT — SCRIPT WITH CTA (NO REPETITION)
 # --------------------------------------------------
 
 def build_script_prompt(case: dict, neutral: bool = False) -> str:
@@ -94,9 +94,16 @@ for a TRUE CRIME / UNRESOLVED MYSTERY channel.
 TONE:
 - {tone}
 - Documentary style
+- Serious and respectful
 - No exaggeration
 - No speculation
 - Adult audience
+
+CRITICAL WRITING RULES:
+- Do NOT repeat any sentence or phrase.
+- Each sentence must add new information.
+- No filler padding.
+- No looping language.
 
 FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
@@ -104,18 +111,26 @@ Location: {case.get("location")}
 Summary: {case.get("summary")}
 Narrative Flags: {case.get("flags")}
 
-STRUCTURE:
-- Strong unresolved opening
-- Clear factual grounding
-- Procedural failures and gaps
-- Moral archival CTA
-- Unresolved looping ending
+STRUCTURE (STRICT):
+1. Immediate unresolved hook
+2. Factual grounding (who / where / when)
+3. Procedural failures or unanswered questions
+4. Brief moral reflection
+5. CTA: invite viewers to subscribe to keep these cases alive
+6. Unresolved looping final line (no repetition)
+
+CTA GUIDELINE:
+- Calm, archival tone
+- Example phrasing (do not copy verbatim):
+  "If you want these forgotten cases to stay alive, consider subscribing."
 
 LENGTH:
 - {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words
 
-OUTPUT (NO LABELS, NO EXPLANATIONS):
-<full narration>
+OUTPUT:
+- One continuous narration
+- No labels
+- No explanations
 """
 
 # --------------------------------------------------
@@ -140,22 +155,22 @@ def call_gpt(model: str, prompt: str) -> str:
     return text
 
 # --------------------------------------------------
-# VISUAL BEAT DERIVATION (THIS IS THE KEY FIX)
+# VISUAL BEAT DERIVATION
 # --------------------------------------------------
 
 def derive_visual_beats(script: str) -> List[dict]:
     sentences = [s.strip() for s in script.split(".") if s.strip()]
-
     beats = []
+    total = len(sentences)
 
     for i, sentence in enumerate(sentences):
         if i == 0:
             scene = "HOOK"
-        elif i == 1:
-           scene = "CRIME"
-        elif i < len(sentences) - 2:
+        elif i <= 2:
             scene = "CRIME"
-        elif "subscrib" in sentence.lower():
+        elif i < total - 3:
+            scene = "INVESTIGATION"
+        elif "subscribe" in sentence.lower():
             scene = "NEUTRAL"
         else:
             scene = "AFTERMATH"
@@ -207,7 +222,7 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ Script and visual beats generated")
+            print("✅ Script with CTA and non-repeating narration generated")
             return
 
         except (ValueError, HttpResponseError) as e:
