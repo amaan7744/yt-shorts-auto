@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Final Shorts Video Builder
+- 70% gameplay / 30% pixel
+- Single encode only
+- Subtitles burned here
+- Shorts-optimized quality
+"""
 
 import os
 import random
@@ -18,15 +25,15 @@ GAMEPLAY_DIR = "gameplay/loops"
 AUDIO_FILE = "final_audio.wav"
 SUBS_FILE = "subs.ass"
 
-OUTPUT = "output.mp4"
+OUTPUT_FILE = "output.mp4"
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
 
-GAMEPLAY_RATIO = 0.70   # 70% gameplay
-PIXEL_RATIO = 0.30      # 30% pixel
+GAMEPLAY_RATIO = 0.70   # bottom 70%
+PIXEL_RATIO = 0.30      # top 30%
 
-CRF = "14"              # Near-lossless for Shorts
+CRF = "14"              # near-lossless for Shorts
 PRESET = "slow"
 
 # --------------------------------------------------
@@ -36,10 +43,10 @@ PRESET = "slow"
 def log(msg: str):
     print(f"[VIDEO] {msg}", flush=True)
 
-def pick_gameplay(duration: float) -> VideoFileClip:
+def pick_random_gameplay(duration: float) -> VideoFileClip:
     files = [f for f in os.listdir(GAMEPLAY_DIR) if f.endswith(".mp4")]
     if not files:
-        raise SystemExit("❌ No gameplay clips found")
+        raise SystemExit("❌ No gameplay videos found in gameplay/loops")
 
     clip = VideoFileClip(
         os.path.join(GAMEPLAY_DIR, random.choice(files))
@@ -51,14 +58,14 @@ def pick_gameplay(duration: float) -> VideoFileClip:
     start = random.uniform(0, clip.duration - duration)
     return clip.subclip(start, start + duration)
 
-def pick_pixel_frame() -> str:
+def pick_random_pixel_frame() -> str:
     frames = [
         os.path.join(FRAMES_DIR, f)
         for f in os.listdir(FRAMES_DIR)
         if f.lower().endswith(".jpg")
     ]
     if not frames:
-        raise SystemExit("❌ No pixel frames found")
+        raise SystemExit("❌ No frames found in frames/")
     return random.choice(frames)
 
 # --------------------------------------------------
@@ -67,36 +74,48 @@ def pick_pixel_frame() -> str:
 
 def main():
     log("Loading audio…")
+    if not os.path.isfile(AUDIO_FILE):
+        raise SystemExit("❌ final_audio.wav missing")
+
     audio = AudioFileClip(AUDIO_FILE)
     duration = audio.duration
 
-    gameplay_h = int(HEIGHT * GAMEPLAY_RATIO)
-    pixel_h = HEIGHT - gameplay_h
+    gameplay_height = int(HEIGHT * GAMEPLAY_RATIO)
+    pixel_height = HEIGHT - gameplay_height
 
+    # ----------------------------
+    # GAMEPLAY (PRIMARY RETENTION)
+    # ----------------------------
     log("Preparing gameplay layer (primary retention)…")
-    gameplay = pick_gameplay(duration)
-    gameplay = gameplay.resize(
-        height=gameplay_h,
-        resample="lanczos"
-    )
-    gameplay = gameplay.set_position(("center", HEIGHT - gameplay_h))
+    gameplay = pick_random_gameplay(duration)
+    gameplay = gameplay.resize(height=gameplay_height)
+    gameplay = gameplay.set_position(("center", HEIGHT - gameplay_height))
 
-    log("Preparing pixel background (secondary)…")
-    frame = pick_pixel_frame()
+    # ----------------------------
+    # PIXEL VISUAL (SECONDARY)
+    # ----------------------------
+    log("Preparing pixel visual layer…")
+    frame = pick_random_pixel_frame()
     pixel = ImageClip(frame)
-    pixel = pixel.resize((WIDTH, pixel_h))
+    pixel = pixel.resize((WIDTH, pixel_height))
     pixel = pixel.set_duration(duration)
     pixel = pixel.set_position(("center", 0))
 
+    # ----------------------------
+    # COMPOSITE
+    # ----------------------------
     log("Compositing final frame…")
     final = CompositeVideoClip(
         [pixel, gameplay],
         size=(WIDTH, HEIGHT)
     ).set_audio(audio)
 
-    log("Rendering SINGLE-PASS Shorts video (no re-encode)…")
+    # ----------------------------
+    # SINGLE-PASS RENDER
+    # ----------------------------
+    log("Rendering FINAL Shorts video (single encode)…")
     final.write_videofile(
-        OUTPUT,
+        OUTPUT_FILE,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
@@ -110,7 +129,7 @@ def main():
         threads=4,
     )
 
-    log("✅ output.mp4 ready (sharp, Shorts-optimized)")
+    log("✅ output.mp4 created (sharp, Shorts-ready)")
 
 if __name__ == "__main__":
     main()
