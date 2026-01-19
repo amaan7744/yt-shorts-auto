@@ -136,32 +136,13 @@ jobs:
           test "$(ls gameplay/loops/*.mp4 | wc -l)" -ge 1
 
       # ----------------------------
-      # VIDEO BUILD
+      # VIDEO BUILD (FINAL, SINGLE ENCODE)
       # ----------------------------
-      - name: Build Shorts video
+      - name: Build Shorts video (final)
         shell: bash
         run: |
           set -euo pipefail
           python video_build.py
-          test -f video_raw.mp4
-
-      # ----------------------------
-      # FINAL RENDER (SUBS ONLY)
-      # ----------------------------
-      - name: Final render
-        shell: bash
-        run: |
-          set -euo pipefail
-          ffmpeg -y \
-            -i video_raw.mp4 \
-            -vf "ass=subs.ass" \
-            -c:v libx264 \
-            -preset slow \
-            -crf 16 \
-            -pix_fmt yuv420p \
-            -movflags +faststart \
-            -c:a copy \
-            output.mp4
           test -f output.mp4
 
       # ----------------------------
