@@ -11,7 +11,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
 # --------------------------------------------------
-# CONFIG
+# CONFIG — SHORTS ONLY
 # --------------------------------------------------
 
 ENDPOINT = "https://models.github.ai/inference"
@@ -25,8 +25,9 @@ BEATS_FILE = "beats.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-TARGET_WORDS_MIN = 90
-TARGET_WORDS_MAX = 110
+# HARD LIMITS (≈30s spoken)
+TARGET_WORDS_MIN = 55
+TARGET_WORDS_MAX = 70
 
 # --------------------------------------------------
 # ENV
@@ -60,11 +61,7 @@ def load_case() -> dict:
 
     return case
 
-def normalize_length(script: str) -> str:
-    """
-    Enforces length WITHOUT repeating any sentence.
-    Adds at most ONE unique archival closer if needed.
-    """
+def enforce_length(script: str) -> str:
     words = script.split()
 
     if len(words) > TARGET_WORDS_MAX:
@@ -72,60 +69,52 @@ def normalize_length(script: str) -> str:
 
     if len(words) < TARGET_WORDS_MIN:
         closer = (
-            "To this day, no official explanation has fully accounted "
-            "for what happened, and the unanswered questions remain part "
-            "of the public record."
+            "No official explanation has ever fully accounted for what went wrong."
         )
         words.extend(closer.split())
 
     return " ".join(words)
 
 # --------------------------------------------------
-# PROMPT — SCRIPT WITH CTA (NO REPETITION)
+# PROMPT — STRONG HOOK LOGIC
 # --------------------------------------------------
 
-def build_script_prompt(case: dict, neutral: bool = False) -> str:
-    tone = "calm, investigative, restrained" if not neutral else "neutral factual"
-
+def build_script_prompt(case: dict) -> str:
     return f"""
-You write HIGH-RETENTION YouTube Shorts narration
-for a TRUE CRIME / UNRESOLVED MYSTERY channel.
+Write a HIGH-RETENTION YouTube Shorts narration
+for a TRUE CRIME or UNRESOLVED case.
 
-TONE:
-- {tone}
-- Documentary style
-- Serious and respectful
-- No exaggeration
-- No speculation
-- Adult audience
+CRITICAL RULES:
+- MAX 30 seconds spoken
+- 55–70 words total
+- No repetition
+- No filler
+- Written to be spoken naturally
+- Calm, serious, investigative tone
 
-CRITICAL WRITING RULES:
-- Do NOT repeat any sentence or phrase.
-- Each sentence must add new information.
-- No filler padding.
-- No looping language.
+HOOK REQUIREMENTS (MANDATORY):
+- The opening sentence MUST include:
+  • A specific fact
+  • A contradiction, failure, or inconsistency
+- The hook must clearly imply:
+  “The official explanation does not fully make sense.”
 
 FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
-Narrative Flags: {case.get("flags")}
 
 STRUCTURE (STRICT):
-1. Immediate unresolved hook
-2. Factual grounding (who / where / when)
-3. Procedural failures or unanswered questions
-4. Brief moral reflection
-5. CTA: invite viewers to subscribe to keep these cases alive
-6. Unresolved looping final line (no repetition)
+1. Hook: specific fact + what doesn’t add up (1 sentence)
+2. Core facts: who / where / what happened (2 sentences)
+3. Investigative failure or contradiction (1–2 sentences)
+4. CTA: invite viewers to subscribe to keep cases like this alive (1 sentence)
+5. Loop ending: unresolved final line that echoes the contradiction (1 sentence)
 
-CTA GUIDELINE:
-- Calm, archival tone
-- Example phrasing (do not copy verbatim):
-  "If you want these forgotten cases to stay alive, consider subscribing."
-
-LENGTH:
-- {TARGET_WORDS_MIN}–{TARGET_WORDS_MAX} words
+CTA STYLE:
+- Documentary tone
+- Example phrasing (do NOT copy):
+  "If you want cases like this to stay alive, consider subscribing."
 
 OUTPUT:
 - One continuous narration
@@ -141,11 +130,11 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write high-retention true crime narration."},
+            {"role": "system", "content": "You write concise, investigative true crime narration."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.4,
-        max_tokens=800,
+        temperature=0.3,
+        max_tokens=400,
     )
 
     text = clean(response.choices[0].message.content)
@@ -155,21 +144,18 @@ def call_gpt(model: str, prompt: str) -> str:
     return text
 
 # --------------------------------------------------
-# VISUAL BEAT DERIVATION
+# VISUAL BEATS
 # --------------------------------------------------
 
 def derive_visual_beats(script: str) -> List[dict]:
     sentences = [s.strip() for s in script.split(".") if s.strip()]
     beats = []
-    total = len(sentences)
 
     for i, sentence in enumerate(sentences):
         if i == 0:
             scene = "HOOK"
         elif i <= 2:
             scene = "CRIME"
-        elif i < total - 3:
-            scene = "INVESTIGATION"
         elif "subscribe" in sentence.lower():
             scene = "NEUTRAL"
         else:
@@ -188,17 +174,17 @@ def derive_visual_beats(script: str) -> List[dict]:
 # --------------------------------------------------
 
 def generate(case: dict) -> Tuple[str, list]:
-    prompt = build_script_prompt(case, neutral=False)
+    prompt = build_script_prompt(case)
 
     try:
         script = call_gpt(PRIMARY_MODEL, prompt)
     except Exception as e:
         if "content_filter" in str(e).lower():
-            script = call_gpt(FALLBACK_MODEL, build_script_prompt(case, neutral=True))
+            script = call_gpt(FALLBACK_MODEL, build_script_prompt(case))
         else:
             raise
 
-    script = normalize_length(script)
+    script = enforce_length(script)
     beats = derive_visual_beats(script)
 
     return script, beats
@@ -212,7 +198,7 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            print(f"🧠 Generating script + visual beats (attempt {attempt})")
+            print(f"🧠 Generating STRONG-HOOK Shorts script (attempt {attempt})")
 
             script, beats = generate(case)
 
@@ -222,7 +208,7 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ Script with CTA and non-repeating narration generated")
+            print("✅ 30s script with strong hook generated")
             return
 
         except (ValueError, HttpResponseError) as e:
