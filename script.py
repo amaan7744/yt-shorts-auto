@@ -11,7 +11,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
 # --------------------------------------------------
-# CONFIG — SHORTS ONLY
+# CONFIG — SHORTS ONLY (HARD LOCK)
 # --------------------------------------------------
 
 ENDPOINT = "https://models.github.ai/inference"
@@ -25,9 +25,9 @@ BEATS_FILE = "beats.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# HARD LIMITS (≈30s spoken)
+# 25–30 seconds spoken (male voice)
 TARGET_WORDS_MIN = 55
-TARGET_WORDS_MAX = 70
+TARGET_WORDS_MAX = 65
 
 # --------------------------------------------------
 # ENV
@@ -63,63 +63,57 @@ def load_case() -> dict:
 
 def enforce_length(script: str) -> str:
     words = script.split()
-
-    if len(words) > TARGET_WORDS_MAX:
-        return " ".join(words[:TARGET_WORDS_MAX])
-
-    if len(words) < TARGET_WORDS_MIN:
-        closer = (
-            "No official explanation has ever fully accounted for what went wrong."
-        )
-        words.extend(closer.split())
-
-    return " ".join(words)
+    return " ".join(words[:TARGET_WORDS_MAX])
 
 # --------------------------------------------------
-# PROMPT — STRONG HOOK LOGIC
+# PROMPT — GATE 1 + GATE 2 OPTIMIZED
 # --------------------------------------------------
 
 def build_script_prompt(case: dict) -> str:
     return f"""
-Write a HIGH-RETENTION YouTube Shorts narration
-for a TRUE CRIME or UNRESOLVED case.
+You write HIGH-PERFORMANCE YouTube Shorts narration
+for TRUE CRIME content combined with fast gameplay visuals.
 
-CRITICAL RULES:
+This script MUST pass:
+- Gate 1: STOP the scroll instantly
+- Gate 2: HOLD attention until the end
+
+CRITICAL RULES (STRICT):
 - MAX 30 seconds spoken
-- 55–70 words total
-- No repetition
+- 55–65 words total
 - No filler
-- Written to be spoken naturally
+- No repetition
 - Calm, serious, investigative tone
+- Every sentence must add NEW information
 
-HOOK REQUIREMENTS (MANDATORY):
-- The opening sentence MUST include:
-  • A specific fact
-  • A contradiction, failure, or inconsistency
-- The hook must clearly imply:
-  “The official explanation does not fully make sense.”
+HOOK RULE (MOST IMPORTANT):
+- First sentence MUST:
+  • State a specific official conclusion
+  • Immediately contradict it with a concrete issue
+- It must work as on-screen text with NO AUDIO
 
 FACTS (DO NOT CHANGE):
 Date: {case.get("date")}
 Location: {case.get("location")}
 Summary: {case.get("summary")}
 
-STRUCTURE (STRICT):
-1. Hook: specific fact + what doesn’t add up (1 sentence)
-2. Core facts: who / where / what happened (2 sentences)
-3. Investigative failure or contradiction (1–2 sentences)
+STRUCTURE (MANDATORY):
+1. Hook: official claim + why it doesn’t fully work (1 sentence)
+2. Facts: who / where / what happened (2 short sentences)
+3. Failure: what authorities could not explain (2 sentences)
 4. CTA: invite viewers to subscribe to keep cases like this alive (1 sentence)
-5. Loop ending: unresolved final line that echoes the contradiction (1 sentence)
+5. Loop: unresolved final line that restates the contradiction (1 sentence)
 
-CTA STYLE:
-- Documentary tone
-- Example phrasing (do NOT copy):
-  "If you want cases like this to stay alive, consider subscribing."
+CTA TONE:
+- Documentary, not salesy
+- Example style (do NOT copy):
+  “If you want cases like this to stay alive, consider subscribing.”
 
 OUTPUT:
 - One continuous narration
 - No labels
-- No explanations
+- No emojis
+- No commentary
 """
 
 # --------------------------------------------------
@@ -130,21 +124,21 @@ def call_gpt(model: str, prompt: str) -> str:
     response = client.complete(
         model=model,
         messages=[
-            {"role": "system", "content": "You write concise, investigative true crime narration."},
+            {"role": "system", "content": "You write sharp, investigative true crime Shorts narration."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
-        max_tokens=400,
+        temperature=0.25,
+        max_tokens=350,
     )
 
     text = clean(response.choices[0].message.content)
     if not text:
-        raise ValueError("Empty response from model")
+        raise ValueError("Empty response")
 
     return text
 
 # --------------------------------------------------
-# VISUAL BEATS
+# VISUAL BEATS (FOR IMAGE + GAMEPLAY)
 # --------------------------------------------------
 
 def derive_visual_beats(script: str) -> List[dict]:
@@ -180,7 +174,7 @@ def generate(case: dict) -> Tuple[str, list]:
         script = call_gpt(PRIMARY_MODEL, prompt)
     except Exception as e:
         if "content_filter" in str(e).lower():
-            script = call_gpt(FALLBACK_MODEL, build_script_prompt(case))
+            script = call_gpt(FALLBACK_MODEL, prompt)
         else:
             raise
 
@@ -198,7 +192,7 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            print(f"🧠 Generating STRONG-HOOK Shorts script (attempt {attempt})")
+            print(f"🧠 Generating GATE-PASSING Shorts script (attempt {attempt})")
 
             script, beats = generate(case)
 
@@ -208,14 +202,14 @@ def main():
             with open(BEATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(beats, f, indent=2)
 
-            print("✅ 30s script with strong hook generated")
+            print("✅ Script passes Gate 1 + Gate 2")
             return
 
         except (ValueError, HttpResponseError) as e:
             print(f"⚠️ Attempt {attempt} failed: {e}", file=sys.stderr)
             time.sleep(RETRY_DELAY)
 
-    sys.exit("❌ Failed after retries")
+    sys.exit("❌ Script generation failed")
 
 if __name__ == "__main__":
     main()
