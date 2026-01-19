@@ -1,236 +1,148 @@
 #!/usr/bin/env python3
 """
-TikTok-Style Kinetic Subtitle Generator
-Generates brain-rot style word-by-word highlighted subtitles using Whisper AI
+TikTok / Brain-Rot Kinetic Subtitles
+3–4 words per frame
+Green = currently read
+White = not yet read
 """
 
 import whisper
-import os
 from pathlib import Path
-from typing import List, Dict
 from dataclasses import dataclass
+from typing import List, Dict
 
-# ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
+# ==================================================
+# CONFIG
+# ==================================================
 
 @dataclass
 class Config:
-    """Subtitle generation configuration"""
-    # Files
     AUDIO_FILE: str = "final_audio.wav"
     OUTPUT_FILE: str = "subs.ass"
-    
-    # Style - Brain-rot/TikTok aesthetic
+
     FONT_NAME: str = "Montserrat Bold"
-    FONT_SIZE: int = 66
-    
-    # Colors (ASS format: &HAABBGGRR)
-    COLOR_DEFAULT: str = "&H00FFFFFF"  # White
-    COLOR_HIGHLIGHT: str = "&H0000FF00"  # Green
-    COLOR_OUTLINE: str = "&H00000000"  # Black
-    COLOR_SHADOW: str = "&H64000000"  # Semi-transparent black
-    
-    # Layout (for 1080x1920 vertical video)
+    FONT_SIZE: int = 64
+
+    # ASS colors (AABBGGRR)
+    COLOR_ACTIVE: str = "&H0000FF00"   # GREEN (current word)
+    COLOR_INACTIVE: str = "&H00FFFFFF" # WHITE (not read)
+    COLOR_OUTLINE: str = "&H00000000"
+    COLOR_SHADOW: str = "&H64000000"
+
     PLAY_RES_X: int = 1080
     PLAY_RES_Y: int = 1920
-    MARGIN_VERTICAL: int = 720  # ~58% from top (above gameplay)
-    MARGIN_HORIZONTAL: int = 60
-    
-    # Style settings
-    OUTLINE_WIDTH: int = 3
-    SHADOW_DEPTH: int = 2
-    ALIGNMENT: int = 8  # Top center
-    
-    # Whisper model
+
+    # Position: above gameplay (brain-rot safe)
+    MARGIN_V: int = 720
+    MARGIN_H: int = 60
+    ALIGNMENT: int = 8  # top center
+
+    OUTLINE: int = 3
+    SHADOW: int = 2
+
+    WORDS_PER_LINE: int = 4
     WHISPER_MODEL: str = "small"
 
+# ==================================================
+# TIME
+# ==================================================
 
-# ═══════════════════════════════════════════════════════════════════
-# TIME FORMATTING
-# ═══════════════════════════════════════════════════════════════════
+def ass_time(t: float) -> str:
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = int(t % 60)
+    cs = int((t % 1) * 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-def format_ass_timestamp(seconds: float) -> str:
-    """
-    Convert seconds to ASS timestamp format (H:MM:SS.CS)
-    
-    Args:
-        seconds: Time in seconds
-        
-    Returns:
-        Formatted timestamp string
-    """
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centisecs = int((seconds % 1) * 100)
-    
-    return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
+# ==================================================
+# ASS HEADER
+# ==================================================
 
-
-# ═══════════════════════════════════════════════════════════════════
-# ASS FILE GENERATION
-# ═══════════════════════════════════════════════════════════════════
-
-def generate_ass_header(cfg: Config) -> List[str]:
-    """
-    Generate ASS subtitle file header with style definitions
-    
-    Args:
-        cfg: Configuration object
-        
-    Returns:
-        List of header lines
-    """
+def ass_header(cfg: Config) -> List[str]:
     return [
         "[Script Info]",
-        "Title: TikTok Style Word Highlight Subtitles",
+        "Title: Brain-Rot Kinetic Subtitles",
         "ScriptType: v4.00+",
         f"PlayResX: {cfg.PLAY_RES_X}",
         f"PlayResY: {cfg.PLAY_RES_Y}",
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
-        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
-        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
-        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour,"
+        " OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut,"
+        " ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow,"
+        " Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Default,{cfg.FONT_NAME},{cfg.FONT_SIZE},"
-        f"{cfg.COLOR_DEFAULT},{cfg.COLOR_HIGHLIGHT},{cfg.COLOR_OUTLINE},"
-        f"{cfg.COLOR_SHADOW},-1,0,0,0,100,100,0,0,1,{cfg.OUTLINE_WIDTH},"
-        f"{cfg.SHADOW_DEPTH},{cfg.ALIGNMENT},{cfg.MARGIN_HORIZONTAL},"
-        f"{cfg.MARGIN_HORIZONTAL},{cfg.MARGIN_VERTICAL},1",
+        f"{cfg.COLOR_ACTIVE},{cfg.COLOR_INACTIVE},{cfg.COLOR_OUTLINE},"
+        f"{cfg.COLOR_SHADOW},-1,0,0,0,100,100,0,0,1,"
+        f"{cfg.OUTLINE},{cfg.SHADOW},{cfg.ALIGNMENT},"
+        f"{cfg.MARGIN_H},{cfg.MARGIN_H},{cfg.MARGIN_V},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
+# ==================================================
+# SUBTITLE LINE CREATION
+# ==================================================
 
-def create_karaoke_line(words: List[Dict], cfg: Config) -> str:
-    """
-    Create a karaoke-style subtitle line with word-by-word highlighting
-    
-    Args:
-        words: List of word dictionaries with 'word', 'start', 'end' keys
-        cfg: Configuration object
-        
-    Returns:
-        ASS-formatted karaoke line
-    """
-    karaoke_segments = []
-    
-    for word in words:
-        # Calculate duration in centiseconds (minimum 1cs)
-        duration_cs = max(1, int((word["end"] - word["start"]) * 100))
-        
-        # Clean and format word text
-        text = word["word"].strip().upper()
-        
-        # Add karaoke tag: {\kDURATION}WORD
-        # This makes the word turn green when active
-        karaoke_segments.append(f"{{\\k{duration_cs}}}{text}")
-    
-    return " ".join(karaoke_segments)
+def build_karaoke(words: List[Dict]) -> str:
+    parts = []
+    for w in words:
+        dur = max(1, int((w["end"] - w["start"]) * 100))
+        text = w["word"].strip().upper()
+        parts.append(f"{{\\k{dur}}}{text}")
+    return " ".join(parts)
 
+def chunk_words(words: List[Dict], n: int) -> List[List[Dict]]:
+    return [words[i:i + n] for i in range(0, len(words), n)]
 
-# ═══════════════════════════════════════════════════════════════════
-# MAIN PROCESSING
-# ═══════════════════════════════════════════════════════════════════
+# ==================================================
+# MAIN
+# ==================================================
 
-def generate_subtitles(cfg: Config) -> None:
-    """
-    Main subtitle generation pipeline
-    
-    Args:
-        cfg: Configuration object
-    """
-    # Validate input file
-    audio_path = Path(cfg.AUDIO_FILE)
-    if not audio_path.exists():
-        raise FileNotFoundError(f"Audio file not found: {cfg.AUDIO_FILE}")
-    
-    print("╔═══════════════════════════════════════════════════════════╗")
-    print("║       TikTok-Style Subtitle Generator v2.0               ║")
-    print("╚═══════════════════════════════════════════════════════════╝\n")
-    
-    # Load Whisper model
-    print(f"📥 Loading Whisper '{cfg.WHISPER_MODEL}' model...")
+def main():
+    cfg = Config()
+
+    audio = Path(cfg.AUDIO_FILE)
+    if not audio.exists():
+        raise FileNotFoundError(cfg.AUDIO_FILE)
+
+    print("[SUBS] Loading Whisper…")
     model = whisper.load_model(cfg.WHISPER_MODEL)
-    print("✓ Model loaded successfully\n")
-    
-    # Transcribe with word-level timestamps
-    print(f"🎙️  Transcribing audio: {cfg.AUDIO_FILE}")
-    print("   (This may take a few minutes...)")
-    
+
+    print("[SUBS] Transcribing…")
     result = model.transcribe(
-        str(audio_path),
+        str(audio),
         word_timestamps=True,
         language="en",
         verbose=False,
     )
-    
-    total_segments = len(result["segments"])
-    print(f"✓ Transcription complete: {total_segments} segments detected\n")
-    
-    # Generate ASS subtitle file
-    print("🎬 Generating kinetic subtitles...")
-    
-    subtitle_lines = generate_ass_header(cfg)
-    processed_segments = 0
-    
-    for segment in result["segments"]:
-        # Skip segments without word timestamps
-        if not segment.get("words"):
+
+    subs = ass_header(cfg)
+    lines = 0
+
+    for seg in result["segments"]:
+        if not seg.get("words"):
             continue
-        
-        words = segment["words"]
-        start_time = words[0]["start"]
-        end_time = words[-1]["end"]
-        
-        # Create karaoke-style line
-        karaoke_text = create_karaoke_line(words, cfg)
-        
-        # Add dialogue line to subtitle file
-        subtitle_lines.append(
-            f"Dialogue: 0,{format_ass_timestamp(start_time)},"
-            f"{format_ass_timestamp(end_time)},Default,,0,0,0,,{karaoke_text}"
-        )
-        
-        processed_segments += 1
-    
-    print(f"✓ Processed {processed_segments} subtitle segments\n")
-    
-    # Write output file
-    print(f"💾 Writing subtitle file: {cfg.OUTPUT_FILE}")
-    
-    output_path = Path(cfg.OUTPUT_FILE)
-    with output_path.open("w", encoding="utf-8") as f:
-        f.write("\n".join(subtitle_lines))
-    
-    file_size = output_path.stat().st_size
-    print(f"✓ File written: {file_size:,} bytes\n")
-    
-    print("╔═══════════════════════════════════════════════════════════╗")
-    print("║  ✅ TikTok-style kinetic subtitles generated successfully ║")
-    print("╚═══════════════════════════════════════════════════════════╝")
 
+        chunks = chunk_words(seg["words"], cfg.WORDS_PER_LINE)
 
-# ═══════════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════
+        for chunk in chunks:
+            start = chunk[0]["start"]
+            end = chunk[-1]["end"]
+            text = build_karaoke(chunk)
 
-def main():
-    """Application entry point"""
-    try:
-        config = Config()
-        generate_subtitles(config)
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}")
-        exit(1)
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
-        raise
+            subs.append(
+                f"Dialogue: 0,{ass_time(start)},{ass_time(end)},"
+                f"Default,,0,0,0,,{text}"
+            )
+            lines += 1
 
+    with open(cfg.OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(subs))
+
+    print(f"[SUBS] ✅ Generated {lines} kinetic subtitle lines")
 
 if __name__ == "__main__":
     main()
