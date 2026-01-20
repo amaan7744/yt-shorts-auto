@@ -4,16 +4,16 @@ tqdm>=4.66.0
 beautifulsoup4>=4.12.0
 lxml>=5.1.0
 opencv-python-headless
-numpy==1.22.0   # 🔴 REQUIRED by TTS 0.22.0 (DO NOT CHANGE)
+numpy==1.22.0   # REQUIRED by TTS 0.22.0 on Python 3.10
 
 # ---------------- AI / LLM ----------------
 azure-ai-inference==1.0.0b9
 azure-core>=1.29.0,<2.0.0
 
-# ---------------- TTS / Audio ----------------
-torch==2.0.1
-torchaudio==2.0.2
-torchvision==0.15.2
+# ---------------- TTS / Audio (COMPATIBLE STACK) ----------------
+torch==2.1.2
+torchaudio==2.1.2
+torchvision==0.16.2
 
 TTS==0.22.0
 pydub>=0.25.1
