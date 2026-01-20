@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-Final Shorts Video Builder
-- 70% gameplay / 30% pixel
-- Single encode only
-- Subtitles burned here
-- Shorts-optimized quality
+Shorts Video Builder
+Gameplay = primary layer (fullscreen)
+Pixel images = flash overlays (pattern interrupts)
 """
 
 import os
+import json
 import random
+import subprocess
+from typing import List
+
 from moviepy.editor import (
     VideoFileClip,
+    ImageClip,
     AudioFileClip,
     CompositeVideoClip,
-    ImageClip,
 )
 
 # --------------------------------------------------
@@ -22,19 +24,19 @@ from moviepy.editor import (
 
 FRAMES_DIR = "frames"
 GAMEPLAY_DIR = "gameplay/loops"
-AUDIO_FILE = "final_audio.wav"
-SUBS_FILE = "subs.ass"
 
-OUTPUT_FILE = "output.mp4"
+BEATS_FILE = "beats.json"
+AUDIO_FILE = "final_audio.wav"
+OUTPUT_VIDEO = "output.mp4"
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
 
-GAMEPLAY_RATIO = 0.70   # bottom 70%
-PIXEL_RATIO = 0.30      # top 30%
+TARGET_DURATION = 20.0   # HARD CAP FOR SHORTS
+FLASH_DURATION = 0.45    # seconds per image flash
+FLASH_OPACITY = 0.92
 
-CRF = "14"              # near-lossless for Shorts
-PRESET = "slow"
+AUDIO_SAFETY_MARGIN = 0.2
 
 # --------------------------------------------------
 # UTILS
@@ -43,30 +45,34 @@ PRESET = "slow"
 def log(msg: str):
     print(f"[VIDEO] {msg}", flush=True)
 
-def pick_random_gameplay(duration: float) -> VideoFileClip:
-    files = [f for f in os.listdir(GAMEPLAY_DIR) if f.endswith(".mp4")]
-    if not files:
-        raise SystemExit("❌ No gameplay videos found in gameplay/loops")
+def load_beats():
+    if not os.path.isfile(BEATS_FILE):
+        raise SystemExit("❌ beats.json missing")
+    return json.load(open(BEATS_FILE, "r", encoding="utf-8"))
 
-    clip = VideoFileClip(
-        os.path.join(GAMEPLAY_DIR, random.choice(files))
-    ).without_audio()
-
-    if clip.duration <= duration:
-        return clip
-
-    start = random.uniform(0, clip.duration - duration)
-    return clip.subclip(start, start + duration)
-
-def pick_random_pixel_frame() -> str:
-    frames = [
+def load_frames() -> List[str]:
+    frames = sorted(
         os.path.join(FRAMES_DIR, f)
         for f in os.listdir(FRAMES_DIR)
         if f.lower().endswith(".jpg")
-    ]
+    )
     if not frames:
-        raise SystemExit("❌ No frames found in frames/")
-    return random.choice(frames)
+        raise SystemExit("❌ No frames found")
+    return frames
+
+def pick_gameplay(duration: float) -> VideoFileClip:
+    files = [f for f in os.listdir(GAMEPLAY_DIR) if f.endswith(".mp4")]
+    if not files:
+        raise SystemExit("❌ No gameplay clips found")
+
+    path = os.path.join(GAMEPLAY_DIR, random.choice(files))
+    clip = VideoFileClip(path).without_audio()
+
+    if clip.duration <= duration:
+        return clip.subclip(0, clip.duration)
+
+    start = random.uniform(0, clip.duration - duration)
+    return clip.subclip(start, start + duration)
 
 # --------------------------------------------------
 # MAIN
@@ -74,59 +80,68 @@ def pick_random_pixel_frame() -> str:
 
 def main():
     log("Loading audio…")
-    if not os.path.isfile(AUDIO_FILE):
-        raise SystemExit("❌ final_audio.wav missing")
-
     audio = AudioFileClip(AUDIO_FILE)
-    duration = audio.duration
+    audio_duration = min(audio.duration, TARGET_DURATION)
 
-    gameplay_height = int(HEIGHT * GAMEPLAY_RATIO)
-    pixel_height = HEIGHT - gameplay_height
-
-    # ----------------------------
-    # GAMEPLAY (PRIMARY RETENTION)
-    # ----------------------------
     log("Preparing gameplay layer (primary retention)…")
-    gameplay = pick_random_gameplay(duration)
-    gameplay = gameplay.resize(height=gameplay_height)
-    gameplay = gameplay.set_position(("center", HEIGHT - gameplay_height))
+    gameplay = pick_gameplay(audio_duration)
+    gameplay = gameplay.resize((WIDTH, HEIGHT))
 
-    # ----------------------------
-    # PIXEL VISUAL (SECONDARY)
-    # ----------------------------
-    log("Preparing pixel visual layer…")
-    frame = pick_random_pixel_frame()
-    pixel = ImageClip(frame)
-    pixel = pixel.resize((WIDTH, pixel_height))
-    pixel = pixel.set_duration(duration)
-    pixel = pixel.set_position(("center", 0))
+    gameplay = gameplay.set_duration(audio_duration)
 
-    # ----------------------------
-    # COMPOSITE
-    # ----------------------------
-    log("Compositing final frame…")
+    log("Loading pixel frames (overlay interrupts)…")
+    frames = load_frames()
+    beats = load_beats()
+
+    overlays = []
+
+    # Flash images at beat transitions (NOT constant)
+    beat_times = []
+    cursor = 1.8  # first flash after hook
+    spacing = max(3.0, audio_duration / max(len(frames), 1))
+
+    for _ in frames:
+        if cursor + FLASH_DURATION >= audio_duration - 0.5:
+            break
+        beat_times.append(cursor)
+        cursor += spacing
+
+    for img, t in zip(frames, beat_times):
+        clip = (
+            ImageClip(img)
+            .resize((WIDTH, HEIGHT))
+            .set_start(t)
+            .set_duration(FLASH_DURATION)
+            .fadein(0.08)
+            .fadeout(0.12)
+            .set_opacity(FLASH_OPACITY)
+        )
+        overlays.append(clip)
+
+    log("Compositing layers…")
     final = CompositeVideoClip(
-        [pixel, gameplay],
+        [gameplay] + overlays,
         size=(WIDTH, HEIGHT)
-    ).set_audio(audio)
+    )
 
-    # ----------------------------
-    # SINGLE-PASS RENDER
-    # ----------------------------
-    log("Rendering FINAL Shorts video (single encode)…")
+    safe_audio = audio.subclip(
+        0, min(audio_duration, final.duration - AUDIO_SAFETY_MARGIN)
+    )
+    final = final.set_audio(safe_audio)
+
+    log("Rendering FINAL Shorts video (no re-encode later)…")
     final.write_videofile(
-        OUTPUT_FILE,
+        OUTPUT_VIDEO,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        preset=PRESET,
+        preset="slow",
         ffmpeg_params=[
-            "-crf", CRF,
+            "-crf", "16",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            "-vf", f"ass={SUBS_FILE}",
         ],
-        threads=4,
+        logger=None,
     )
 
     log("✅ output.mp4 created (sharp, Shorts-ready)")
