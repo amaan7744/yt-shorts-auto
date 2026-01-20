@@ -80,7 +80,7 @@ jobs:
           test -f case.json
 
       # ----------------------------
-      # SCRIPT + VISUAL BEATS
+      # SCRIPT + VISUAL BEATS (20s)
       # ----------------------------
       - name: Generate script and beats
         shell: bash
@@ -95,7 +95,7 @@ jobs:
       # ----------------------------
       # IMAGE FETCH (PEXELS | HALAL)
       # ----------------------------
-      - name: Fetch cinematic images (Pexels)
+      - name: Fetch cinematic images
         shell: bash
         env:
           PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
@@ -103,10 +103,10 @@ jobs:
           set -euo pipefail
           python image_fetch.py
           test -d frames
-          test "$(ls frames/*.jpg | wc -l)" -ge 5
+          test "$(ls frames/*.jpg | wc -l)" -ge 3
 
       # ----------------------------
-      # TEXT TO SPEECH (MALE VOICE)
+      # TEXT TO SPEECH (MALE)
       # ----------------------------
       - name: Generate narration
         shell: bash
@@ -116,7 +116,7 @@ jobs:
           test -f final_audio.wav
 
       # ----------------------------
-      # SUBTITLES (TIKTOK STYLE)
+      # SUBTITLES (KINETIC)
       # ----------------------------
       - name: Build kinetic subtitles
         shell: bash
@@ -136,13 +136,32 @@ jobs:
           test "$(ls gameplay/loops/*.mp4 | wc -l)" -ge 1
 
       # ----------------------------
-      # VIDEO BUILD (FINAL, SINGLE ENCODE)
+      # VIDEO BUILD (STOP + CRIME + GAMEPLAY)
       # ----------------------------
-      - name: Build Shorts video (final)
+      - name: Build Shorts video
         shell: bash
         run: |
           set -euo pipefail
           python video_build.py
+          test -f video_raw.mp4
+
+      # ----------------------------
+      # FINAL RENDER (SUBS ONLY)
+      # ----------------------------
+      - name: Final render
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -y \
+            -i video_raw.mp4 \
+            -vf "ass=subs.ass" \
+            -c:v libx264 \
+            -preset slow \
+            -crf 16 \
+            -pix_fmt yuv420p \
+            -movflags +faststart \
+            -c:a copy \
+            output.mp4
           test -f output.mp4
 
       # ----------------------------
@@ -171,3 +190,4 @@ jobs:
           git add memory used_cases.json upload_meta.json || true
           git commit -m "chore: update memory" || true
           git push || true
+          
