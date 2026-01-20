@@ -1,14 +1,20 @@
-name: Auto YouTube Shorts – Crime (US Aligned | 3x Daily)
+name: Auto YouTube Shorts – Crime (US Eastern | 3x Daily)
 
 on:
   workflow_dispatch:
+
+  # GitHub Actions cron runs in UTC ONLY
+  # US Eastern Time → UTC conversion:
+  # 08:00 ET → 13:00 UTC
+  # 13:00 ET → 18:00 UTC
+  # 21:00 ET → 02:00 UTC (next day)
   schedule:
-    - cron: "0 13 * * *"  # 8 AM ET
-    - cron: "0 18 * * *"  # 1 PM ET
-    - cron: "0 2 * * *"   # 9 PM ET
+    - cron: "0 13 * * *"
+    - cron: "0 18 * * *"
+    - cron: "0 2 * * *"
 
 concurrency:
-  group: yt-shorts-upload-${{ github.workflow }}
+  group: yt-shorts-upload
   cancel-in-progress: true
 
 jobs:
@@ -27,12 +33,21 @@ jobs:
       # ----------------------------
       # CHECKOUT
       # ----------------------------
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ----------------------------
-      # FREE DISK
+      # DEBUG TIME (CLARITY ONLY)
+      # ----------------------------
+      - name: Show execution time (UTC vs Local)
+        run: |
+          echo "UTC time:   $(date -u)"
+          echo "Local time: $(date)"
+
+      # ----------------------------
+      # FREE DISK SPACE
       # ----------------------------
       - name: Free disk space
         run: |
@@ -44,7 +59,8 @@ jobs:
       # ----------------------------
       # PYTHON
       # ----------------------------
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
@@ -60,7 +76,7 @@ jobs:
           pip install -r requirements.txt
 
       # ----------------------------
-      # CASE
+      # CASE SELECTION
       # ----------------------------
       - name: Select case
         run: |
@@ -69,7 +85,7 @@ jobs:
           test -f case.json
 
       # ----------------------------
-      # SCRIPT
+      # SCRIPT + BEATS
       # ----------------------------
       - name: Generate script
         env:
@@ -81,7 +97,7 @@ jobs:
           test -f beats.json
 
       # ----------------------------
-      # IMAGES
+      # IMAGE FETCH (PEXELS | HALAL)
       # ----------------------------
       - name: Fetch images
         env:
@@ -92,7 +108,7 @@ jobs:
           test "$(ls frames/*.jpg | wc -l)" -ge 3
 
       # ----------------------------
-      # TTS
+      # TTS (MALE VOICE)
       # ----------------------------
       - name: Generate narration
         run: |
@@ -101,7 +117,7 @@ jobs:
           test -f final_audio.wav
 
       # ----------------------------
-      # SUBTITLES
+      # SUBTITLES (KINETIC)
       # ----------------------------
       - name: Build subtitles
         run: |
@@ -110,9 +126,9 @@ jobs:
           test -f subs.ass
 
       # ----------------------------
-      # GAMEPLAY
+      # GAMEPLAY CHECK
       # ----------------------------
-      - name: Validate gameplay
+      - name: Validate gameplay loops
         run: |
           set -euo pipefail
           test "$(ls gameplay/loops/*.mp4 | wc -l)" -ge 1
@@ -127,9 +143,9 @@ jobs:
           test -f output.mp4
 
       # ----------------------------
-      # UPLOAD
+      # UPLOAD TO YOUTUBE
       # ----------------------------
-      - name: Upload to YouTube
+      - name: Upload to YouTube Shorts
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -140,7 +156,7 @@ jobs:
           python youtube_upload.py
 
       # ----------------------------
-      # SAVE MEMORY
+      # PERSIST MEMORY
       # ----------------------------
       - name: Persist memory
         run: |
