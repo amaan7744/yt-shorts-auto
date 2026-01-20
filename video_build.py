@@ -1,76 +1,187 @@
 #!/usr/bin/env python3
+"""
+High-Retention YouTube Shorts Video Builder
+- 70% Gameplay / 30% Pixel Visuals
+- Audio duration is the single source of truth
+- Gameplay audio removed
+- Subtitles burned reliably
+- No flicker, no early cutoff
+"""
 
 import os
+import sys
 import random
 import subprocess
-import sys
+from pathlib import Path
 
 # ==================================================
-# CONFIG - SHORTS OPTIMIZED
+# CONFIG
 # ==================================================
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
-GAMEPLAY_DIR = "gameplay/loops"
-AUDIO_FILE = "final_audio.wav"
-SUBS_FILE = "subs.ass"
-OUTPUT = "output.mp4"
 
-def log(msg):
+GAMEPLAY_DIR = Path("gameplay/loops")
+PIXEL_DIR = Path("frames")
+
+AUDIO_FILE = Path("final_audio.wav")
+SUBS_FILE = Path("subs.ass")
+OUTPUT_FILE = Path("output.mp4")
+
+GAMEPLAY_RATIO = 0.70   # 70%
+PIXEL_RATIO = 0.30      # 30%
+
+# ==================================================
+# UTILS
+# ==================================================
+def log(msg: str):
     print(f"[VIDEO] {msg}", flush=True)
 
-def get_duration(file):
-    """Accurately gets duration using ffprobe."""
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file]
+def die(msg: str):
+    sys.exit(f"[VIDEO] ❌ {msg}")
+
+def ffprobe_duration(path: Path) -> float:
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(path)
+    ]
     return float(subprocess.check_output(cmd).decode().strip())
 
+# ==================================================
+# VALIDATION
+# ==================================================
+def validate_inputs():
+    if not AUDIO_FILE.exists():
+        die("final_audio.wav missing")
+
+    if not SUBS_FILE.exists():
+        die("subs.ass missing")
+
+    if not GAMEPLAY_DIR.exists():
+        die("gameplay/loops missing")
+
+    if not PIXEL_DIR.exists():
+        die("frames directory missing")
+
+    gameplay_files = list(GAMEPLAY_DIR.glob("*.mp4"))
+    if not gameplay_files:
+        die("No gameplay videos found")
+
+    pixel_files = list(PIXEL_DIR.glob("*.jpg"))
+    if len(pixel_files) < 3:
+        die("Not enough pixel frames (need at least 3)")
+
+# ==================================================
+# MAIN BUILD
+# ==================================================
 def main():
-    if not os.path.exists(GAMEPLAY_DIR):
-        print(f"❌ {GAMEPLAY_DIR} missing"); return
+    validate_inputs()
 
-    # 1. Pick a random clip
-    files = [f for f in os.listdir(GAMEPLAY_DIR) if f.endswith(".mp4")]
-    if not files: print("❌ No gameplay clips"); return
-    bg_video = os.path.join(GAMEPLAY_DIR, random.choice(files))
-    
-    # 2. Get Audio Duration
-    audio_dur = get_duration(AUDIO_FILE)
-    log(f"Audio Duration: {audio_dur}s")
+    gameplay_files = list(GAMEPLAY_DIR.glob("*.mp4"))
+    pixel_files = sorted(PIXEL_DIR.glob("*.jpg"))
 
-    # 3. Build the FFmpeg Command (The "Magic" Filter)
-    # This command:
-    # - Scales and Crops the video to 9:16 (removing side UI/text)
-    # - Loops the video if it's too short
-    # - Syncs audio and video precisely
-    # - Burn in subtitles
-    
-    cmd = [
+    gameplay_src = random.choice(gameplay_files)
+    audio_duration = ffprobe_duration(AUDIO_FILE)
+
+    gameplay_duration = audio_duration * GAMEPLAY_RATIO
+    pixel_duration = audio_duration * PIXEL_RATIO
+
+    log(f"Audio duration: {audio_duration:.2f}s")
+    log(f"Gameplay duration: {gameplay_duration:.2f}s")
+    log(f"Pixel duration: {pixel_duration:.2f}s")
+
+    # ---------------------------
+    # TEMP FILES
+    # ---------------------------
+    tmp_gameplay = "tmp_gameplay.mp4"
+    tmp_pixel = "tmp_pixel.mp4"
+
+    # ---------------------------
+    # GAMEPLAY VIDEO (NO AUDIO)
+    # ---------------------------
+    log("Building gameplay layer (muted, cropped, stable)…")
+    subprocess.run([
         "ffmpeg", "-y",
-        "-ss", "00:00:05",           # Skip first 5s of gameplay (often has menus)
-        "-stream_loop", "-1",        # Loop video infinitely until audio ends
-        "-i", bg_video,              # Input Video
-        "-i", AUDIO_FILE,            # Input Audio
-        "-t", str(audio_dur),        # Force output to match Audio Duration
-        "-filter_complex", (
-            f"[0:v]scale=-1:{HEIGHT}," # Scale height to 1920
-            f"crop={WIDTH}:{HEIGHT},"  # Crop width to 1080 (Removes side text/UI)
-            f"ass={SUBS_FILE}"         # Burn in subtitles
-        ),
+        "-stream_loop", "-1",
+        "-ss", "5",
+        "-i", str(gameplay_src),
+        "-t", f"{gameplay_duration:.3f}",
+        "-vf",
+        f"scale=-1:{HEIGHT},crop={WIDTH}:{HEIGHT}",
+        "-an",  # 🔴 REMOVE GAMEPLAY AUDIO
+        "-r", str(FPS),
         "-c:v", "libx264",
-        "-preset", "slow",           # Slow = Higher Quality
-        "-crf", "18",                # 18-20 = Near Lossless (High Quality)
+        "-preset", "slow",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        tmp_gameplay
+    ], check=True)
+
+    # ---------------------------
+    # PIXEL VIDEO (SLIDESHOW)
+    # ---------------------------
+    log("Building pixel layer (cinematic, no flicker)…")
+
+    frame_time = pixel_duration / len(pixel_files)
+    concat_txt = "pixel_list.txt"
+
+    with open(concat_txt, "w") as f:
+        for img in pixel_files:
+            f.write(f"file '{img.resolve()}'\n")
+            f.write(f"duration {frame_time:.3f}\n")
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_txt,
+        "-vf",
+        f"scale={WIDTH}:{HEIGHT},format=yuv420p",
+        "-r", str(FPS),
+        "-c:v", "libx264",
+        "-preset", "slow",
+        "-crf", "18",
+        tmp_pixel
+    ], check=True)
+
+    # ---------------------------
+    # FINAL MERGE + SUBS + AUDIO
+    # ---------------------------
+    log("Compositing final video (subs + TTS audio locked)…")
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", tmp_gameplay,
+        "-i", tmp_pixel,
+        "-i", str(AUDIO_FILE),
+        "-filter_complex",
+        (
+            f"[0:v][1:v]concat=n=2:v=1:a=0,"
+            f"ass='{SUBS_FILE.resolve()}'"
+        ),
+        "-map", "0:v",
+        "-map", "2:a",
+        "-t", f"{audio_duration:.3f}",
+        "-c:v", "libx264",
+        "-preset", "slow",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",                 # Extra safety to stop at shortest stream
-        "-pix_fmt", "yuv420p",
-        OUTPUT
-    ]
+        "-movflags", "+faststart",
+        OUTPUT_FILE
+    ], check=True)
 
-    log("Rendering high-quality short...")
-    try:
-        subprocess.run(cmd, check=True)
-        log(f"✅ DONE: {OUTPUT}")
-    except subprocess.CalledProcessError as e:
-        log(f"❌ Rendering failed: {e}")
+    # ---------------------------
+    # CLEANUP
+    # ---------------------------
+    os.remove(tmp_gameplay)
+    os.remove(tmp_pixel)
+    os.remove(concat_txt)
 
+    log(f"✅ FINAL VIDEO READY: {OUTPUT_FILE}")
+
+# ==================================================
 if __name__ == "__main__":
     main()
