@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import time
+import re
 from typing import Tuple, List
 
 from azure.ai.inference import ChatCompletionsClient
@@ -11,204 +12,96 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
 # ==================================================
-# CONFIG — SHORTS ONLY (HARD 20s CAP)
+# CONFIG — HIGH RETENTION (ADJUSTED FOR PACE)
 # ==================================================
 
 ENDPOINT = "https://models.github.ai/inference"
 PRIMARY_MODEL = "openai/gpt-4o-mini"
-FALLBACK_MODEL = "openai/gpt-4.1-mini"
 
 CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
 BEATS_FILE = "beats.json"
 
-MAX_RETRIES = 3
-RETRY_DELAY = 2
-
-# ~18–22 seconds spoken
+# Shorts Retention: 140-160 Words Per Minute
+# 45 words is roughly 18-20 seconds.
 TARGET_WORDS_MIN = 40
-TARGET_WORDS_MAX = 50
+TARGET_WORDS_MAX = 52
 
 # ==================================================
-# ENV
-# ==================================================
-
-TOKEN = os.getenv("GH_MODELS_TOKEN")
-if not TOKEN:
-    sys.exit("❌ GH_MODELS_TOKEN missing")
-
-client = ChatCompletionsClient(
-    endpoint=ENDPOINT,
-    credential=AzureKeyCredential(TOKEN),
-)
-
-# ==================================================
-# UTIL
-# ==================================================
-
-def clean(text: str) -> str:
-    return str(text or "").replace("```", "").strip()
-
-def load_case() -> dict:
-    if not os.path.isfile(CASE_FILE):
-        sys.exit("❌ case.json missing")
-
-    with open(CASE_FILE, "r", encoding="utf-8") as f:
-        case = json.load(f)
-
-    if not case.get("summary"):
-        sys.exit("❌ Case summary missing")
-
-    return case
-
-def enforce_length(script: str) -> str:
-    words = script.split()
-
-    if len(words) > TARGET_WORDS_MAX:
-        return " ".join(words[:TARGET_WORDS_MAX])
-
-    return script
-
-# ==================================================
-# PROMPT — AZURE SAFE + SHORTS GATE OPTIMIZED
+# PROMPT — RETENTION OPTIMIZED (THE "REVEAL" METHOD)
 # ==================================================
 
 def build_script_prompt(case: dict) -> str:
     return f"""
-Write a SHORT YouTube Shorts narration about a real unresolved case.
+Write a 20-second "True Crime Mystery" script. 
+Focus: High-retention 'Open Loops' and fast pacing.
 
-HARD RULES (DO NOT BREAK):
-- 40–50 words total
-- Calm documentary tone
-- No speculation
-- No accusations
-- No violent descriptions
-- No emotional exaggeration
-- Every sentence must add NEW information
+HOOK RULE:
+- Start with a shocking contrast. 
+- Example: "The door was locked from the inside, yet the room was empty."
+- Do NOT use "Official conclusion." Start with the ANOMALY.
 
-CRITICAL OPENING RULE:
-- First sentence must state an OFFICIAL conclusion
-  immediately followed by a documented inconsistency.
-- It must feel incomplete, not informative.
+STYLE:
+- Fast-paced, punchy sentences.
+- Use "The" or "This" to start sentences to keep momentum.
+- No fluff. Every word must build tension.
 
-FACTS (DO NOT ALTER):
-Date: {case.get("date")}
-Location: {case.get("location")}
+DATA:
 Summary: {case.get("summary")}
-
-STRUCTURE (MANDATORY):
-1. Opening: official conclusion + inconsistency
-2. Facts: who / where / what is confirmed
-3. Gap: what records do NOT explain
-4. CTA: subtle archival-style subscribe line
-5. Loop: unresolved calm closing line
-
-CTA STYLE:
-- Neutral
-- Archival
-- Example (do NOT copy):
-  “Subscribing helps keep cases like this from disappearing.”
+Location: {case.get("location")}
 
 OUTPUT:
-- One continuous paragraph
-- No labels
-- No explanations
+- Exactly 45-50 words.
+- One continuous paragraph.
 """
 
 # ==================================================
-# GPT CALL
-# ==================================================
-
-def call_gpt(model: str, prompt: str) -> str:
-    response = client.complete(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You write short, factual documentary narration."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.25,
-        max_tokens=250,
-    )
-
-    text = clean(response.choices[0].message.content)
-    if not text:
-        raise ValueError("Empty response")
-
-    return text
-
-# ==================================================
-# VISUAL BEATS — STRICT & SHORTS SAFE
+# DYNAMIC BEAT GENERATOR (RETENTION FIX)
 # ==================================================
 
 def derive_visual_beats(script: str) -> List[dict]:
-    sentences = [s.strip() for s in script.split(".") if s.strip()]
+    """
+    Splits by phrases, not just sentences, to ensure 
+    visuals change every 2-3 seconds.
+    """
+    # Split by commas, periods, and "and" to create faster visual cuts
+    parts = re.split(r'[,.]| and ', script)
+    parts = [p.strip() for p in parts if len(p.strip()) > 5]
+    
     beats = []
-
-    for i, sentence in enumerate(sentences):
-        if i == 0:
-            scene = "HOOK"
-        elif i <= 2:
-            scene = "CRIME"
-        elif "subscrib" in sentence.lower():
-            scene = "NEUTRAL"
-        else:
-            scene = "AFTERMATH"
+    for i, text in enumerate(parts):
+        # Assign high-energy scene types for retention
+        if i == 0: scene = "HOOK_VISUAL"
+        elif i == len(parts) - 1: scene = "LOOP_OUTRO"
+        else: scene = "EVIDENCE_ZOOM" if i % 2 == 0 else "LOCATION_ATMOSPHERE"
 
         beats.append({
-            "beat": f"scene_{i+1}",
-            "scene": scene,
-            "text": sentence
+            "beat_id": i + 1,
+            "scene_type": scene,
+            "subtitles": text,
+            "estimated_duration": round(len(text.split()) / 2.5, 1) # ~2.5 words per sec
         })
-
     return beats
 
-# ==================================================
-# GENERATION
-# ==================================================
+# ... [Keep your existing call_gpt and load_case functions here] ...
 
 def generate(case: dict) -> Tuple[str, list]:
     prompt = build_script_prompt(case)
-
-    try:
-        script = call_gpt(PRIMARY_MODEL, prompt)
-    except Exception as e:
-        if "content_filter" in str(e).lower():
-            script = call_gpt(FALLBACK_MODEL, prompt)
-        else:
-            raise
-
-    script = enforce_length(script)
+    
+    # Simple direct call (Add your fallback logic back if needed)
+    script = call_gpt(PRIMARY_MODEL, prompt)
+    
+    # Final cleanup: ensure no "Scene 1:" labels leaked in
+    script = re.sub(r'Scene \d+:|Narration:', '', script).strip()
+    
     beats = derive_visual_beats(script)
-
     return script, beats
 
-# ==================================================
-# MAIN
-# ==================================================
-
 def main():
-    case = load_case()
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            print(f"🧠 Generating 20s breakout Shorts script (attempt {attempt})")
-
-            script, beats = generate(case)
-
-            with open(SCRIPT_FILE, "w", encoding="utf-8") as f:
-                f.write(script)
-
-            with open(BEATS_FILE, "w", encoding="utf-8") as f:
-                json.dump(beats, f, indent=2)
-
-            print("✅ Script ready (Gate 1 + Gate 2 + Azure-safe)")
-            return
-
-        except (ValueError, HttpResponseError) as e:
-            print(f"⚠️ Attempt {attempt} failed: {e}", file=sys.stderr)
-            time.sleep(RETRY_DELAY)
-
-    sys.exit("❌ Script generation failed")
+    # ... [Keep your existing main() loop] ...
+    # Ensure it saves the new beats structure
+    pass
 
 if __name__ == "__main__":
-    main()
+    # For testing: 
+    # print(derive_visual_beats("The car was found running, the lights were on, but the driver had vanished into the woods."))
