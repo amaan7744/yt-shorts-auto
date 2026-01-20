@@ -10,8 +10,7 @@ on:
   # 21:00 ET → 02:00 UTC (next day)
   schedule:
     - cron: "0 13 * * *"
-    - cron: "0 18 * * *"
-    - cron: "0 2 * * *"
+   
 
 concurrency:
   group: yt-shorts-upload
