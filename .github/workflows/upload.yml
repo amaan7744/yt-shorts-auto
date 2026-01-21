@@ -95,16 +95,7 @@ jobs:
           test -f script.txt
           test -f beats.json
 
-      # ----------------------------
-      # IMAGE FETCH (PEXELS | HALAL)
-      # ----------------------------
-      - name: Fetch images
-        env:
-          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
-        run: |
-          set -euo pipefail
-          python image_fetch.py
-          test "$(ls frames/*.jpg | wc -l)" -ge 3
+
 
       # ----------------------------
       # TTS (MALE VOICE)
