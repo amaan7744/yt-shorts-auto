@@ -12,7 +12,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
 # ==================================================
-# CONFIG — 20s SHORTS (RETENTION SAFE)
+# CONFIG — SHORTS ATTENTION ENGINE
 # ==================================================
 
 ENDPOINT = "https://models.github.ai/inference"
@@ -22,7 +22,8 @@ CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
 BEATS_FILE = "beats.json"
 
-TARGET_WORDS_MIN = 40
+# 18–22 seconds at ~155 WPM
+TARGET_WORDS_MIN = 44
 TARGET_WORDS_MAX = 52
 
 MAX_RETRIES = 3
@@ -65,42 +66,48 @@ def enforce_length(text: str) -> str:
     return " ".join(words[:TARGET_WORDS_MAX])
 
 # ==================================================
-# PROMPT — ANOMALY FIRST (NO VIOLENCE FLAGS)
+# PROMPT — PROVEN ENGAGEMENT MODEL
 # ==================================================
 
 def build_script_prompt(case: dict) -> str:
     return f"""
-Write a 20-second true crime mystery narration.
+Write a 20-second YouTube Shorts narration about a real unresolved case.
 
-STRICT RULES:
-- 40–52 words total
-- Calm, factual, documentary tone
-- No graphic violence
-- No accusations
-- No speculation language
+You are optimizing for:
+- Scroll-stopping first frame
+- Rising tension every sentence
+- Calm authority (not hype)
+- Rewatchability
+
+ABSOLUTE RULES:
+- 44–52 words total
+- One paragraph only
 - Short sentences
+- No speculation language
+- No graphic detail
+- Must work muted as text
 
-HOOK:
-- Start with an unexplained anomaly.
-- Do NOT mention conclusions or officials.
-- First line must feel incomplete without context.
+STRUCTURE (DO NOT LABEL):
 
-FACTS:
+1. Start with a specific fact that feels impossible or wrong.
+2. Immediately anchor the viewer with time and place.
+3. Add a verified detail that contradicts the first.
+4. Add a second detail that makes the situation harder to explain.
+5. State what official records fail to reconcile.
+6. Frame the case as something that could disappear without attention.
+7. End with an unresolved line that loops naturally.
+
+FACTS YOU MUST USE (DO NOT ALTER):
 Location: {case.get("location")}
 Summary: {case.get("summary")}
 
-STRUCTURE:
-1. Anomaly hook
-2. What is known
-3. What does not align
-4. Unresolved close
-5. Neutral archival CTA (1 sentence)
-
-CTA STYLE:
-“Subscribing helps keep cases like this visible.”
+CTA GUIDANCE:
+- Do NOT say like or comment.
+- Acceptable style:
+  “Subscribing helps preserve cases like this.”
 
 OUTPUT:
-One paragraph only.
+Only the narration text.
 """
 
 # ==================================================
@@ -111,11 +118,11 @@ def call_gpt(prompt: str) -> str:
     response = client.complete(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "You write short, factual documentary narration."},
+            {"role": "system", "content": "You write concise, high-retention documentary narration."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
-        max_tokens=250,
+        temperature=0.2,
+        max_tokens=220,
     )
 
     text = clean(response.choices[0].message.content)
@@ -125,26 +132,29 @@ def call_gpt(prompt: str) -> str:
     return text
 
 # ==================================================
-# VISUAL BEATS — FAST CUTS (2–3s)
+# VISUAL BEATS — ATTENTION SYNCED
 # ==================================================
 
 def derive_visual_beats(script: str) -> List[dict]:
-    parts = re.split(r"[,.]| and ", script)
-    parts = [p.strip() for p in parts if len(p.strip()) > 5]
+    sentences = [s.strip() for s in re.split(r"[.!?]", script) if len(s.strip()) > 4]
 
     beats = []
-    for i, text in enumerate(parts):
+    for i, s in enumerate(sentences):
         if i == 0:
             scene = "HOOK"
-        elif i == len(parts) - 1:
-            scene = "LOOP"
+        elif i == 1:
+            scene = "ANCHOR"
+        elif i in (2, 3):
+            scene = "ESCALATION"
+        elif i == len(sentences) - 2:
+            scene = "IMPLICATION"
         else:
-            scene = "DETAIL" if i % 2 == 0 else "LOCATION"
+            scene = "LOOP"
 
         beats.append({
             "beat": f"scene_{i+1}",
             "scene": scene,
-            "text": text,
+            "text": s,
         })
 
     return beats
@@ -174,7 +184,7 @@ def generate(case: dict) -> Tuple[str, list]:
 
 def main():
     case = load_case()
-    print("🧠 Generating high-retention Shorts script…")
+    print("🧠 Generating engagement-optimized Shorts script…")
 
     script, beats = generate(case)
 
@@ -184,7 +194,7 @@ def main():
     with open(BEATS_FILE, "w", encoding="utf-8") as f:
         json.dump(beats, f, indent=2)
 
-    print("✅ Script + beats generated successfully")
+    print("✅ Script generated (engineered for scroll-stop + hold)")
 
 if __name__ == "__main__":
     main()
