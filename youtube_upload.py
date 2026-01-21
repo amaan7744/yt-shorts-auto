@@ -3,15 +3,22 @@
 import os
 import sys
 import json
-from datetime import datetime
+import warnings
+from datetime import datetime, timedelta
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
-from intelligence.seo_builder import build_seo
-from intelligence.upload_guard import should_pause_uploads
+# --------------------------------------------------
+# SILENCE GOOGLE FUTUREWARNING
+# --------------------------------------------------
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module="google.api_core"
+)
 
 # --------------------------------------------------
 # CONFIG
@@ -21,29 +28,18 @@ VIDEO_FILE = "output.mp4"
 SCRIPT_FILE = "script.txt"
 META_FILE = "memory/upload_meta.json"
 
-SHORTS_HASHTAG = "#Shorts"
-CATEGORY_ID = "25"  # News & Politics (better for crime / investigation Shorts)
+CATEGORY_ID = "25"  # News & Politics (crime-safe)
+UPLOAD_COOLDOWN_MINUTES = 90
 
 # --------------------------------------------------
-# UTILS
+# ENV
 # --------------------------------------------------
 
 def require_env(name: str) -> str:
     val = os.getenv(name)
     if not val:
-        print(f"[YT] ❌ Missing env var: {name}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(f"[YT] ❌ Missing env var: {name}")
     return val
-
-def clamp_title(title: str) -> str:
-    """
-    Shorts titles perform best at 40–70 chars.
-    Hard cap at 70 without cutting words.
-    """
-    title = title.strip()
-    if len(title) <= 70:
-        return title
-    return title[:67].rsplit(" ", 1)[0] + "…"
 
 # --------------------------------------------------
 # AUTH
@@ -61,27 +57,85 @@ def build_youtube():
     return build("youtube", "v3", credentials=creds)
 
 # --------------------------------------------------
+# UPLOAD GUARD
+# --------------------------------------------------
+
+def should_pause_uploads() -> bool:
+    if not os.path.isfile(META_FILE):
+        return False
+
+    try:
+        with open(META_FILE, "r", encoding="utf-8") as f:
+            last = json.loads(list(f)[-1])
+
+        last_time = datetime.fromisoformat(last["uploaded_at"])
+        return datetime.utcnow() - last_time < timedelta(minutes=UPLOAD_COOLDOWN_MINUTES)
+
+    except Exception:
+        return False
+
+# --------------------------------------------------
+# METADATA AI (INLINE)
+# --------------------------------------------------
+
+def extract_hook(script: str) -> str:
+    """
+    Title = first sentence trimmed to curiosity length.
+    """
+    first = script.split(".")[0].strip()
+
+    words = first.split()
+    if len(words) > 9:
+        first = " ".join(words[:9])
+
+    return first
+
+def build_metadata(script: str) -> dict:
+    """
+    Generates description, tags, hashtags.
+    Title is handled separately as hook.
+    """
+
+    description = (
+        "This short documents an unresolved case using public records and verified details.\n\n"
+        "The facts are clear. The explanation is not.\n\n"
+        "Subscribe to keep cases like this visible."
+    )
+
+    hashtags = [
+        "#TrueCrime",
+        "#Unsolved",
+        "#CrimeShorts",
+        "#Mystery",
+        "#Investigation",
+        "#Shorts",
+    ]
+
+    tags = [
+        "true crime shorts",
+        "unsolved mystery",
+        "crime documentary",
+        "real cases",
+        "investigation",
+        "shorts",
+    ]
+
+    return {
+        "description": description,
+        "hashtags": hashtags,
+        "tags": tags,
+    }
+
+# --------------------------------------------------
 # UPLOAD
 # --------------------------------------------------
 
-def upload_video(youtube, seo_data):
-    """
-    Shorts-optimized upload.
-    """
-
-    title = clamp_title(seo_data["title"])
-
-    hashtags = seo_data.get("hashtags", [])
-    if SHORTS_HASHTAG.lower() not in " ".join(hashtags).lower():
-        hashtags.append(SHORTS_HASHTAG)
-
-    description = f"{seo_data['description']}\n\n" + " ".join(hashtags)
-
+def upload_video(youtube, title, meta):
     body = {
         "snippet": {
             "title": title,
-            "description": description,
-            "tags": seo_data.get("tags", []),
+            "description": meta["description"] + "\n\n" + " ".join(meta["hashtags"]),
+            "tags": meta["tags"],
             "categoryId": CATEGORY_ID,
             "defaultLanguage": "en",
             "defaultAudioLanguage": "en",
@@ -119,38 +173,22 @@ def upload_video(youtube, seo_data):
         if status:
             print(f"[YT] ⏳ {int(status.progress() * 100)}%")
 
-    return response["id"], title
+    return response["id"]
 
 # --------------------------------------------------
-# THUMBNAIL (NON-BLOCKING)
+# META LOG
 # --------------------------------------------------
 
-def try_set_thumbnail(youtube, video_id):
-    thumb = "thumbnail.jpg"
-    if not os.path.isfile(thumb):
-        return
-    try:
-        youtube.thumbnails().set(
-            videoId=video_id,
-            media_body=MediaFileUpload(thumb),
-        ).execute()
-    except Exception:
-        pass  # Never block Shorts uploads
-
-# --------------------------------------------------
-# META LOGGING
-# --------------------------------------------------
-
-def log_upload_meta(video_id, title, hook):
+def log_upload(video_id, title, hook):
     os.makedirs("memory", exist_ok=True)
-    meta = {
+    entry = {
         "video_id": video_id,
         "title": title,
-        "hook_text": hook,
+        "hook": hook,
         "uploaded_at": datetime.utcnow().isoformat(),
     }
     with open(META_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(meta) + "\n")
+        f.write(json.dumps(entry) + "\n")
 
 # --------------------------------------------------
 # MAIN
@@ -162,34 +200,28 @@ def main():
     if not os.path.isfile(SCRIPT_FILE):
         sys.exit("[YT] ❌ script.txt missing")
 
-    # Channel safety guard
     if should_pause_uploads():
-        print("[YT] ⏸ Upload paused to protect channel authority")
+        print("[YT] ⏸ Upload paused (cooldown active)")
         sys.exit(0)
 
     with open(SCRIPT_FILE, "r", encoding="utf-8") as f:
         script = f.read().strip()
 
-    seo = build_seo(script)
+    title = extract_hook(script)
+    meta = build_metadata(script)
 
     youtube = build_youtube()
 
     try:
-        video_id, final_title = upload_video(youtube, seo)
+        video_id = upload_video(youtube, title, meta)
         print(f"[YT] ✅ Live: https://youtu.be/{video_id}")
 
-        try_set_thumbnail(youtube, video_id)
-
-        hook_line = script.split(".")[0]
-        log_upload_meta(video_id, final_title, hook_line)
+        log_upload(video_id, title, title)
 
     except HttpError as e:
-        print(f"[YT] ❌ YouTube API error: {e}", file=sys.stderr)
-        sys.exit(1)
-
+        sys.exit(f"[YT] ❌ YouTube API error: {e}")
     except Exception as e:
-        print(f"[YT] ❌ Upload failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(f"[YT] ❌ Upload failed: {e}")
 
 if __name__ == "__main__":
     main()
