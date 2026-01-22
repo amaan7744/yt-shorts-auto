@@ -154,6 +154,296 @@ def build_script_prompt(case: Dict) -> str:
     Returns:
         Formatted prompt string
     """
+    return f"""Create a {Config.TARGET_DURATION}-second narration script for a YouTube Short about this mysterious case.
+
+Case Information:
+Location: {case.get('location')}
+Summary: {case.get('summary')}
+
+Please write a compelling narration that:
+- Opens with an intriguing detail that hooks viewers immediately
+- Establishes the time and place clearly
+- Presents the key mystery or contradiction
+- Builds tension through the unresolved elements
+- Works well as on-screen text (clear, concise sentences)
+- Ends with a thought-provoking line
+
+Keep the script between {Config.TARGET_WORDS_MIN} and {Config.TARGET_WORDS_MAX} words total. Write it as one flowing paragraph without section labels or extra formatting. Focus on creating an engaging narrative that makes viewers want to watch again.
+
+Provide only the narration text itself."""
+
+
+# ==================================================
+# API INTERACTION
+# ==================================================
+
+def call_ai_model(client: ChatCompletionsClient, prompt: str) -> str:
+    """
+    Call the AI model with error handling.
+    
+    Args:
+        client: Initialized ChatCompletionsClient
+        prompt: The prompt to send
+        
+    Returns:
+        Generated text response
+        
+    Raises:
+        ValueError: If response is empty
+        HttpResponseError: If API call fails
+    """
+    response = client.complete(
+        model=Config.MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a creative scriptwriter who crafts engaging short-form video narrations. You specialize in creating compelling stories that capture attention and work well in mobile video format."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            },
+        ],
+        temperature=Config.TEMPERATURE,
+        max_tokens=300,  # Safety limit
+    )
+    
+    text = clean_text(response.choices[0].message.content)
+    
+    if not text:
+        raise ValueError("Model returned empty response")
+    
+    return text
+
+
+# ==================================================
+# BEAT GENERATION
+# ==================================================
+
+def derive_visual_beats(script: str) -> List[Dict]:
+    """
+    Break script into visual beats for video production.
+    
+    Args:
+        script: The complete script text
+        
+    Returns:
+        List of beat dictionaries with scene information
+    """
+    # Split into sentences while preserving punctuation
+    sentences = re.findall(r'[^.!?]+[.!?]+', script)
+    
+    # Handle edge case where last sentence might not have punctuation
+    if sentences:
+        combined = ''.join(sentences)
+        if len(combined) < len(script):
+            remaining = script[len(combined):].strip()
+            if remaining:
+                sentences.append(remaining)
+    else:
+        # Fallback if regex fails
+        sentences = [s.strip() + '.' for s in script.split('.') if s.strip()]
+    
+    beats = []
+    total = len(sentences)
+    
+    # Define scene types based on narrative structure
+    scene_mapping = {
+        0: "HOOK",
+        1: "ANCHOR",
+        -2: "IMPLICATION",
+        -1: "LOOP"
+    }
+    
+    for i, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        
+        # Determine scene type
+        if i in scene_mapping:
+            scene_type = scene_mapping[i]
+        elif i == total - 2:
+            scene_type = "IMPLICATION"
+        elif i == total - 1:
+            scene_type = "LOOP"
+        elif i < total // 2:
+            scene_type = "ESCALATION_EARLY"
+        else:
+            scene_type = "ESCALATION_LATE"
+        
+        beats.append({
+            "beat_id": i + 1,
+            "scene_type": scene_type,
+            "text": sentence,
+            "word_count": count_words(sentence),
+            "estimated_duration": round(count_words(sentence) / 2.58, 1)  # ~155 WPM
+        })
+    
+    return beats
+
+
+# ==================================================
+# CONTENT GENERATION
+# ==================================================
+
+def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, List[Dict]]:
+    """
+    Generate script and visual beats with retry logic.
+    
+    Args:
+        client: Initialized AI client
+        case: Case data dictionary
+        
+    Returns:
+        Tuple of (script_text, beats_list)
+    """
+    prompt = build_script_prompt(case)
+    
+    for attempt in range(1, Config.MAX_RETRIES + 1):
+        try:
+            print(f"🔄 Generation attempt {attempt}/{Config.MAX_RETRIES}...")
+            
+            raw_script = call_ai_model(client, prompt)
+            word_count = count_words(raw_script)
+            
+            print(f"   Generated {word_count} words")
+            
+            # Trim if necessary
+            if word_count > Config.TARGET_WORDS_MAX:
+                print(f"   ✂️  Trimming to target length...")
+                final_script = smart_trim(raw_script)
+            else:
+                final_script = raw_script
+            
+            # Generate visual beats
+            beats = derive_visual_beats(final_script)
+            
+            # Validate output
+            final_word_count = count_words(final_script)
+            if final_word_count < Config.TARGET_WORDS_MIN:
+                print(f"   ⚠️  Script too short ({final_word_count} words), retrying...")
+                if attempt < Config.MAX_RETRIES:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
+            
+            print(f"   ✅ Generated {final_word_count} words, {len(beats)} beats")
+            return final_script, beats
+            
+        except HttpResponseError as e:
+            print(f"   ⚠️  API error: {e}")
+        except Exception as e:
+            print(f"   ⚠️  Error: {e}")
+        
+        if attempt < Config.MAX_RETRIES:
+            print(f"   ⏳ Waiting {Config.RETRY_DELAY}s before retry...")
+            time.sleep(Config.RETRY_DELAY)
+    
+    print("❌ Failed to generate script after multiple attempts")
+    sys.exit(1)
+
+
+# ==================================================
+# FILE OPERATIONS
+# ==================================================
+
+def save_outputs(script: str, beats: List[Dict]) -> None:
+    """
+    Save script and beats to files.
+    
+    Args:
+        script: The generated script text
+        beats: List of visual beat dictionaries
+    """
+    try:
+        # Save script
+        with open(Config.SCRIPT_FILE, "w", encoding="utf-8") as f:
+            f.write(script)
+        print(f"✅ Script saved to {Config.SCRIPT_FILE}")
+        
+        # Save beats with metadata
+        output_data = {
+            "metadata": {
+                "total_beats": len(beats),
+                "total_words": count_words(script),
+                "estimated_duration": sum(b.get("estimated_duration", 0) for b in beats),
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            },
+            "beats": beats
+        }
+        
+        with open(Config.BEATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        print(f"✅ Visual beats saved to {Config.BEATS_FILE}")
+        
+    except Exception as e:
+        print(f"❌ Error saving files: {e}")
+        sys.exit(1)
+
+
+# ==================================================
+# MAIN EXECUTION
+# ==================================================
+
+def main():
+    """Main execution function."""
+    print("=" * 60)
+    print("🎬 YouTube Shorts Script Generator")
+    print("=" * 60)
+    
+    # Initialize
+    print("\n📋 Loading case data...")
+    case_data = load_case()
+    print(f"   Location: {case_data.get('location')}")
+    print(f"   Summary: {case_data.get('summary')[:80]}...")
+    
+    print("\n🤖 Initializing AI client...")
+    client = initialize_client()
+    
+    # Generate content
+    print("\n✍️  Generating optimized script...")
+    script, beats = generate_content(client, case_data)
+    
+    # Save outputs
+    print("\n💾 Saving outputs...")
+    save_outputs(script, beats)
+    
+    # Display results
+    print("\n" + "=" * 60)
+    print("📊 GENERATION SUMMARY")
+    print("=" * 60)
+    print(f"Total words: {count_words(script)}")
+    print(f"Visual beats: {len(beats)}")
+    print(f"Estimated duration: ~{sum(b.get('estimated_duration', 0) for b in beats):.1f}s")
+    print("\n📜 SCRIPT PREVIEW:")
+    print("-" * 60)
+    print(script)
+    print("-" * 60)
+    print("\n✨ Generation complete!")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Generation cancelled by user")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
+        sys.exit(1)# ==================================================
+# PROMPT CONSTRUCTION
+# ==================================================
+
+def build_script_prompt(case: Dict) -> str:
+    """
+    Construct the prompt for script generation.
+    
+    Args:
+        case: Dictionary containing case details
+        
+    Returns:
+        Formatted prompt string
+    """
     return f"""Write a compelling {Config.TARGET_DURATION}-second YouTube Shorts narration about this unresolved case.
 
 CASE DETAILS:
