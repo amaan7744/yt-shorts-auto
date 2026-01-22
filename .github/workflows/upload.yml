@@ -8,8 +8,7 @@ on:
   # 08:00 ET → 13:00 UTC
   # 13:00 ET → 18:00 UTC
   # 21:00 ET → 02:00 UTC (next day)
-  schedule:
-    - cron: "0 13 * * *"
+
    
 
 concurrency:
