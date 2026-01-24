@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 YouTube Shorts Script Generator
-Creates high-retention, policy-safe mystery narrations with visual beat mapping.
-Optimized for virality, mute viewing, and replay loops.
+High-retention, policy-safe mystery narrations with visual beat mapping.
+Built for virality, replay loops, and automation stability.
 """
 
 import os
@@ -33,9 +33,9 @@ class Config:
     TARGET_WORDS_MAX = 52
     TARGET_DURATION = 20
 
-    TEMPERATURE = 0.25
-    MAX_RETRIES = 4
-    RETRY_DELAY = 2
+    TEMPERATURE = 0.3
+    MAX_RETRIES = 5
+    RETRY_DELAY = 1.5
 
 
 # ==================================================
@@ -66,6 +66,19 @@ def count_words(text: str) -> int:
     return len(text.split())
 
 
+def smart_trim(text: str, max_words: int) -> str:
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+
+    trimmed = " ".join(words[:max_words])
+    last_punct = max(trimmed.rfind("."), trimmed.rfind("?"), trimmed.rfind("!"))
+    if last_punct > len(trimmed) * 0.6:
+        return trimmed[:last_punct + 1].strip()
+
+    return trimmed.strip()
+
+
 def load_case() -> Dict:
     path = Path(Config.CASE_FILE)
     if not path.exists():
@@ -79,46 +92,45 @@ def load_case() -> Dict:
         print(f"❌ Invalid JSON: {e}")
         sys.exit(1)
 
-    for key in ("summary", "location"):
-        if not data.get(key):
-            print(f"❌ Missing required field: {key}")
+    for field in ("summary", "location"):
+        if not data.get(field):
+            print(f"❌ Missing required field: {field}")
             sys.exit(1)
 
     return data
 
 
 # ==================================================
-# PROMPT (VIRAL + SAFE)
+# PROMPT
 # ==================================================
 
 def build_script_prompt(case: Dict) -> str:
     return f"""
-Write a high-retention YouTube Shorts narration about a real unresolved mystery.
+Write a viral-ready YouTube Shorts narration about a real unresolved mystery.
 
-FACTS (do not invent anything):
+FACTS (do not invent):
 Location: {case['location']}
 Summary: {case['summary']}
 
-HARD RULES:
-• 44–52 words total
+RULES:
+• Aim for 50–60 words (will be trimmed later)
 • One paragraph only
-• No emojis, labels, or filler
 • Neutral, factual tone
-• No accusations or conclusions
+• No accusations, no conclusions
 • Every sentence must work as on-screen text without audio
 
-MANDATORY STRUCTURE:
-1. First sentence: a verified, unsettling fact that sounds impossible
-2. Time and location anchor
+STRUCTURE:
+1. First line: unsettling but verifiable fact
+2. Time and place anchor
 3. Detail that contradicts expectations
 4. Escalating unanswered element
 5. Official uncertainty or missing explanation
-6. Final line must echo the opening so the video loops cleanly
+6. Ending line must echo the opening for a seamless loop
 
-RETENTION RULES:
-• Short, sharp sentences
-• No opinions
-• Leave the mystery unresolved on purpose
+STYLE:
+• Short sentences
+• Calm authority
+• Leave the mystery unresolved
 
 OUTPUT:
 Return ONLY the narration text.
@@ -136,9 +148,8 @@ def call_ai(client: ChatCompletionsClient, prompt: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "You are an expert YouTube Shorts writer. "
-                    "You specialize in viral mystery narration that maximizes "
-                    "retention, replay loops, and monetization safety."
+                    "You are a YouTube Shorts scriptwriter specializing in "
+                    "high-retention mystery content that is safe for monetization."
                 )
             },
             {"role": "user", "content": prompt},
@@ -150,17 +161,28 @@ def call_ai(client: ChatCompletionsClient, prompt: str) -> str:
     text = clean_text(response.choices[0].message.content)
     if not text:
         raise ValueError("Empty response")
+
     return text
 
 
 # ==================================================
-# HOOK VALIDATION (IMPORTANT)
+# HOOK CHECK (SOFT, REALISTIC)
 # ==================================================
 
-def hook_is_strong(script: str) -> bool:
-    first_sentence = re.split(r"[.!?]", script)[0].lower()
-    trigger_words = ["record", "documented", "official", "reported", "logged"]
-    return any(word in first_sentence for word in trigger_words)
+def hook_is_good(script: str) -> bool:
+    first = re.split(r"[.!?]", script)[0].lower()
+    credibility_signals = [
+        "record",
+        "documented",
+        "official",
+        "police",
+        "authorities",
+        "reported",
+        "according to",
+        "files",
+        "archive",
+    ]
+    return any(s in first for s in credibility_signals) and len(first.split()) <= 16
 
 
 # ==================================================
@@ -172,7 +194,7 @@ def derive_visual_beats(script: str) -> List[Dict]:
     beats = []
 
     for i, s in enumerate(sentences):
-        words = count_words(s)
+        wc = count_words(s)
         beats.append({
             "beat_id": i + 1,
             "scene_type": (
@@ -182,34 +204,40 @@ def derive_visual_beats(script: str) -> List[Dict]:
                 "ESCALATION"
             ),
             "text": s.strip(),
-            "word_count": words,
-            "estimated_duration": round(words / 2.4, 1)
+            "word_count": wc,
+            "estimated_duration": round(wc / 2.4, 1)
         })
 
     return beats
 
 
 # ==================================================
-# GENERATION LOGIC
+# GENERATION LOGIC (FIXED)
 # ==================================================
 
 def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, List[Dict]]:
     prompt = build_script_prompt(case)
+
+    best_script = None
 
     for attempt in range(1, Config.MAX_RETRIES + 1):
         try:
             print(f"🔄 Attempt {attempt}/{Config.MAX_RETRIES}")
 
             script = call_ai(client, prompt)
+
+            if not hook_is_good(script):
+                print("⚠️ Weak hook, retrying...")
+                time.sleep(Config.RETRY_DELAY)
+                continue
+
+            script = smart_trim(script, Config.TARGET_WORDS_MAX)
             wc = count_words(script)
 
-            if wc < Config.TARGET_WORDS_MIN or wc > Config.TARGET_WORDS_MAX:
-                print(f"⚠️ Word count off ({wc})")
-                raise ValueError("Bad word count")
-
-            if not hook_is_strong(script):
-                print("⚠️ Weak hook detected")
-                raise ValueError("Weak hook")
+            if wc < Config.TARGET_WORDS_MIN:
+                print(f"⚠️ Too short after trim ({wc})")
+                time.sleep(Config.RETRY_DELAY)
+                continue
 
             beats = derive_visual_beats(script)
             print(f"✅ Success: {wc} words | {len(beats)} beats")
@@ -219,7 +247,7 @@ def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, Li
             print(f"⚠️ Retry reason: {e}")
             time.sleep(Config.RETRY_DELAY)
 
-    print("❌ Failed after retries")
+    print("❌ Failed to generate valid script")
     sys.exit(1)
 
 
@@ -233,12 +261,12 @@ def save_outputs(script: str, beats: List[Dict]) -> None:
 
     data = {
         "metadata": {
-            "words": count_words(script),
-            "beats": len(beats),
-            "duration_estimate": round(sum(b["estimated_duration"] for b in beats), 1),
-            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            "total_words": count_words(script),
+            "total_beats": len(beats),
+            "estimated_duration": round(sum(b["estimated_duration"] for b in beats), 1),
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
-        "beats": beats
+        "beats": beats,
     }
 
     with open(Config.BEATS_FILE, "w", encoding="utf-8") as f:
@@ -260,7 +288,7 @@ def main():
     script, beats = generate_content(client, case)
     save_outputs(script, beats)
 
-    print("\n📜 SCRIPT:")
+    print("\n📜 SCRIPT")
     print("-" * 50)
     print(script)
     print("-" * 50)
@@ -270,4 +298,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("⛔ Cancelled")
+        print("\n⛔ Cancelled")
