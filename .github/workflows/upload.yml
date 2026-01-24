@@ -1,15 +1,12 @@
-name: Auto YouTube Shorts – Crime (US Eastern | 3x Daily)
+name: Auto YouTube Shorts – Crime (US Recovery | 1x Daily)
 
 on:
   workflow_dispatch:
 
-  # GitHub Actions cron runs in UTC ONLY
-  # US Eastern Time → UTC conversion:
-  # 08:00 ET → 13:00 UTC
-  # 13:00 ET → 18:00 UTC
-  # 21:00 ET → 02:00 UTC (next day)
-
-   
+  schedule:
+    # US Night Binge — 9:00 PM ET
+    # GitHub cron runs in UTC
+    - cron: "0 2 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -37,9 +34,9 @@ jobs:
           fetch-depth: 0
 
       # ----------------------------
-      # DEBUG TIME (CLARITY ONLY)
+      # DEBUG TIME
       # ----------------------------
-      - name: Show execution time (UTC vs Local)
+      - name: Show execution time
         run: |
           echo "UTC time:   $(date -u)"
           echo "Local time: $(date)"
@@ -94,8 +91,6 @@ jobs:
           test -f script.txt
           test -f beats.json
 
-
-
       # ----------------------------
       # TTS (MALE VOICE)
       # ----------------------------
@@ -106,7 +101,7 @@ jobs:
           test -f final_audio.wav
 
       # ----------------------------
-      # SUBTITLES (KINETIC)
+      # SUBTITLES
       # ----------------------------
       - name: Build subtitles
         run: |
@@ -123,7 +118,7 @@ jobs:
           test "$(ls gameplay/loops/*.mp4 | wc -l)" -ge 1
 
       # ----------------------------
-      # VIDEO BUILD (FINAL OUTPUT)
+      # VIDEO BUILD
       # ----------------------------
       - name: Build Shorts video
         run: |
@@ -132,7 +127,7 @@ jobs:
           test -f output.mp4
 
       # ----------------------------
-      # UPLOAD TO YOUTUBE
+      # UPLOAD
       # ----------------------------
       - name: Upload to YouTube Shorts
         env:
@@ -145,7 +140,7 @@ jobs:
           python youtube_upload.py
 
       # ----------------------------
-      # PERSIST MEMORY
+      # SAVE MEMORY
       # ----------------------------
       - name: Persist memory
         run: |
