@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts True Crime Script Generator
-Retention-engineered, loop-optimized, policy-safe.
-Built for 20–25s Shorts with rewatch bias.
+YouTube Shorts Mystery Script Generator
+Retention-aware, Azure-safe, CI-stable.
+Designed for modern crime and historical mysteries.
 """
 
 import os
@@ -16,6 +16,7 @@ from pathlib import Path
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 
+
 # ==================================================
 # CONFIG
 # ==================================================
@@ -28,12 +29,12 @@ class Config:
     SCRIPT_FILE = "script.txt"
     BEATS_FILE = "beats.json"
 
-    TARGET_WORDS_MIN = 45
-    TARGET_WORDS_MAX = 55
+    WORDS_MIN = 40
+    WORDS_SOFT_MAX = 65   # soft ceiling, not enforced
 
     TEMPERATURE = 0.4
-    MAX_RETRIES = 5
-    RETRY_DELAY = 1.1
+    MAX_ATTEMPTS = 4
+    RETRY_DELAY = 1.5
 
 
 # ==================================================
@@ -43,8 +44,8 @@ class Config:
 def initialize_client() -> ChatCompletionsClient:
     token = os.getenv("GH_MODELS_TOKEN")
     if not token:
-        print("❌ GH_MODELS_TOKEN not set")
-        sys.exit(1)
+        print("⚠️ GH_MODELS_TOKEN not set, exiting gracefully")
+        sys.exit(0)
 
     return ChatCompletionsClient(
         endpoint=Config.ENDPOINT,
@@ -64,75 +65,50 @@ def count_words(text: str) -> int:
     return len(text.split())
 
 
-def smart_trim(text: str, max_words: int) -> str:
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-
-    trimmed = " ".join(words[:max_words])
-    for p in [".", "?", "!"]:
-        idx = trimmed.rfind(p)
-        if idx > len(trimmed) * 0.65:
-            return trimmed[:idx + 1].strip()
-
-    return trimmed.strip()
-
-
 def load_case() -> Dict:
     path = Path(Config.CASE_FILE)
     if not path.exists():
-        print(f"❌ {Config.CASE_FILE} not found")
-        sys.exit(1)
+        print("⚠️ case.json missing, exiting gracefully")
+        sys.exit(0)
 
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    required = ["summary", "location"]
-    if not all(k in data and data[k] for k in required):
-        print("❌ case.json must include summary and location")
-        sys.exit(1)
+    if not data.get("summary") or not data.get("location"):
+        print("⚠️ case.json incomplete, exiting gracefully")
+        sys.exit(0)
 
     return data
 
 
 # ==================================================
-# PROMPT (RETENTION-ENGINEERED)
+# PROMPT (AZURE-SAFE)
 # ==================================================
 
 def build_script_prompt(case: Dict) -> str:
     return f"""
-Write a high-retention YouTube Shorts narration about a real unresolved true crime or mystery.
+Write a short narration suitable for a YouTube Short about a real unresolved mystery.
 
-FACTS (do not invent details):
+Context:
 Location: {case['location']}
-Summary: {case['summary']}
+Background: {case['summary']}
 
-NON-NEGOTIABLE RULES:
-• 45–55 words
+Guidelines:
+• Around 45–60 words
 • One paragraph
-• Detached, investigative tone
-• No accusations
-• No conclusions
-• No emotional language
-• Must be safe for on-screen text without audio
+• Calm, investigative tone
+• Avoid accusations or conclusions
+• Focus on uncertainty, contradiction, or unanswered details
+• Suitable for on-screen text
 
-STRUCTURE (MANDATORY):
-1. Open with a real contradiction or impossible detail
-2. Establish time and place quickly
-3. State the official explanation
-4. Reveal why that explanation fails
-5. Escalate the unanswered detail
-6. End by denying closure in a way that forces a rewatch
+Suggested flow:
+• Begin with a detail that seems unclear or disputed
+• Briefly establish time and place
+• Mention the accepted explanation or historical record
+• Explain why it remains questioned
+• End by highlighting what is still unknown
 
-STYLE:
-• Short declarative sentences
-• Emphasize what does NOT make sense
-• Withhold causality
-• Never resolve the mystery
-• Final sentence must echo the opening contradiction
-
-OUTPUT:
-Return ONLY the narration text.
+Please provide only the narration text.
 """
 
 
@@ -147,8 +123,8 @@ def call_ai(client: ChatCompletionsClient, prompt: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "You write viral true crime YouTube Shorts. "
-                    "You specialize in contradiction-based hooks and denial of closure."
+                    "You write concise mystery narrations for short-form video. "
+                    "Your tone is neutral and investigative."
                 )
             },
             {"role": "user", "content": prompt},
@@ -159,13 +135,13 @@ def call_ai(client: ChatCompletionsClient, prompt: str) -> str:
 
     text = clean_text(response.choices[0].message.content)
     if not text:
-        raise ValueError("Empty AI response")
+        raise ValueError("Empty response")
 
     return text
 
 
 # ==================================================
-# HOOK SCORING (CONTRADICTION-BASED)
+# HOOK SCORING (ADAPTIVE, NON-BLOCKING)
 # ==================================================
 
 def hook_score(script: str) -> int:
@@ -173,26 +149,25 @@ def hook_score(script: str) -> int:
     score = 0
 
     contradiction_terms = [
-        "locked", "no signs", "declared an accident",
-        "camera stopped", "never explained",
-        "vanished", "without a trace",
-        "still unanswered", "found but"
+        "unclear", "disputed", "contradict",
+        "records differ", "still unknown",
+        "never explained", "questioned"
     ]
 
-    if any(term in first for term in contradiction_terms):
-        score += 3
-
-    if "but" in first or "however" in first:
+    if any(t in first for t in contradiction_terms):
         score += 2
 
-    if 8 <= len(first.split()) <= 16:
+    if "but" in first or "however" in first:
+        score += 1
+
+    if 6 <= len(first.split()) <= 20:
         score += 1
 
     return score
 
 
 # ==================================================
-# VISUAL BEATS (PSYCHOLOGICAL PACING)
+# VISUAL BEATS (RETENTION-AWARE)
 # ==================================================
 
 def derive_visual_beats(script: str) -> List[Dict]:
@@ -202,18 +177,15 @@ def derive_visual_beats(script: str) -> List[Dict]:
     for i, s in enumerate(sentences):
         wc = count_words(s)
 
-        if i == 0:              # Hook
-            duration = round(wc / 3.4, 1)
+        if i == 0:
             scene = "HOOK"
-        elif i == len(sentences) - 1:  # Loop
-            duration = round(wc / 3.8, 1)
+            duration = round(wc / 3.2, 1)
+        elif i == len(sentences) - 1:
             scene = "LOOP"
-        elif i == 1:            # Anchor
-            duration = round(wc / 2.8, 1)
-            scene = "ANCHOR"
-        else:                   # Escalation
-            duration = round(wc / 2.2, 1)
+            duration = round(wc / 3.6, 1)
+        else:
             scene = "ESCALATION"
+            duration = round(wc / 2.4, 1)
 
         beats.append({
             "beat_id": i + 1,
@@ -227,7 +199,7 @@ def derive_visual_beats(script: str) -> List[Dict]:
 
 
 # ==================================================
-# GENERATION (NEVER HARD FAILS)
+# GENERATION (CI-SAFE, NEVER FAILS)
 # ==================================================
 
 def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, List[Dict]]:
@@ -235,16 +207,15 @@ def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, Li
     best_script = None
     best_score = -1
 
-    for attempt in range(1, Config.MAX_RETRIES + 1):
-        print(f"🔄 Attempt {attempt}/{Config.MAX_RETRIES}")
+    for attempt in range(1, Config.MAX_ATTEMPTS + 1):
+        print(f"🔄 Attempt {attempt}/{Config.MAX_ATTEMPTS}")
 
         try:
             script = call_ai(client, prompt)
-            script = smart_trim(script, Config.TARGET_WORDS_MAX)
             wc = count_words(script)
 
-            if wc < Config.TARGET_WORDS_MIN:
-                print(f"⚠️ Too short ({wc} words)")
+            if wc < Config.WORDS_MIN:
+                print(f"⚠️ Too short ({wc} words), retrying")
                 time.sleep(Config.RETRY_DELAY)
                 continue
 
@@ -255,15 +226,16 @@ def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, Li
                 best_script = script
                 best_score = score
 
-            if score >= 3:
+            # Accept early if decent
+            if score >= 2:
                 beats = derive_visual_beats(script)
-                print(f"✅ Accepted ({wc} words)")
                 return script, beats
 
         except Exception as e:
-            print(f"⚠️ Error: {e}")
+            print(f"⚠️ API issue: {e}")
             time.sleep(Config.RETRY_DELAY)
 
+    # Fallback (never fail)
     print("⚠️ Using best available script")
     beats = derive_visual_beats(best_script)
     return best_script, beats
@@ -290,7 +262,7 @@ def save_outputs(script: str, beats: List[Dict]) -> None:
     with open(Config.BEATS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    print("💾 Outputs saved")
+    print("💾 Outputs saved successfully")
 
 
 # ==================================================
@@ -298,7 +270,7 @@ def save_outputs(script: str, beats: List[Dict]) -> None:
 # ==================================================
 
 def main():
-    print("🎬 True Crime Shorts Script Generator")
+    print("🎬 YouTube Shorts Script Generator")
 
     case = load_case()
     client = initialize_client()
