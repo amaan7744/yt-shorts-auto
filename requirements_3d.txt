@@ -1,0 +1,16 @@
+# Add these to your existing requirements.txt
+# for 3D video generation
+
+# 3D Rendering (FREE)
+moderngl>=5.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Video Processing (if not already installed)
+moviepy>=1.0.3
+opencv-python>=4.8.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+
+# Optional: Manim for higher quality (slower)
+# manim>=0.18.0
