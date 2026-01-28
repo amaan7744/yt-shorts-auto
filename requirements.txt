@@ -4,23 +4,10 @@ tqdm>=4.66.0
 beautifulsoup4>=4.12.0
 lxml>=5.1.0
 opencv-python-headless
-numpy==1.22.0   # REQUIRED by TTS 0.22.0 on Python 3.10
-# Add these to your existing requirements.txt
-# for 3D video generation
 
-# 3D Rendering (FREE)
-moderngl>=5.8.0
-Pillow>=10.0.0
-numpy>=1.24.0
-
-# Video Processing (if not already installed)
-moviepy>=1.0.3
-opencv-python>=4.8.0
-imageio>=2.31.0
-imageio-ffmpeg>=0.4.9
-
-# Optional: Manim for higher quality (slower)
-# manim>=0.18.0
+# ---------------- Shared Dependencies (FIXED) ----------------
+numpy==1.22.0   # REQUIRED by TTS 0.22.0 on Python 3.10 (used by all)
+Pillow==9.5.0   # Compatible with everything
 
 # ---------------- AI / LLM ----------------
 azure-ai-inference==1.0.0b9
@@ -30,7 +17,6 @@ azure-core>=1.29.0,<2.0.0
 torch==2.1.2
 torchaudio==2.1.2
 torchvision==0.16.2
-
 TTS==0.22.0
 pydub>=0.25.1
 soundfile>=0.12.1
@@ -41,7 +27,6 @@ transformers==4.39.3
 # ---------------- Video / Image ----------------
 moviepy>=1.0.3
 imageio-ffmpeg>=0.4.9
-Pillow==9.5.0
 
 # ---------------- Speech ----------------
 openai-whisper==20231117
@@ -51,3 +36,9 @@ google-api-python-client==2.126.0
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
+
+# ---------------- 3D Video Generation ----------------
+moderngl>=5.8.0
+imageio>=2.31.0
+# Note: numpy and Pillow already specified above
+# Note: opencv-python NOT needed (using opencv-python-headless)
