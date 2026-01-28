@@ -64,21 +64,17 @@ jobs:
           # Core dependencies
           sudo apt-get install -y ffmpeg
           
-          # 3D rendering dependencies (if using 3D)
+          # 3D rendering dependencies (FIXED PACKAGE NAMES)
           if [ "$USE_3D_VIDEO" = "true" ]; then
             sudo apt-get install -y \
-              libgl1-mesa-glx \
+              libgl1 \
+              libegl1 \
               libglib2.0-0 \
               xvfb
           fi
           
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
-          # Install 3D dependencies if enabled
-          if [ "$USE_3D_VIDEO" = "true" ] && [ -f requirements_3d.txt ]; then
-            pip install -r requirements_3d.txt
-          fi
 
       - name: Setup display for 3D rendering
         if: env.USE_3D_VIDEO == 'true'
@@ -124,6 +120,7 @@ jobs:
         if: env.USE_3D_VIDEO == 'true'
         env:
           DISPLAY: :99
+          PYOPENGL_PLATFORM: egl
         run: |
           set -euo pipefail
           if [ -f video_3d_build.py ]; then
@@ -131,7 +128,9 @@ jobs:
             echo "✅ 3D video generated"
           else
             echo "⚠️ video_3d_build.py not found, using regular video"
+            python video_build.py
           fi
+          test -f output.mp4
 
       # FALLBACK: Regular video build
       - name: Build Shorts video
