@@ -1,12 +1,15 @@
-name: Auto YouTube Shorts – Crime (US Recovery | 1x Daily)
+name: Auto YouTube Shorts – Crime (US Morning Push | 8AM ET)
 
 on:
   workflow_dispatch:
 
   schedule:
-    # US Night Binge — 9:00 PM ET
-    # GitHub cron runs in UTC
-    - cron: "0 2 * * *"
+    # 8:00 AM US Eastern Time
+    # GitHub Actions runs in UTC
+    # 12:00 UTC during DST (Mar–Nov)
+    # 13:00 UTC during Standard Time (Nov–Mar)
+    # We lock to DST for consistency
+    - cron: "0 12 * * *"
 
 concurrency:
   group: yt-shorts-upload
