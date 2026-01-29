@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 YouTube Shorts Video Builder
-FAILS if visuals are missing
+BLACK-SCREEN IMPOSSIBLE VERSION
 """
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
+import tempfile
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
@@ -26,54 +26,64 @@ def load_beats():
         die("beats.json missing")
     return json.loads(BEATS.read_text())["beats"]
 
-def build_frames(beats):
-    FRAMES.mkdir(exist_ok=True)
-
-    # Clean old frames
-    for f in FRAMES.glob("frame_*.png"):
-        f.unlink()
-
-    idx = 0
+def build_video_segments(beats):
+    segments = []
 
     for beat in beats:
         img = FRAMES / f"scene_{beat['beat_id']:02d}.png"
         if not img.exists():
-            die(f"Missing scene image: {img.name}")
+            die(f"Missing image {img.name}")
 
-        frames_needed = max(1, int(beat["estimated_duration"] * FPS))
+        duration = max(0.5, float(beat["estimated_duration"]))
 
-        for _ in range(frames_needed):
-            frame = FRAMES / f"frame_{idx:05d}.png"
-            shutil.copyfile(img, frame)
-            idx += 1
+        out = Path(tempfile.mktemp(suffix=".mp4"))
 
-    if idx == 0:
-        die("NO FRAMES GENERATED — visuals missing")
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-loop", "1",
+            "-i", str(img),
+            "-t", f"{duration:.2f}",
+            "-vf",
+            (
+                f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
+                "zoompan=z='min(1.05,zoom+0.0005)':d=1"
+            ),
+            "-r", str(FPS),
+            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            out
+        ], check=True)
 
-    print(f"[VIDEO] Frames generated: {idx}")
+        segments.append(out)
 
-def render_video():
-    # Hard check before FFmpeg
-    frame_files = list(FRAMES.glob("frame_*.png"))
-    if not frame_files:
-        die("FFmpeg aborted — no frame_*.png files")
+    return segments
+
+def concat_segments(segments):
+    list_file = Path("segments.txt")
+    with open(list_file, "w") as f:
+        for seg in segments:
+            f.write(f"file '{seg.resolve()}'\n")
 
     subprocess.run([
         "ffmpeg", "-y",
-        "-framerate", str(FPS),
-        "-i", "frames/frame_%05d.png",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_file),
+        "-c", "copy",
+        "video_only.mp4"
+    ], check=True)
+
+def mux_audio_and_subs():
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", "video_only.mp4",
         "-i", AUDIO,
-        "-vf",
-        (
-            f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
-            "zoompan=z='min(1.08,zoom+0.0004)':d=1:"
-            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
-            f"ass={SUBS}"
-        ),
+        "-vf", f"ass={SUBS}",
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-c:v", "libx264",
-        "-profile:v", "high",
         "-pix_fmt", "yuv420p",
         "-crf", "16",
         "-preset", "slow",
@@ -93,10 +103,11 @@ def main():
     beats = load_beats()
     print(f"[VIDEO] Scenes: {len(beats)}")
 
-    build_frames(beats)
-    render_video()
+    segments = build_video_segments(beats)
+    concat_segments(segments)
+    mux_audio_and_subs()
 
-    print(f"[VIDEO] ✅ Visuals confirmed → {OUTPUT}")
+    print(f"[VIDEO] ✅ VISUAL VIDEO READY → {OUTPUT}")
 
 if __name__ == "__main__":
     main()
