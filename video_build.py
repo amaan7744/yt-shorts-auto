@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-High-Quality Shorts Video Builder (CI-SAFE)
-- Uses pre-generated images
-- NO symlinks (GitHub-safe)
-- Deterministic render
+YouTube Shorts Video Builder
+Audio-driven timeline (ends exactly with voiceover)
 """
 
 import json
 import shutil
 import subprocess
 from pathlib import Path
+
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
@@ -20,16 +22,19 @@ AUDIO = Path("final_audio.wav")
 SUBS = Path("subs.ass")
 OUTPUT = Path("output.mp4")
 
+# --------------------------------------------------
 
 def die(msg):
     raise SystemExit(f"[VIDEO] ❌ {msg}")
 
+# --------------------------------------------------
 
 def load_beats():
     if not BEATS.exists():
         die("beats.json missing")
     return json.loads(BEATS.read_text())["beats"]
 
+# --------------------------------------------------
 
 def build_frames(beats):
     FRAMES.mkdir(exist_ok=True)
@@ -55,6 +60,7 @@ def build_frames(beats):
     if idx == 0:
         die("No frames generated")
 
+# --------------------------------------------------
 
 def render_video():
     subprocess.run([
@@ -65,7 +71,7 @@ def render_video():
         "-vf",
         (
             f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
-            "zoompan=z='min(1.1,zoom+0.0005)':d=1:"
+            "zoompan=z='min(1.08,zoom+0.0004)':d=1:"
             "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
             f"ass={SUBS}"
         ),
@@ -80,10 +86,11 @@ def render_video():
         "-c:a", "aac",
         "-b:a", "192k",
         "-movflags", "+faststart",
-        "-shortest",
+        "-shortest",   # 🔑 AUDIO IS MASTER
         OUTPUT
     ], check=True)
 
+# --------------------------------------------------
 
 def main():
     if not AUDIO.exists():
@@ -97,8 +104,9 @@ def main():
     build_frames(beats)
     render_video()
 
-    print(f"[VIDEO] ✅ Final video → {OUTPUT}")
+    print(f"[VIDEO] ✅ VIDEO ENDS WITH AUDIO → {OUTPUT}")
 
+# --------------------------------------------------
 
 if __name__ == "__main__":
     main()
