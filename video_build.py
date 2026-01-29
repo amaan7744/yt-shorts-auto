@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder
-BLACK-SCREEN IMPOSSIBLE VERSION
+YouTube Shorts Video Builder - Optimized Single-Pass Edition
+Ensures 9:16 aspect ratio and high-quality encoding.
 """
 
 import json
 import subprocess
 from pathlib import Path
-import tempfile
+import sys
 
+# Configuration
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
 
@@ -19,95 +20,80 @@ SUBS = Path("subs.ass")
 OUTPUT = Path("output.mp4")
 
 def die(msg):
-    raise SystemExit(f"[VIDEO] ❌ {msg}")
+    sys.exit(f"[VIDEO] ❌ {msg}")
 
 def load_beats():
     if not BEATS.exists():
         die("beats.json missing")
-    return json.loads(BEATS.read_text())["beats"]
+    try:
+        data = json.loads(BEATS.read_text())
+        return data["beats"]
+    except Exception as e:
+        die(f"Failed to parse beats.json: {e}")
 
-def build_video_segments(beats):
-    segments = []
+def build_video():
+    beats = load_beats()
+    print(f"[VIDEO] 🎬 Processing {len(beats)} scenes...")
 
+    if not AUDIO.exists(): die("final_audio.wav missing")
+    if not SUBS.exists(): die("subs.ass missing")
+
+    # 1. Build the FFmpeg command
+    # We use a filter_complex to stitch images together without temporary files
+    cmd = ["ffmpeg", "-y"]
+
+    # Add image inputs
     for beat in beats:
-        img = FRAMES / f"scene_{beat['beat_id']:02d}.png"
-        if not img.exists():
-            die(f"Missing image {img.name}")
+        img_path = FRAMES / f"scene_{beat['beat_id']:02d}.png"
+        if not img_path.exists():
+            die(f"Missing image: {img_path}")
+        # -loop 1 combined with -t ensures the image acts as a video segment
+        cmd.extend(["-loop", "1", "-t", f"{beat['estimated_duration']:.2f}", "-i", str(img_path)])
 
-        duration = max(0.5, float(beat["estimated_duration"]))
+    # Add audio input
+    cmd.extend(["-i", str(AUDIO)])
 
-        out = Path(tempfile.mktemp(suffix=".mp4"))
+    # 2. Construct Filter Complex
+    # This scales each image to 1080x1920 and applies a subtle zoom-in (Ken Burns effect)
+    filter_parts = []
+    for i in range(len(beats)):
+        # Scale, Crop to 9:16, and apply subtle zoom
+        filter_parts.append(
+            f"[{i}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT},zoompan=z='min(zoom+0.0006,1.1)':d=125:s={WIDTH}x{HEIGHT},setsar=1[v{i}];"
+        )
+    
+    # Concatenate all processed image streams
+    concat_v = "".join(f"[v{i}]" for i in range(len(beats)))
+    filter_parts.append(f"{concat_v}concat=n={len(beats)}:v=1:a=0[vconcat];")
+    
+    # Apply subtitles to the concatenated stream
+    filter_parts.append(f"[vconcat]ass={SUBS}[vfinal]")
 
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-loop", "1",
-            "-i", str(img),
-            "-t", f"{duration:.2f}",
-            "-vf",
-            (
-                f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
-                "zoompan=z='min(1.05,zoom+0.0005)':d=1"
-            ),
-            "-r", str(FPS),
-            "-pix_fmt", "yuv420p",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
-            out
-        ], check=True)
-
-        segments.append(out)
-
-    return segments
-
-def concat_segments(segments):
-    list_file = Path("segments.txt")
-    with open(list_file, "w") as f:
-        for seg in segments:
-            f.write(f"file '{seg.resolve()}'\n")
-
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_file),
-        "-c", "copy",
-        "video_only.mp4"
-    ], check=True)
-
-def mux_audio_and_subs():
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", "video_only.mp4",
-        "-i", AUDIO,
-        "-vf", f"ass={SUBS}",
-        "-map", "0:v:0",
-        "-map", "1:a:0",
+    # 3. Final Command Assembly
+    full_filter = "".join(filter_parts)
+    
+    cmd.extend([
+        "-filter_complex", full_filter,
+        "-map", "[vfinal]",
+        "-map", f"{len(beats)}:a", # Map the audio file (the last input)
         "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
         "-pix_fmt", "yuv420p",
-        "-crf", "16",
-        "-preset", "slow",
         "-c:a", "aac",
         "-b:a", "192k",
+        "-shortest", # End video when audio ends
         "-movflags", "+faststart",
-        "-shortest",
-        OUTPUT
-    ], check=True)
+        str(OUTPUT)
+    ])
 
-def main():
-    if not AUDIO.exists():
-        die("final_audio.wav missing")
-    if not SUBS.exists():
-        die("subs.ass missing")
-
-    beats = load_beats()
-    print(f"[VIDEO] Scenes: {len(beats)}")
-
-    segments = build_video_segments(beats)
-    concat_segments(segments)
-    mux_audio_and_subs()
-
-    print(f"[VIDEO] ✅ VISUAL VIDEO READY → {OUTPUT}")
+    print("[VIDEO] ⚡ Rendering final Short...")
+    try:
+        subprocess.run(cmd, check=True)
+        print(f"[VIDEO] ✅ SUCCESS → {OUTPUT}")
+    except subprocess.CalledProcessError as e:
+        die(f"FFmpeg render failed: {e}")
 
 if __name__ == "__main__":
-    main()
+    build_video()
