@@ -1,66 +1,53 @@
 #!/usr/bin/env python3
 """
-High-Quality YouTube Shorts Video Builder
-- Script-locked visuals
-- HF image generation
-- Cinematic motion
-- Shorts-optimized encoding
+High-Quality Shorts Video Builder
+- Uses pre-generated images ONLY
+- No external APIs
+- One render pass
 """
 
 import json
 import subprocess
 from pathlib import Path
-from image_generator import generate_image
-
-# ===============================
-# CONFIG
-# ===============================
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
 
+BEATS = Path("beats.json")
+FRAMES = Path("frames")
 AUDIO = Path("final_audio.wav")
 SUBS = Path("subs.ass")
-BEATS = Path("beats.json")
-
-FRAMES = Path("frames")
-FRAMES.mkdir(exist_ok=True)
-
 OUTPUT = Path("output.mp4")
 
-# ===============================
-def log(msg):
-    print(f"[VIDEO] {msg}", flush=True)
 
 def die(msg):
     raise SystemExit(f"[VIDEO] ❌ {msg}")
 
-# ===============================
+
 def load_beats():
     if not BEATS.exists():
         die("beats.json missing")
-
     return json.loads(BEATS.read_text())["beats"]
 
-# ===============================
+
 def build_frames(beats):
+    FRAMES.mkdir(exist_ok=True)
     idx = 0
 
     for beat in beats:
         img = FRAMES / f"scene_{beat['beat_id']:02d}.png"
+        if not img.exists():
+            die(f"Missing image {img.name}")
 
-        generate_image(beat["image_prompt"], img)
-
-        frames_needed = int(beat["estimated_duration"] * FPS)
+        frames_needed = max(1, int(beat["estimated_duration"] * FPS))
 
         for _ in range(frames_needed):
-            (FRAMES / f"frame_{idx:05d}.png").symlink_to(img)
+            frame = FRAMES / f"frame_{idx:05d}.png"
+            frame.symlink_to(img)
             idx += 1
 
-# ===============================
-def render_video():
-    log("Rendering final video")
 
+def render_video():
     subprocess.run([
         "ffmpeg", "-y",
         "-framerate", str(FPS),
@@ -69,7 +56,8 @@ def render_video():
         "-vf",
         (
             f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
-            "zoompan=z='min(1.1,zoom+0.0005)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
+            "zoompan=z='min(1.1,zoom+0.0005)':d=1,"
+            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
             f"ass={SUBS}"
         ),
         "-map", "0:v:0",
@@ -87,7 +75,7 @@ def render_video():
         OUTPUT
     ], check=True)
 
-# ===============================
+
 def main():
     if not AUDIO.exists():
         die("final_audio.wav missing")
@@ -95,13 +83,13 @@ def main():
         die("subs.ass missing")
 
     beats = load_beats()
-    log(f"{len(beats)} scenes")
+    print(f"[VIDEO] {len(beats)} scenes")
 
     build_frames(beats)
     render_video()
 
-    log(f"✅ FINAL VIDEO READY → {OUTPUT}")
+    print(f"[VIDEO] ✅ Final video → {OUTPUT}")
 
-# ===============================
+
 if __name__ == "__main__":
     main()
