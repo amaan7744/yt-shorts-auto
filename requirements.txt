@@ -1,19 +1,31 @@
-# ---------------- Core HTTP / Utils ----------------
+# ==================================================
+# Core HTTP / Utilities
+# ==================================================
 requests>=2.31.0
 tqdm>=4.66.0
 beautifulsoup4>=4.12.0
 lxml>=5.1.0
-opencv-python-headless
 
-# ---------------- Shared Dependencies (FIXED) ----------------
-numpy==1.22.0   # REQUIRED by TTS 0.22.0 on Python 3.10 (used by all)
-Pillow==9.5.0   # Compatible with everything
+# ==================================================
+# Image / Computer Vision (HEADLESS SAFE)
+# ==================================================
+opencv-python-headless>=4.9.0.80
+Pillow==9.5.0
 
-# ---------------- AI / LLM ----------------
+# ==================================================
+# NUMPY (LOCKED FOR TTS COMPATIBILITY)
+# ==================================================
+numpy==1.22.0
+
+# ==================================================
+# AI / LLM (GitHub Models / Azure)
+# ==================================================
 azure-ai-inference==1.0.0b9
 azure-core>=1.29.0,<2.0.0
 
-# ---------------- TTS / Audio (COMPATIBLE STACK) ----------------
+# ==================================================
+# TEXT TO SPEECH (STABLE STACK)
+# ==================================================
 torch==2.1.2
 torchaudio==2.1.2
 torchvision==0.16.2
@@ -21,24 +33,27 @@ TTS==0.22.0
 pydub>=0.25.1
 soundfile>=0.12.1
 
-# ---------------- ML / Transformers ----------------
-transformers==4.39.3
+# ==================================================
+# TRANSFORMERS (LIGHT USE)
+# ==================================================
+transformers>=4.39.0,<4.41.0
 
-# ---------------- Video / Image ----------------
+# ==================================================
+# VIDEO / IMAGE PIPELINE
+# ==================================================
 moviepy>=1.0.3
+imageio>=2.31.0
 imageio-ffmpeg>=0.4.9
 
-# ---------------- Speech ----------------
+# ==================================================
+# SPEECH / SUBTITLES
+# ==================================================
 openai-whisper==20231117
 
-# ---------------- Google / YouTube API ----------------
+# ==================================================
+# GOOGLE / YOUTUBE API
+# ==================================================
 google-api-python-client==2.126.0
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
-
-# ---------------- 3D Video Generation ----------------
-moderngl>=5.8.0
-imageio>=2.31.0
-# Note: numpy and Pillow already specified above
-# Note: opencv-python NOT needed (using opencv-python-headless)
