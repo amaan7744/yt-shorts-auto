@@ -1,135 +1,107 @@
 #!/usr/bin/env python3
 """
-Script-Locked Video Builder
-- Every beat = one visual
-- Visuals ALWAYS match narration
-- No gameplay
-- No random 3D effects
-- GitHub Actions safe
+High-Quality YouTube Shorts Video Builder
+- Script-locked visuals
+- HF image generation
+- Cinematic motion
+- Shorts-optimized encoding
 """
 
-import os
-import sys
 import json
 import subprocess
 from pathlib import Path
+from image_generator import generate_image
 
-FPS = 30
+# ===============================
+# CONFIG
+# ===============================
+
 WIDTH, HEIGHT = 1080, 1920
+FPS = 30
 
-AUDIO_FILE = Path("final_audio.wav")
-SUBS_FILE = Path("subs.ass")
+AUDIO = Path("final_audio.wav")
+SUBS = Path("subs.ass")
+BEATS = Path("beats.json")
+
+FRAMES = Path("frames")
+FRAMES.mkdir(exist_ok=True)
+
 OUTPUT = Path("output.mp4")
-FRAMES_DIR = Path("frames")
 
-# ----------------------------
+# ===============================
 def log(msg):
     print(f"[VIDEO] {msg}", flush=True)
 
 def die(msg):
-    sys.exit(f"[VIDEO] ❌ {msg}")
+    raise SystemExit(f"[VIDEO] ❌ {msg}")
 
-# ----------------------------
+# ===============================
 def load_beats():
-    if Path("beats.json").exists():
-        with open("beats.json") as f:
-            return json.load(f)["beats"]
+    if not BEATS.exists():
+        die("beats.json missing")
 
-    if Path("script.txt").exists():
-        text = Path("script.txt").read_text()
-        return [{"text": s.strip(), "estimated_duration": 4}
-                for s in text.split(".") if s.strip()]
+    return json.loads(BEATS.read_text())["beats"]
 
-    die("No beats.json or script.txt found")
-
-# ----------------------------
-def sentence_to_prompt(sentence: str) -> str:
-    s = sentence.lower()
-
-    if "car" in s and ("dead" in s or "died" in s):
-        return (
-            "3D cartoon style, night scene, man slumped dead in driver seat of car, "
-            "streetlight outside, cinematic lighting, dark mood"
-        )
-
-    if "murder" in s or "killed" in s:
-        return (
-            "3D cartoon style, dark bedroom crime scene, bed, knife on floor, "
-            "blood stain, moody lighting"
-        )
-
-    if "police" in s or "arrest" in s:
-        return (
-            "3D cartoon style, police officers arresting suspect at night, "
-            "dramatic lighting"
-        )
-
-    return (
-        "3D cartoon crime scene illustration, cinematic lighting, dark tone"
-    )
-
-# ----------------------------
-def generate_image(prompt: str, out_path: Path):
-    """
-    Replace this with:
-    - HuggingFace API
-    - Local SD / Flux
-    """
-    log(f"IMAGE → {prompt}")
-    out_path.write_text(prompt)  # placeholder
-
-# ----------------------------
+# ===============================
 def build_frames(beats):
-    FRAMES_DIR.mkdir(exist_ok=True)
+    idx = 0
 
-    frame_idx = 0
     for beat in beats:
-        prompt = sentence_to_prompt(beat["text"])
-        duration = beat.get("estimated_duration", 4)
-        frames = int(duration * FPS)
+        img = FRAMES / f"scene_{beat['beat_id']:02d}.png"
 
-        img_path = FRAMES_DIR / f"scene_{frame_idx:04d}.png"
-        generate_image(prompt, img_path)
+        generate_image(beat["image_prompt"], img)
 
-        for _ in range(frames):
-            (FRAMES_DIR / f"frame_{frame_idx:05d}.png").symlink_to(img_path)
-            frame_idx += 1
+        frames_needed = int(beat["estimated_duration"] * FPS)
 
-# ----------------------------
-def compose_video():
-    log("Composing video…")
+        for _ in range(frames_needed):
+            (FRAMES / f"frame_{idx:05d}.png").symlink_to(img)
+            idx += 1
+
+# ===============================
+def render_video():
+    log("Rendering final video")
 
     subprocess.run([
         "ffmpeg", "-y",
         "-framerate", str(FPS),
         "-i", "frames/frame_%05d.png",
-        "-i", str(AUDIO_FILE),
-        "-vf", f"ass={SUBS_FILE}",
+        "-i", AUDIO,
+        "-vf",
+        (
+            f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
+            "zoompan=z='min(1.1,zoom+0.0005)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
+            f"ass={SUBS}"
+        ),
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-c:v", "libx264",
-        "-preset", "slow",
-        "-crf", "18",
+        "-profile:v", "high",
+        "-level", "4.2",
         "-pix_fmt", "yuv420p",
+        "-crf", "16",
+        "-preset", "slow",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
         "-shortest",
         OUTPUT
     ], check=True)
 
-# ----------------------------
+# ===============================
 def main():
-    if not AUDIO_FILE.exists():
+    if not AUDIO.exists():
         die("final_audio.wav missing")
-    if not SUBS_FILE.exists():
+    if not SUBS.exists():
         die("subs.ass missing")
 
     beats = load_beats()
-    log(f"{len(beats)} beats loaded")
+    log(f"{len(beats)} scenes")
 
     build_frames(beats)
-    compose_video()
+    render_video()
 
-    log("✅ FINAL VIDEO READY")
+    log(f"✅ FINAL VIDEO READY → {OUTPUT}")
 
-# ----------------------------
+# ===============================
 if __name__ == "__main__":
     main()
