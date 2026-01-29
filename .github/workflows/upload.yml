@@ -19,8 +19,6 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
-      PIP_NO_CACHE_DIR: "1"
-      # 🔑 CRITICAL: Must be added to GitHub Secrets to avoid black abstract images
       HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
 
     steps:
@@ -33,7 +31,6 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo rm -rf /usr/share/swift /var/lib/apt/lists/*
-          df -h
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,8 +45,13 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # Explicitly installing necessary libraries for image/video processing
-          pip install requests pillow google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          # Ensure requirements.txt exists or list them directly here
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            # Explicitly adding beautifulsoup4 and lxml to fix your error
+            pip install requests pillow beautifulsoup4 lxml google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          fi
 
       - name: Select case
         run: |
@@ -78,40 +80,31 @@ jobs:
           python subtitles_build.py
           test -f subs.ass
 
-      # 🎨 Step: Generate Visuals (Forces AI if key is present)
-      - name: Generate POV scenes
+      - name: Generate Visuals
         run: |
           set -euo pipefail
           python scene_composer.py
-          # Ensure at least one image was created
           if [ ! "$(ls frames/scene_*.png)" ]; then
-            echo "❌ No images generated in frames folder"
+            echo "❌ No images generated"
             exit 1
           fi
 
-      # 🎬 Step: Video Build (Uses the resilient script provided previously)
       - name: Build Shorts video
         run: |
           set -euo pipefail
           python video_build.py
-          if [ ! -f output.mp4 ]; then
-            echo "❌ video_build.py failed to produce output.mp4"
-            exit 1
-          fi
+          test -f output.mp4
 
-      # 📏 Step: Validation (Ensures no black bars/landscape orientation)
-      - name: Validate video orientation
+      - name: Validate Orientation
         run: |
           set -euo pipefail
           RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 output.mp4)
-          echo "Resolution: $RES"
           if [ "$RES" != "1080x1920" ]; then
-            echo "❌ Video is NOT 1080x1920. Check scale/crop in video_build.py"
+            echo "❌ Wrong Resolution: $RES"
             exit 1
           fi
 
-      # 🚀 Step: Upload (Ensures metadata includes #Shorts)
-      - name: Upload to YouTube Shorts
+      - name: Upload to YouTube
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
