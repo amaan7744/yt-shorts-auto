@@ -1,18 +1,10 @@
-name: Auto YouTube Shorts – Crime (3D Enhanced)
+name: Auto YouTube Shorts – Crime (Script-Locked Visuals)
 
 on:
   workflow_dispatch:
-    inputs:
-      use_3d:
-        description: 'Use 3D video generation'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
 
   schedule:
+    # Once per day – safe cadence for new channels
     - cron: "0 12 * * *"
 
 concurrency:
@@ -22,7 +14,7 @@ concurrency:
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 75
 
     permissions:
       contents: write
@@ -30,9 +22,11 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
-      USE_3D_VIDEO: ${{ github.event.inputs.use_3d || 'false' }}
 
     steps:
+      # --------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -42,8 +36,10 @@ jobs:
         run: |
           echo "UTC time:   $(date -u)"
           echo "Local time: $(date)"
-          echo "3D Mode:    $USE_3D_VIDEO"
 
+      # --------------------------------------------------
+      # DISK SPACE (IMPORTANT FOR FFmpeg + IMAGES)
+      # --------------------------------------------------
       - name: Free disk space
         run: |
           set -euo pipefail
@@ -51,50 +47,45 @@ jobs:
           sudo rm -rf /usr/share/swift /var/lib/apt/lists/*
           df -h
 
+      # --------------------------------------------------
+      # PYTHON
+      # --------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # --------------------------------------------------
+      # SYSTEM DEPS (FFmpeg ONLY)
+      # --------------------------------------------------
       - name: Install system dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          
-          # 3D rendering system deps
-          if [ "$USE_3D_VIDEO" = "true" ]; then
-            sudo apt-get install -y libgl1 libegl1 libglib2.0-0 xvfb
-          fi
 
+      # --------------------------------------------------
+      # PYTHON DEPS
+      # --------------------------------------------------
       - name: Install Python dependencies
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          
-          # Install your existing requirements first
           pip install -r requirements.txt
-          
-          # Then add 3D deps separately (no conflicts)
-          if [ "$USE_3D_VIDEO" = "true" ]; then
-            pip install moderngl --no-deps
-            pip install moviepy imageio imageio-ffmpeg
-          fi
 
-      - name: Setup display for 3D rendering
-        if: env.USE_3D_VIDEO == 'true'
-        run: |
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
-          sleep 2
-
+      # --------------------------------------------------
+      # CASE SELECTION
+      # --------------------------------------------------
       - name: Select case
         run: |
           set -euo pipefail
           python case_search.py
           test -f case.json
 
-      - name: Generate script
+      # --------------------------------------------------
+      # SCRIPT + VISUAL BEATS
+      # --------------------------------------------------
+      - name: Generate script & visual beats
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
         run: |
@@ -103,50 +94,48 @@ jobs:
           test -f script.txt
           test -f beats.json
 
+      # --------------------------------------------------
+      # VOICEOVER
+      # --------------------------------------------------
       - name: Generate narration
         run: |
           set -euo pipefail
           python tts_generate.py --output final_audio.wav
           test -f final_audio.wav
 
+      # --------------------------------------------------
+      # SUBTITLES
+      # --------------------------------------------------
       - name: Build subtitles
         run: |
           set -euo pipefail
           python subtitles_build.py
           test -f subs.ass
 
-      - name: Validate gameplay loops
-        run: |
-          set -euo pipefail
-          test "$(ls gameplay/loops/*.mp4 | wc -l)" -ge 1
-
-      # NEW: 3D Video Generation
-      - name: Build 3D video
-        if: env.USE_3D_VIDEO == 'true'
+      # --------------------------------------------------
+      # IMAGE-DRIVEN VIDEO RENDER (ONE PASS ONLY)
+      # --------------------------------------------------
+      - name: Render Shorts video (high quality)
         env:
-          DISPLAY: :99
-          PYOPENGL_PLATFORM: egl
-        run: |
-          set -euo pipefail
-          if [ -f video_3d_build.py ]; then
-            python video_3d_build.py || {
-              echo "⚠️ 3D generation failed, falling back to regular video"
-              python video_build.py
-            }
-          else
-            echo "⚠️ video_3d_build.py not found, using regular video"
-            python video_build.py
-          fi
-          test -f output.mp4
-
-      # FALLBACK: Regular video build
-      - name: Build Shorts video
-        if: env.USE_3D_VIDEO != 'true'
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
         run: |
           set -euo pipefail
           python video_build.py
           test -f output.mp4
 
+      # --------------------------------------------------
+      # VERIFY VIDEO QUALITY (GUARD)
+      # --------------------------------------------------
+      - name: Verify video integrity
+        run: |
+          set -euo pipefail
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name,width,height,profile \
+            -of default=noprint_wrappers=1 output.mp4
+
+      # --------------------------------------------------
+      # UPLOAD (NO TOUCHING VIDEO)
+      # --------------------------------------------------
       - name: Upload to YouTube Shorts
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -157,11 +146,14 @@ jobs:
           set -euo pipefail
           python youtube_upload.py
 
+      # --------------------------------------------------
+      # PERSIST MEMORY
+      # --------------------------------------------------
       - name: Persist memory
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add memory used_cases.json upload_meta.json || true
+          git add memory used_cases.json upload_meta.jsonl || true
           git commit -m "chore: update memory" || true
           git push || true
