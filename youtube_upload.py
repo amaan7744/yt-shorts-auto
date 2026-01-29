@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 YouTube Shorts Upload Script
-STRONG Shorts classification signals
+ENHANCED Shorts classification signals
 """
 
 import os
@@ -22,20 +22,14 @@ VIDEO_FILE = "output.mp4"
 SCRIPT_FILE = "script.txt"
 META_FILE = "memory/upload_meta.jsonl"
 
-CATEGORY_ID = "22"  # People & Blogs (Shorts-friendly)
+CATEGORY_ID = "22"  # People & Blogs
 UPLOAD_COOLDOWN_MINUTES = 90
-
-
-# --------------------------------------------------
 
 def require_env(name):
     val = os.getenv(name)
     if not val:
         sys.exit(f"[YT] ❌ Missing env var: {name}")
     return val
-
-
-# --------------------------------------------------
 
 def build_youtube():
     creds = Credentials(
@@ -48,82 +42,69 @@ def build_youtube():
     )
     return build("youtube", "v3", credentials=creds)
 
-
-# --------------------------------------------------
-
 def should_pause():
     if not os.path.isfile(META_FILE):
         return False
     try:
         with open(META_FILE, "r", encoding="utf-8") as f:
-            last = json.loads(list(f)[-1])
+            lines = f.readlines()
+            if not lines: return False
+            last = json.loads(lines[-1])
         last_time = datetime.fromisoformat(last["uploaded_at"])
         return datetime.utcnow() - last_time < timedelta(minutes=UPLOAD_COOLDOWN_MINUTES)
     except Exception:
         return False
 
-
-# --------------------------------------------------
-# 🔑 TITLE: SHORTS HOOK, NOT SUMMARY
-# --------------------------------------------------
-
 def extract_title(script: str) -> str:
     first = script.split(".")[0].strip()
     words = first.split()
-
-    # 6–8 words max (Shorts hook)
+    # 🔑 CRITICAL: Title must contain #Shorts for the API to prioritize short-form processing
     title = " ".join(words[:7])
-
-    # Remove punctuation that signals long-form
     title = title.rstrip(".?!")
-
-    return title[:60]
-
-
-# --------------------------------------------------
-# 🔑 METADATA
-# --------------------------------------------------
+    final_title = f"{title[:52]} #Shorts"
+    return final_title
 
 def build_metadata():
+    # 🔑 CRITICAL: Description MUST contain #Shorts in the first two lines
     description = (
         "#Shorts #TrueCrime\n"
-        "Unresolved case. Verified records. No conclusions."
+        "Unresolved case. Verified records. No conclusions.\n\n"
+        "Subscribe for more daily shorts."
     )
 
-    tags = [
-        "shorts",
-        "youtube shorts",
-        "true crime shorts",
-        "unsolved mystery",
-        "crime short",
-        "vertical video",
-    ]
-
+    tags = ["shorts", "trending", "crime", "mystery"]
     return description, tags
 
-
-# --------------------------------------------------
-# 🔑 HARD VIDEO VALIDATION
-# --------------------------------------------------
-
-def validate_video():
+def validate_shorts_format():
+    """
+    Checks if the video is actually Vertical and under 60 seconds.
+    If it isn't, YouTube will NEVER put it in the Shorts shelf.
+    """
     try:
-        out = subprocess.check_output([
+        # Get dimensions and duration
+        cmd = [
             "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,codec_name",
+            "-show_entries", "stream=width,height:format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             VIDEO_FILE
-        ]).decode().strip()
+        ]
+        out = subprocess.check_output(cmd).decode().split()
+        
+        width = int(out[0])
+        height = int(out[1])
+        duration = float(out[2])
 
-        if not out:
-            sys.exit("[YT] ❌ No video stream detected")
+        print(f"[YT] 📊 Video Stats: {width}x{height}, {duration}s")
 
-    except Exception:
-        sys.exit("[YT] ❌ Video validation failed")
+        if height < width:
+            print("[YT] ⚠️ WARNING: Video is horizontal. It will NOT appear as a Short.")
+        
+        if duration > 60:
+            print("[YT] ❌ ERROR: Video is longer than 60s. API will treat as long-form.")
+            sys.exit(1)
 
-
-# --------------------------------------------------
+    except Exception as e:
+        print(f"[YT] ⚠️ Could not validate format: {e}")
 
 def upload_video(youtube, title, description, tags):
     body = {
@@ -133,7 +114,6 @@ def upload_video(youtube, title, description, tags):
             "tags": tags,
             "categoryId": CATEGORY_ID,
             "defaultLanguage": "en",
-            "defaultAudioLanguage": "en",
         },
         "status": {
             "privacyStatus": "public",
@@ -164,9 +144,6 @@ def upload_video(youtube, title, description, tags):
 
     return response["id"]
 
-
-# --------------------------------------------------
-
 def log_upload(video_id, title):
     os.makedirs("memory", exist_ok=True)
     entry = {
@@ -176,9 +153,6 @@ def log_upload(video_id, title):
     }
     with open(META_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
-
-
-# --------------------------------------------------
 
 def main():
     if not os.path.isfile(VIDEO_FILE):
@@ -190,9 +164,12 @@ def main():
         print("[YT] ⏸ Upload paused (cooldown)")
         sys.exit(0)
 
-    validate_video()
+    # 1. Check if the file is physically a Short
+    validate_shorts_format()
 
     script = open(SCRIPT_FILE, "r", encoding="utf-8").read().strip()
+    
+    # 2. Add #Shorts to Title and Description
     title = extract_title(script)
     description, tags = build_metadata()
 
@@ -202,12 +179,10 @@ def main():
         video_id = upload_video(youtube, title, description, tags)
         print(f"[YT] ✅ LIVE → https://youtu.be/{video_id}")
         log_upload(video_id, title)
-
     except HttpError as e:
         sys.exit(f"[YT] ❌ API error: {e}")
     except Exception as e:
         sys.exit(f"[YT] ❌ Upload failed: {e}")
-
 
 if __name__ == "__main__":
     main()
