@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-High-Quality Shorts Video Builder
-- Uses pre-generated images ONLY
-- No external APIs
-- One render pass
+High-Quality Shorts Video Builder (CI-SAFE)
+- Uses pre-generated images
+- NO symlinks (GitHub-safe)
+- Deterministic render
 """
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -32,6 +33,11 @@ def load_beats():
 
 def build_frames(beats):
     FRAMES.mkdir(exist_ok=True)
+
+    # Clean old frames
+    for f in FRAMES.glob("frame_*.png"):
+        f.unlink()
+
     idx = 0
 
     for beat in beats:
@@ -43,8 +49,11 @@ def build_frames(beats):
 
         for _ in range(frames_needed):
             frame = FRAMES / f"frame_{idx:05d}.png"
-            frame.symlink_to(img)
+            shutil.copyfile(img, frame)
             idx += 1
+
+    if idx == 0:
+        die("No frames generated")
 
 
 def render_video():
@@ -56,7 +65,7 @@ def render_video():
         "-vf",
         (
             f"scale={WIDTH}:{HEIGHT}:flags=lanczos,"
-            "zoompan=z='min(1.1,zoom+0.0005)':d=1,"
+            "zoompan=z='min(1.1,zoom+0.0005)':d=1:"
             "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
             f"ass={SUBS}"
         ),
