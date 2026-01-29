@@ -1,239 +1,157 @@
 #!/usr/bin/env python3
 """
-Scene Composer (CI-Safe, Shorts-Ready)
-
-• Uses Hugging Face InferenceClient (modern API)
-• AI generation is BEST-EFFORT only
-• Programmatic POV visuals are the PRIMARY path
-• NEVER produces empty / black frames
+Scene Composer - 2026 FLUX.1 Edition
+Uses the high-speed FLUX.1-schnell model for cinematic 9:16 visuals.
 """
-
 import json
 import os
 import time
 import random
+import sys
 from pathlib import Path
-from typing import Optional
+from io import BytesIO
 
-from PIL import Image, ImageDraw, ImageFilter
-
-# Optional HF (will safely fail)
 try:
     from huggingface_hub import InferenceClient
-    HAS_HF = True
-except Exception:
-    HAS_HF = False
+    from PIL import Image, ImageDraw, ImageFilter
+except ImportError:
+    print("❌ Missing libraries. Run: pip install huggingface_hub pillow requests")
+    sys.exit(1)
 
 # --------------------------------------------------
-# CONFIG
+# CONFIG & MODEL SELECTION
 # --------------------------------------------------
-
 OUT = Path("frames")
 OUT.mkdir(exist_ok=True)
 
 W, H = 1080, 1920
-HF_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+# FLUX.1-schnell is the best 2026 choice for free, fast, high-quality API calls
+HF_MODEL = "black-forest-labs/FLUX.1-schnell"
 
 # --------------------------------------------------
-# VISUAL MAPPING
+# CINEMATIC PROMPT ENGINE
 # --------------------------------------------------
 
-def map_visual(beat: dict) -> dict:
+def get_cinematic_prompt(beat: dict) -> str:
+    """Creates detailed, active prompts that avoid common AI safety triggers."""
     text = beat.get("text", "").lower()
+    
+    # 2026 Prompting Tip: Use natural language and technical camera cues
+    # for better cinematic results with FLUX models.
+    base_style = (
+        "cinematic film still, high-contrast lighting, moody atmosphere, "
+        "shot on 35mm lens, realistic textures, 8k, professional cinematography, "
+        "dark mystery aesthetic, vertical 9:16 composition"
+    )
 
-    if any(k in text for k in ["car", "drive", "vehicle", "road", "dashboard"]):
-        scene = "car"
-    elif any(k in text for k in ["police", "cop", "siren"]):
-        scene = "police"
-    elif any(k in text for k in ["room", "bed", "house"]):
-        scene = "room"
-    elif any(k in text for k in ["street", "city", "downtown"]):
-        scene = "city"
+    # Scene Detection Logic
+    if any(k in text for k in ["train", "track", "rail", "station"]):
+        scene = "mysterious train tracks at night, heavy fog, distant station lights glowing"
+    elif any(k in text for k in ["car", "drive", "road", "dashboard"]):
+        scene = "POV from a car interior, glowing dashboard, headlights hitting a dark lonely road"
+    elif any(k in text for k in ["police", "cop", "siren", "officer"]):
+        scene = "flashing blue and red emergency lights reflecting on wet pavement, cinematic bokeh"
+    elif any(k in text for k in ["room", "house", "inside", "bedroom"]):
+        scene = "dark interior room, single warm lamp light, long dramatic shadows, investigative vibe"
+    elif any(k in text for k in ["city", "street", "alley", "downtown"]):
+        scene = "dark urban alleyway, neon sign reflections in puddles, atmospheric mist"
     else:
-        scene = "abstract"
+        scene = f"atmospheric cinematic shot of {text[:50]}"
 
-    return {"scene": scene, "text": text}
-
+    return f"{scene}, {base_style}"
 
 # --------------------------------------------------
-# HF AI GENERATION (BEST-EFFORT)
+# AI GENERATION (FLUX ROUTING)
 # --------------------------------------------------
 
-def try_hf_generate(prompt: str) -> Optional[Image.Image]:
-    """
-    Attempts HF image generation.
-    Returns None on ANY failure.
-    """
-    hf_token = os.getenv("HF_TOKEN")
-    if not (HAS_HF and hf_token):
+def try_ai_generate(prompt: str) -> Image.Image:
+    """Attempts generation using HF Inference Client with FLUX-optimized params."""
+    # Check for common secret names
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
+    if not token:
         return None
 
     try:
-        client = InferenceClient(
-            provider="nscale",  # paid provider; may fail in CI
-            api_key=hf_token,
-        )
-
+        # 2026 Best Practice: Let the Hub route to the fastest available provider
+        client = InferenceClient(api_key=token)
+        
+        # FLUX.1-schnell excels at speed (1-4 steps) and complex detail
         img = client.text_to_image(
             prompt,
             model=HF_MODEL,
+            # 'schnell' is distilled; more steps aren't needed
+            num_inference_steps=4 
         )
-
+        
         if img:
             return img.resize((W, H), Image.Resampling.LANCZOS)
-
     except Exception as e:
-        print(f"  ⚠ HF AI failed → {e}")
-
+        print(f"  ⚠ AI Request failed: {e}")
     return None
 
-
 # --------------------------------------------------
-# PROGRAMMATIC POV VISUALS (PRIMARY)
+# IMPROVED CINEMATIC FALLBACK (NO CIRCLES)
 # --------------------------------------------------
 
-def base_gradient(top=(15, 15, 20), bottom=(35, 35, 40)):
-    img = Image.new("RGB", (W, H))
+def create_cinematic_fallback(out_path):
+    """Generates a moody, textured gradient fallback if the AI is offline."""
+    # Deep 'Investigative' Blue/Black Gradient
+    img = Image.new("RGB", (W, H), (10, 10, 18))
     draw = ImageDraw.Draw(img)
 
     for y in range(H):
-        t = y / H
-        r = int(top[0] + (bottom[0] - top[0]) * t)
-        g = int(top[1] + (bottom[1] - top[1]) * t)
-        b = int(top[2] + (bottom[2] - top[2]) * t)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
+        # Subtle vertical gradient
+        shade = 10 + int((y / H) * 25)
+        draw.line([(0, y), (W, y)], fill=(shade, shade, shade + 5))
 
-    return img
-
-
-def render_car():
-    img = base_gradient()
-    d = ImageDraw.Draw(img)
-
-    d.rectangle([0, int(H * 0.65), W, H], fill=(28, 28, 32))
-
-    cx, cy = W // 2, int(H * 0.78)
-    d.ellipse([cx - 180, cy - 180, cx + 180, cy + 180],
-              outline=(80, 80, 85), width=22)
-
-    glow = Image.new("RGB", (W, H), (255, 210, 140))
-    glow = glow.filter(ImageFilter.GaussianBlur(220))
-    img = Image.blend(img, glow, 0.12)
-
-    return img.filter(ImageFilter.GaussianBlur(1))
-
-
-def render_police():
-    img = base_gradient()
-    d = ImageDraw.Draw(img)
-
-    d.rectangle([0, 0, W, int(H * 0.25)], fill=(160, 0, 0))
-    d.rectangle([0, int(H * 0.25), W, int(H * 0.5)], fill=(0, 0, 160))
-    d.rectangle([0, int(H * 0.75), W, H], fill=(20, 20, 25))
-
-    return img.filter(ImageFilter.GaussianBlur(2))
-
-
-def render_room():
-    img = base_gradient((25, 22, 20), (45, 40, 35))
-    d = ImageDraw.Draw(img)
-
-    d.rectangle([180, int(H * 0.22), 900, int(H * 0.55)],
-                fill=(50, 45, 40), outline=(70, 65, 55), width=6)
-
-    glow = Image.new("RGB", (W, H), (255, 190, 120))
-    glow = glow.filter(ImageFilter.GaussianBlur(180))
-    img = Image.blend(img, glow, 0.1)
-
-    return img.filter(ImageFilter.GaussianBlur(1))
-
-
-def render_city():
-    img = base_gradient((10, 12, 25), (25, 28, 45))
-    d = ImageDraw.Draw(img)
-
-    for i in range(8):
-        bx = i * 140 + random.randint(-10, 10)
-        bh = random.randint(int(H * 0.35), int(H * 0.75))
-        d.rectangle([bx, H - bh, bx + 120, H], fill=(30, 30, 38))
-
-    return img.filter(ImageFilter.GaussianBlur(1))
-
-
-def render_abstract():
-    img = base_gradient()
-    d = ImageDraw.Draw(img)
-
-    for _ in range(3):
-        x = random.randint(200, W - 200)
-        y = random.randint(200, H - 200)
-        s = random.randint(120, 260)
-        d.ellipse([x - s, y - s, x + s, y + s],
-                  fill=(random.randint(60, 120),
-                        random.randint(60, 120),
-                        random.randint(60, 120)))
-
-    return img.filter(ImageFilter.GaussianBlur(2))
-
-
-def render_programmatic(visual: dict) -> Image.Image:
-    scene = visual["scene"]
-
-    if scene == "car":
-        return render_car()
-    if scene == "police":
-        return render_police()
-    if scene == "room":
-        return render_room()
-    if scene == "city":
-        return render_city()
-
-    return render_abstract()
-
+    # Add 'Film Grain' noise
+    noise = Image.new("RGB", (W, H))
+    n_draw = ImageDraw.Draw(noise)
+    for _ in range(8000):
+        nx, ny = random.randint(0, W-1), random.randint(0, H-1)
+        val = random.randint(0, 40)
+        n_draw.point((nx, ny), fill=(val, val, val))
+    
+    img = Image.blend(img, noise, 0.1)
+    img = img.filter(ImageFilter.GaussianBlur(1.5))
+    img.save(out_path, quality=95)
 
 # --------------------------------------------------
-# MAIN COMPOSE
+# MAIN LOOP
 # --------------------------------------------------
 
 def main():
-    beats_path = Path("beats.json")
-    if not beats_path.exists():
-        raise SystemExit("❌ beats.json missing")
+    if not Path("beats.json").exists():
+        print("❌ Error: beats.json not found")
+        return
 
-    beats = json.loads(beats_path.read_text())["beats"]
+    with open("beats.json", "r") as f:
+        beats = json.load(f)["beats"]
 
-    print("=" * 68)
-    print("🎬 SCENE COMPOSER (STABLE)")
-    print("• HF AI: best-effort")
-    print("• Programmatic visuals: guaranteed")
-    print("=" * 68)
+    print(f"🎬 Composing {len(beats)} Cinematic Scenes...")
 
     for beat in beats:
-        visual = map_visual(beat)
-        out = OUT / f"scene_{beat['beat_id']:02d}.png"
+        b_id = beat["beat_id"]
+        out_file = OUT / f"scene_{b_id:02d}.png"
+        
+        prompt = get_cinematic_prompt(beat)
+        print(f"[{b_id}/{len(beats)}] Generating visual...")
 
-        print(f"[Scene {beat['beat_id']}] {visual['scene']}")
+        # 1. Attempt High-Quality AI
+        img = try_ai_generate(prompt)
+        
+        if img:
+            img.save(out_file, quality=95)
+            print(f"  ✅ AI Visual Saved")
+        else:
+            # 2. Resilient Fallback (Guarantees no black screen)
+            create_cinematic_fallback(out_file)
+            print(f"  ⚠️ Used Cinematic Fallback")
+        
+        # Small delay to respect free tier rate limits
+        time.sleep(2)
 
-        img = None
-
-        # Try AI first (optional)
-        if HAS_HF:
-            prompt = f"{visual['scene']} cinematic POV, dark, atmospheric, 9:16"
-            img = try_hf_generate(prompt)
-
-        # Guaranteed fallback
-        if img is None:
-            img = render_programmatic(visual)
-
-        img.save(out, quality=95)
-        print(f"  ✓ saved {out.name}")
-
-        time.sleep(0.3)
-
-    print("=" * 68)
-    print(f"✅ Generated {len(beats)} scenes → {OUT.absolute()}")
-    print("=" * 68)
-
+    print(f"✅ Finished! Check {OUT} folder.")
 
 if __name__ == "__main__":
     main()
