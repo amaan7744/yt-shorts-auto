@@ -1,29 +1,33 @@
-def sentence_to_visual(sentence: str):
-    sentence = sentence.lower()
+#!/usr/bin/env python3
+"""
+Visual Mapper
+Maps script beats → structured visual intent
+"""
 
-    if "car" in sentence and ("dead" in sentence or "dies" in sentence):
-        return {
-            "type": "image",
-            "style": "3d_cartoon",
-            "prompt": "3D cartoon style, man slumped dead in driver seat of car at night, cinematic lighting, dark mood"
-        }
+def map_visual(beat: dict) -> dict:
+    text = beat.get("text", "").lower()
 
-    if "home" in sentence or "apartment" in sentence:
-        return {
-            "type": "image",
-            "style": "3d_cartoon",
-            "prompt": "3D cartoon style, dark bedroom crime scene, bed, knife on floor, moody lighting"
-        }
-
-    if "police" in sentence or "arrest" in sentence:
-        return {
-            "type": "image",
-            "style": "3d_cartoon",
-            "prompt": "3D cartoon style, police officers arresting suspect at night, dramatic lighting"
-        }
-
-    return {
-        "type": "image",
-        "style": "3d_cartoon",
-        "prompt": "3D cartoon crime scene illustration, cinematic lighting"
+    # Default visual intent
+    visual = {
+        "scene": "neutral",
+        "mood": "dark",
     }
+
+    # Scene detection
+    if "car" in text or "vehicle" in text:
+        visual["scene"] = "car"
+        visual["mood"] = "tense"
+
+    elif "police" in text or "sirens" in text:
+        visual["scene"] = "police"
+        visual["mood"] = "alert"
+
+    elif "room" in text or "bed" in text or "house" in text:
+        visual["scene"] = "room"
+        visual["mood"] = "quiet"
+
+    elif "street" in text or "road" in text or "outside" in text:
+        visual["scene"] = "street"
+        visual["mood"] = "dark"
+
+    return visual
