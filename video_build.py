@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
 YouTube Shorts Video Builder
-Audio-driven timeline (ends exactly with voiceover)
+FAILS if visuals are missing
 """
 
 import json
 import shutil
 import subprocess
 from pathlib import Path
-
-# --------------------------------------------------
-# CONFIG
-# --------------------------------------------------
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
@@ -22,19 +18,13 @@ AUDIO = Path("final_audio.wav")
 SUBS = Path("subs.ass")
 OUTPUT = Path("output.mp4")
 
-# --------------------------------------------------
-
 def die(msg):
     raise SystemExit(f"[VIDEO] ❌ {msg}")
-
-# --------------------------------------------------
 
 def load_beats():
     if not BEATS.exists():
         die("beats.json missing")
     return json.loads(BEATS.read_text())["beats"]
-
-# --------------------------------------------------
 
 def build_frames(beats):
     FRAMES.mkdir(exist_ok=True)
@@ -48,7 +38,7 @@ def build_frames(beats):
     for beat in beats:
         img = FRAMES / f"scene_{beat['beat_id']:02d}.png"
         if not img.exists():
-            die(f"Missing image {img.name}")
+            die(f"Missing scene image: {img.name}")
 
         frames_needed = max(1, int(beat["estimated_duration"] * FPS))
 
@@ -58,11 +48,16 @@ def build_frames(beats):
             idx += 1
 
     if idx == 0:
-        die("No frames generated")
+        die("NO FRAMES GENERATED — visuals missing")
 
-# --------------------------------------------------
+    print(f"[VIDEO] Frames generated: {idx}")
 
 def render_video():
+    # Hard check before FFmpeg
+    frame_files = list(FRAMES.glob("frame_*.png"))
+    if not frame_files:
+        die("FFmpeg aborted — no frame_*.png files")
+
     subprocess.run([
         "ffmpeg", "-y",
         "-framerate", str(FPS),
@@ -79,18 +74,15 @@ def render_video():
         "-map", "1:a:0",
         "-c:v", "libx264",
         "-profile:v", "high",
-        "-level", "4.2",
         "-pix_fmt", "yuv420p",
         "-crf", "16",
         "-preset", "slow",
         "-c:a", "aac",
         "-b:a", "192k",
         "-movflags", "+faststart",
-        "-shortest",   # 🔑 AUDIO IS MASTER
+        "-shortest",
         OUTPUT
     ], check=True)
-
-# --------------------------------------------------
 
 def main():
     if not AUDIO.exists():
@@ -99,14 +91,12 @@ def main():
         die("subs.ass missing")
 
     beats = load_beats()
-    print(f"[VIDEO] {len(beats)} scenes")
+    print(f"[VIDEO] Scenes: {len(beats)}")
 
     build_frames(beats)
     render_video()
 
-    print(f"[VIDEO] ✅ VIDEO ENDS WITH AUDIO → {OUTPUT}")
-
-# --------------------------------------------------
+    print(f"[VIDEO] ✅ Visuals confirmed → {OUTPUT}")
 
 if __name__ == "__main__":
     main()
