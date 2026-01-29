@@ -1,132 +1,119 @@
 #!/usr/bin/env python3
 """
-Image Generator (HF + Local Fallback)
-- Tries Hugging Face first
-- Falls back to local renderer if HF fails
-- NEVER breaks pipeline
+Scene Composer
+Fully automated asset-based POV visuals
+NO AI
+NO API
+NO MANUAL WORK
 """
 
-import os
-import time
 import json
-import requests
+import random
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
-# ===============================
-# CONFIG
-# ===============================
+OUT = Path("frames")
+OUT.mkdir(exist_ok=True)
 
-HF_TOKEN = os.getenv("HF_API_TOKEN")
-HF_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
-HF_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}"
-
-OUT_DIR = Path("frames")
-OUT_DIR.mkdir(exist_ok=True)
-
-WIDTH, HEIGHT = 1024, 1024
-TIMEOUT = 120
+W, H = 1080, 1920
 
 
-# ===============================
-# HF GENERATOR
-# ===============================
+# --------------------------------------------------
+# BASE
+# --------------------------------------------------
 
-def try_hf(prompt: str) -> Image.Image | None:
-    if not HF_TOKEN:
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "width": WIDTH,
-            "height": HEIGHT,
-            "guidance_scale": 7.5,
-            "num_inference_steps": 30
-        }
-    }
-
-    try:
-        r = requests.post(
-            HF_URL,
-            headers=headers,
-            json=payload,
-            timeout=TIMEOUT
-        )
-
-        if r.status_code != 200:
-            print(f"[IMG] HF failed ({r.status_code}), falling back")
-            return None
-
-        return Image.open(BytesIO(r.content)).convert("RGB")
-
-    except Exception as e:
-        print(f"[IMG] HF error: {e}")
-        return None
-
-
-# ===============================
-# LOCAL FALLBACK GENERATOR
-# ===============================
-
-def local_generate(prompt: str) -> Image.Image:
-    img = Image.new("RGB", (WIDTH, HEIGHT), (18, 18, 22))
+def base_scene(darkness=20):
+    img = Image.new("RGB", (W, H), (darkness, darkness, darkness))
     draw = ImageDraw.Draw(img)
 
-    # Gradient lighting
-    for y in range(HEIGHT):
-        shade = int(20 + (y / HEIGHT) * 50)
-        draw.line([(0, y), (WIDTH, y)], fill=(shade, shade, shade))
+    # vertical gradient
+    for y in range(H):
+        shade = darkness + int((y / H) * 35)
+        draw.line([(0, y), (W, y)], fill=(shade, shade, shade))
 
-    p = prompt.lower()
-
-    # Simple semantic shapes
-    if "car" in p:
-        draw.rectangle([200, 600, 820, 900], fill=(50, 50, 55))
-        draw.rectangle([300, 520, 740, 600], fill=(70, 70, 75))
-        draw.ellipse([480, 680, 560, 760], fill=(100, 100, 100))
-
-    if "police" in p:
-        draw.rectangle([0, 0, WIDTH, 120], fill=(180, 0, 0))
-        draw.rectangle([0, 120, WIDTH, 240], fill=(0, 0, 180))
-
-    if "room" in p or "bedroom" in p:
-        draw.rectangle([260, 720, 760, 860], fill=(80, 80, 85))
-
-    img = img.filter(ImageFilter.GaussianBlur(radius=1))
     return img
 
 
-# ===============================
-# MAIN GENERATOR
-# ===============================
+# --------------------------------------------------
+# SCENES
+# --------------------------------------------------
 
-def generate_image(prompt: str, out_path: Path):
-    print(f"[IMG] Generating → {out_path.name}")
+def car_pov():
+    img = base_scene(random.randint(15, 25))
+    draw = ImageDraw.Draw(img)
 
-    img = try_hf(prompt)
-    if img is None:
-        img = local_generate(prompt)
+    # dashboard (foreground)
+    draw.rectangle([0, int(H*0.7), W, H], fill=(30, 30, 35))
 
-    img.save(out_path)
-    time.sleep(0.5)
+    # steering wheel
+    offset = random.randint(-40, 40)
+    draw.ellipse([360+offset, 1180, 720+offset, 1540], outline=(70,70,75), width=18)
 
+    # body silhouette
+    draw.ellipse([520+offset, 920, 620+offset, 1050], fill=(95,95,100))
+
+    # street light glow
+    glow = Image.new("RGB", (W, H), (255, 210, 140))
+    glow = glow.filter(ImageFilter.GaussianBlur(300))
+    img = Image.blend(img, glow, 0.08)
+
+    return img.filter(ImageFilter.GaussianBlur(1))
+
+
+def room_pov():
+    img = base_scene(random.randint(18, 28))
+    draw = ImageDraw.Draw(img)
+
+    # bed edge
+    draw.rectangle([200, int(H*0.68), 880, int(H*0.78)], fill=(65,65,70))
+
+    # body
+    draw.ellipse([520, 980, 640, 1100], fill=(100,100,105))
+
+    return img.filter(ImageFilter.GaussianBlur(1))
+
+
+def police_pov():
+    img = base_scene(20)
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle([0, 0, W, 260], fill=(180, 0, 0))
+    draw.rectangle([0, 260, W, 520], fill=(0, 0, 180))
+
+    return img.filter(ImageFilter.GaussianBlur(4))
+
+
+# --------------------------------------------------
+# ROUTER
+# --------------------------------------------------
+
+def compose_scene(prompt: str, out: Path):
+    p = prompt.lower()
+
+    if "car" in p:
+        img = car_pov()
+    elif "police" in p:
+        img = police_pov()
+    elif "room" in p or "bed" in p:
+        img = room_pov()
+    else:
+        img = base_scene()
+
+    img.save(out)
+
+
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 
 def main():
     beats = json.loads(Path("beats.json").read_text())["beats"]
 
     for beat in beats:
-        out = OUT_DIR / f"scene_{beat['beat_id']:02d}.png"
+        out = OUT / f"scene_{beat['beat_id']:02d}.png"
         if out.exists():
-            print(f"[IMG] Exists → {out.name}")
             continue
-
-        generate_image(beat["image_prompt"], out)
+        compose_scene(beat["image_prompt"], out)
 
 
 if __name__ == "__main__":
