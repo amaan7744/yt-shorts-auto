@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 YouTube Shorts Mystery Script Generator
-Retention-aware, Azure-safe, CI-stable.
-Designed for modern crime and historical mysteries.
+- Strong hooks
+- Script → visual locked beats
+- CI safe
+- Azure / GH Models compatible
 """
 
 import os
@@ -10,8 +12,8 @@ import sys
 import json
 import time
 import re
-from typing import Dict, List, Tuple
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
@@ -29,8 +31,8 @@ class Config:
     SCRIPT_FILE = "script.txt"
     BEATS_FILE = "beats.json"
 
-    WORDS_MIN = 40
-    WORDS_SOFT_MAX = 65   # soft ceiling, not enforced
+    WORDS_MIN = 45
+    WORDS_MAX = 65
 
     TEMPERATURE = 0.4
     MAX_ATTEMPTS = 4
@@ -41,10 +43,10 @@ class Config:
 # CLIENT
 # ==================================================
 
-def initialize_client() -> ChatCompletionsClient:
+def init_client() -> ChatCompletionsClient:
     token = os.getenv("GH_MODELS_TOKEN")
     if not token:
-        print("⚠️ GH_MODELS_TOKEN not set, exiting gracefully")
+        print("⚠️ GH_MODELS_TOKEN missing, exiting gracefully")
         sys.exit(0)
 
     return ChatCompletionsClient(
@@ -54,61 +56,52 @@ def initialize_client() -> ChatCompletionsClient:
 
 
 # ==================================================
-# UTILITIES
+# UTIL
 # ==================================================
 
-def clean_text(text: str) -> str:
+def clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
-
-def count_words(text: str) -> int:
+def wc(text: str) -> int:
     return len(text.split())
 
 
 def load_case() -> Dict:
     path = Path(Config.CASE_FILE)
     if not path.exists():
-        print("⚠️ case.json missing, exiting gracefully")
+        print("⚠️ case.json missing")
         sys.exit(0)
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
+    data = json.loads(path.read_text())
     if not data.get("summary") or not data.get("location"):
-        print("⚠️ case.json incomplete, exiting gracefully")
+        print("⚠️ case.json incomplete")
         sys.exit(0)
 
     return data
 
 
 # ==================================================
-# PROMPT (AZURE-SAFE)
+# PROMPT
 # ==================================================
 
-def build_script_prompt(case: Dict) -> str:
+def build_prompt(case: Dict) -> str:
     return f"""
-Write a short narration suitable for a YouTube Short about a real unresolved mystery.
+Write a short narration for a YouTube Short about a real unresolved mystery.
 
-Context:
 Location: {case['location']}
 Background: {case['summary']}
 
-Guidelines:
-• Around 45–60 words
+Rules:
+• 45–60 words
 • One paragraph
 • Calm, investigative tone
-• Avoid accusations or conclusions
-• Focus on uncertainty, contradiction, or unanswered details
-• Suitable for on-screen text
+• Start with a confusing or disturbing detail
+• No accusations
+• No conclusions
+• End on uncertainty
+• Suitable for subtitles
 
-Suggested flow:
-• Begin with a detail that seems unclear or disputed
-• Briefly establish time and place
-• Mention the accepted explanation or historical record
-• Explain why it remains questioned
-• End by highlighting what is still unknown
-
-Please provide only the narration text.
+Output ONLY the narration text.
 """
 
 
@@ -117,14 +110,14 @@ Please provide only the narration text.
 # ==================================================
 
 def call_ai(client: ChatCompletionsClient, prompt: str) -> str:
-    response = client.complete(
+    res = client.complete(
         model=Config.MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "You write concise mystery narrations for short-form video. "
-                    "Your tone is neutral and investigative."
+                    "You write short, high-retention mystery narrations "
+                    "for investigative YouTube Shorts."
                 )
             },
             {"role": "user", "content": prompt},
@@ -133,125 +126,127 @@ def call_ai(client: ChatCompletionsClient, prompt: str) -> str:
         max_tokens=250,
     )
 
-    text = clean_text(response.choices[0].message.content)
-    if not text:
-        raise ValueError("Empty response")
-
-    return text
+    return clean(res.choices[0].message.content)
 
 
 # ==================================================
-# HOOK SCORING (ADAPTIVE, NON-BLOCKING)
+# VISUAL PROMPT MAPPER (KEY PART)
 # ==================================================
 
-def hook_score(script: str) -> int:
-    first = re.split(r"[.!?]", script)[0].lower()
-    score = 0
+def sentence_to_image_prompt(sentence: str) -> str:
+    s = sentence.lower()
 
-    contradiction_terms = [
-        "unclear", "disputed", "contradict",
-        "records differ", "still unknown",
-        "never explained", "questioned"
-    ]
+    if "car" in s and ("dead" in s or "found" in s or "died" in s):
+        return (
+            "3D cartoon style, night scene, man slumped lifeless in driver seat of a car, "
+            "streetlight outside window, cinematic lighting, dark mood, no gore"
+        )
 
-    if any(t in first for t in contradiction_terms):
-        score += 2
+    if "room" in s or "apartment" in s or "home" in s:
+        return (
+            "3D cartoon style, dark bedroom crime scene, bed visible, "
+            "knife on floor, subtle blood stain, moody cinematic lighting"
+        )
 
-    if "but" in first or "however" in first:
-        score += 1
+    if "police" in s or "investigation" in s:
+        return (
+            "3D cartoon style, police officers examining a crime scene at night, "
+            "flashlight beams, serious atmosphere, cinematic shadows"
+        )
 
-    if 6 <= len(first.split()) <= 20:
-        score += 1
+    if "missing" in s or "disappeared" in s:
+        return (
+            "3D cartoon style, empty street at night, parked car, "
+            "foggy atmosphere, mysterious mood, cinematic lighting"
+        )
 
-    return score
+    return (
+        "3D cartoon style, mysterious crime-related scene, "
+        "cinematic lighting, investigative mood"
+    )
 
 
 # ==================================================
-# VISUAL BEATS (RETENTION-AWARE)
+# BEAT DERIVATION
 # ==================================================
 
-def derive_visual_beats(script: str) -> List[Dict]:
+def derive_beats(script: str) -> List[Dict]:
     sentences = re.findall(r"[^.!?]+[.!?]?", script)
     beats = []
 
     for i, s in enumerate(sentences):
-        wc = count_words(s)
+        words = wc(s)
 
         if i == 0:
             scene = "HOOK"
-            duration = round(wc / 3.2, 1)
+            dur = round(words / 3.2, 1)
         elif i == len(sentences) - 1:
             scene = "LOOP"
-            duration = round(wc / 3.6, 1)
+            dur = round(words / 3.6, 1)
         else:
             scene = "ESCALATION"
-            duration = round(wc / 2.4, 1)
+            dur = round(words / 2.4, 1)
 
         beats.append({
             "beat_id": i + 1,
             "scene_type": scene,
             "text": s.strip(),
-            "word_count": wc,
-            "estimated_duration": duration
+            "word_count": words,
+            "estimated_duration": dur,
+            "image_prompt": sentence_to_image_prompt(s)
         })
 
     return beats
 
 
 # ==================================================
-# GENERATION (CI-SAFE, NEVER FAILS)
+# GENERATION LOOP
 # ==================================================
 
-def generate_content(client: ChatCompletionsClient, case: Dict) -> Tuple[str, List[Dict]]:
-    prompt = build_script_prompt(case)
-    best_script = None
-    best_score = -1
+def generate(client: ChatCompletionsClient, case: Dict) -> Tuple[str, List[Dict]]:
+    prompt = build_prompt(case)
+    best = None
 
     for attempt in range(1, Config.MAX_ATTEMPTS + 1):
         print(f"🔄 Attempt {attempt}/{Config.MAX_ATTEMPTS}")
 
         try:
             script = call_ai(client, prompt)
-            wc = count_words(script)
+            words = wc(script)
 
-            if wc < Config.WORDS_MIN:
-                print(f"⚠️ Too short ({wc} words), retrying")
+            if words < Config.WORDS_MIN:
+                print(f"⚠️ Too short ({words} words)")
                 time.sleep(Config.RETRY_DELAY)
                 continue
 
-            score = hook_score(script)
-            print(f"ℹ️ Hook score: {score}")
+            if words > Config.WORDS_MAX:
+                print(f"⚠️ Too long ({words} words)")
+                time.sleep(Config.RETRY_DELAY)
+                continue
 
-            if score > best_score:
-                best_script = script
-                best_score = score
-
-            # Accept early if decent
-            if score >= 2:
-                beats = derive_visual_beats(script)
-                return script, beats
+            beats = derive_beats(script)
+            return script, beats
 
         except Exception as e:
-            print(f"⚠️ API issue: {e}")
+            print(f"⚠️ Error: {e}")
             time.sleep(Config.RETRY_DELAY)
 
-    # Fallback (never fail)
-    print("⚠️ Using best available script")
-    beats = derive_visual_beats(best_script)
-    return best_script, beats
+        best = script
+
+    beats = derive_beats(best)
+    return best, beats
 
 
 # ==================================================
-# SAVE OUTPUTS
+# SAVE
 # ==================================================
 
-def save_outputs(script: str, beats: List[Dict]) -> None:
-    with open(Config.SCRIPT_FILE, "w", encoding="utf-8") as f:
-        f.write(script)
+def save(script: str, beats: List[Dict]):
+    Path(Config.SCRIPT_FILE).write_text(script, encoding="utf-8")
 
-    data = {
+    payload = {
         "metadata": {
-            "words": count_words(script),
+            "words": wc(script),
             "beats": len(beats),
             "estimated_duration": round(sum(b["estimated_duration"] for b in beats), 1),
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -259,10 +254,12 @@ def save_outputs(script: str, beats: List[Dict]) -> None:
         "beats": beats
     }
 
-    with open(Config.BEATS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    Path(Config.BEATS_FILE).write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
 
-    print("💾 Outputs saved successfully")
+    print("💾 script.txt and beats.json saved")
 
 
 # ==================================================
@@ -270,13 +267,13 @@ def save_outputs(script: str, beats: List[Dict]) -> None:
 # ==================================================
 
 def main():
-    print("🎬 YouTube Shorts Script Generator")
+    print("🎬 Mystery Script Generator")
 
     case = load_case()
-    client = initialize_client()
+    client = init_client()
 
-    script, beats = generate_content(client, case)
-    save_outputs(script, beats)
+    script, beats = generate(client, case)
+    save(script, beats)
 
     print("\n📜 SCRIPT")
     print("-" * 50)
