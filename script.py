@@ -31,7 +31,9 @@ from groq import Groq
 # CONFIG
 # ==================================================
 
-MODEL = "llama-3.1-70b-versatile"
+PRIMARY_MODEL = "llama-3.3-70b-instruct"
+FALLBACK_MODEL = "llama-3.1-8b-instant"
+
 
 CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
