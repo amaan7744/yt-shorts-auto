@@ -129,29 +129,126 @@ def call_ai(client: Groq, prompt: str, model: str) -> str:
     )
     return clean(res.choices[0].message.content)
 
-# ==================================================
-# ASSET MAPPING
-# ==================================================
-
 def sentence_to_asset(sentence: str) -> str:
     s = sentence.lower()
 
-    if any(k in s for k in ["car", "vehicle", "highway", "road"]):
+    # ─────────────────────────────
+    # VEHICLES / TRAVEL
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "car", "vehicle", "driving", "driver",
+        "highway", "road", "freeway", "route"
+    ]):
         return "car_pov"
-    if any(k in s for k in ["window", "shadow", "seen"]):
-        return "window_pov"
-    if any(k in s for k in ["police", "questioned", "interrogation", "detective"]):
-        return "interrogation"
-    if any(k in s for k in ["phone", "message", "ping", "call"]):
-        return "mobile_message"
-    if any(k in s for k in ["evidence", "found", "reported"]):
-        return "evidence"
-    if any(k in s for k in ["home", "room", "apartment"]):
-        return "dark_room"
-    if any(k in s for k in ["night", "late", "evening"]):
-        return "road_night"
 
-    return "shadow"
+    if any(k in s for k in [
+        "parked car", "abandoned car", "left the car"
+    ]):
+        return "parked_car"
+
+    if any(k in s for k in [
+        "bridge", "overpass"
+    ]):
+        return "bridge"
+
+    # ─────────────────────────────
+    # NIGHT / LOCATION ATMOSPHERE
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "alley", "back alley", "narrow street"
+    ]):
+        return "night_alley"
+
+    if any(k in s for k in [
+        "night", "late night", "after midnight", "evening"
+    ]):
+        return "blurred_alley"
+
+    if any(k in s for k in [
+        "rooftop", "roof"
+    ]):
+        return "rooftop"
+
+    # ─────────────────────────────
+    # SURVEILLANCE / POV
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "cctv", "camera", "surveillance", "footage"
+    ]):
+        return "cctv"
+
+    if any(k in s for k in [
+        "window", "seen through a window", "curtain", "inside looking out"
+    ]):
+        return "window_pov"
+
+    # ─────────────────────────────
+    # BUILDINGS / INTERIORS
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "room", "bedroom", "apartment", "inside the house"
+    ]):
+        return "dark_room"
+
+    if any(k in s for k in [
+        "hallway", "corridor"
+    ]):
+        return "hallway"
+
+    if any(k in s for k in [
+        "door", "closing door", "last seen entering"
+    ]):
+        return "closing_door"
+
+    # ─────────────────────────────
+    # POLICE / INVESTIGATION
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "interrogation", "questioned", "questioning"
+    ]):
+        return "interogationroom"
+
+    if any(k in s for k in [
+        "police", "detectives", "investigators"
+    ]):
+        return "dynamics"
+
+    if any(k in s for k in [
+        "evidence", "found evidence", "crime scene"
+    ]):
+        return "evidence"
+
+    if any(k in s for k in [
+        "yellow tape", "crime tape", "restricted area"
+    ]):
+        return "yellow_tape"
+
+    # ─────────────────────────────
+    # DIGITAL / COMMUNICATION
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "phone", "message", "text", "ping", "last call"
+    ]):
+        return "mobilemessage"
+
+    # ─────────────────────────────
+    # HUMAN PRESENCE / MYSTERY
+    # ─────────────────────────────
+    if any(k in s for k in [
+        "shadow", "figure", "someone watching"
+    ]):
+        return "shadow"
+
+    if any(k in s for k in [
+        "left behind", "belongings", "personal items"
+    ]):
+        return "leftover"
+
+    # ─────────────────────────────
+    # FALLBACK (SAFE, NON-LAME)
+    # ─────────────────────────────
+    return "dynamics"
+
 
 # ==================================================
 # BEATS
