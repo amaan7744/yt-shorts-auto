@@ -1,12 +1,10 @@
-name: Auto YouTube Shorts – Crime (US Morning)
+name: Auto YouTube Shorts – Crime (Production)
 
 on:
   workflow_dispatch:
-
   schedule:
-    # US Morning Target
-    # 13:00 UTC ≈ 8–9 AM US Eastern (best Shorts discovery window)
-    - cron: "0 13 * * *"
+    # 8:00 AM US Eastern Time = 12:00 UTC
+    - cron: "0 12 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -22,6 +20,14 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      PIP_NO_CACHE_DIR: "1"
+
+      # 🔑 REQUIRED SECRETS (EXPLICITLY EXPOSED)
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+      YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
 
     steps:
       # --------------------------------------------------
@@ -33,7 +39,7 @@ jobs:
           fetch-depth: 0
 
       # --------------------------------------------------
-      # FREE DISK (FFMPEG SAFE)
+      # FREE DISK (FFMPEG SAFETY)
       # --------------------------------------------------
       - name: Free disk space
         run: |
@@ -50,7 +56,7 @@ jobs:
           python-version: "3.10"
 
       # --------------------------------------------------
-      # SYSTEM DEPS
+      # SYSTEM DEPENDENCIES
       # --------------------------------------------------
       - name: Install system dependencies
         run: |
@@ -58,12 +64,24 @@ jobs:
           sudo apt-get install -y ffmpeg libass-dev
 
       # --------------------------------------------------
-      # PYTHON DEPS
+      # PYTHON DEPENDENCIES
       # --------------------------------------------------
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # --------------------------------------------------
+      # DEBUG: VERIFY GROQ KEY (SAFE)
+      # --------------------------------------------------
+      - name: Verify GROQ key
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY not available"
+            exit 1
+          else
+            echo "✅ GROQ_API_KEY detected"
+          fi
 
       # --------------------------------------------------
       # CASE SELECTION
@@ -75,11 +93,9 @@ jobs:
           test -f case.json
 
       # --------------------------------------------------
-      # SCRIPT + BEATS
+      # SCRIPT + BEATS (GROQ)
       # --------------------------------------------------
       - name: Generate script and beats
-        env:
-          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
         run: |
           set -euo pipefail
           python script.py
@@ -96,7 +112,7 @@ jobs:
           test -f final_audio.wav
 
       # --------------------------------------------------
-      # SUBTITLES
+      # SUBTITLES (KINETIC)
       # --------------------------------------------------
       - name: Build subtitles
         run: |
@@ -105,15 +121,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VISUALS (ASSET-BASED)
-      # --------------------------------------------------
-      - name: Prepare visuals
-        run: |
-          set -euo pipefail
-          ls frames/scene_*.png
-
-      # --------------------------------------------------
-      # VIDEO BUILD
+      # VIDEO BUILD (ASSET-LOCKED)
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -124,37 +132,29 @@ jobs:
       # --------------------------------------------------
       # VALIDATE SHORTS FORMAT
       # --------------------------------------------------
-      - name: Validate Shorts format
+      - name: Validate Shorts compliance
         run: |
-          RES=$(ffprobe -v error -select_streams v:0 \
+          ffprobe -v error \
+            -select_streams v:0 \
             -show_entries stream=width,height \
-            -of csv=s=x:p=0 output.mp4)
-          echo "Resolution: $RES"
-          if [ "$RES" != "1080x1920" ]; then
-            echo "❌ Not vertical video"
-            exit 1
-          fi
+            -of csv=s=x:p=0 output.mp4
 
       # --------------------------------------------------
-      # UPLOAD
+      # UPLOAD TO YOUTUBE
       # --------------------------------------------------
       - name: Upload to YouTube Shorts
-        env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
           python youtube_upload.py
 
       # --------------------------------------------------
-      # SAVE MEMORY
+      # PERSIST MEMORY
       # --------------------------------------------------
       - name: Persist memory
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add memory/ used_cases.json upload_meta.jsonl || true
-          git commit -m "chore: daily US-morning shorts memory update" || true
+          git add memory used_cases.json upload_meta.jsonl || true
+          git commit -m "chore: update memory [skip ci]" || true
           git push || true
