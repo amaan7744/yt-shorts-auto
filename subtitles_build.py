@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-TikTok / Brain-Rot Kinetic Subtitles
-3–4 words per frame
-Green = currently read
-White = not yet read
+YouTube Shorts – Premium True Crime Subtitles
+• BIG white text
+• Thick black outline
+• Strong shadow (compression-proof)
+• Subtle motion pop
+• Stronger hook animation (first ~2s)
+• 3–4 words per line
+• Lower-middle placement (~70% down)
 """
 
 import whisper
@@ -20,31 +24,32 @@ class Config:
     AUDIO_FILE: str = "final_audio.wav"
     OUTPUT_FILE: str = "subs.ass"
 
-    FONT_NAME: str = "Montserrat Bold"
-    FONT_SIZE: int = 64
+    # FONT (compression-safe)
+    FONT_NAME: str = "Arial Black"
+    FONT_SIZE: int = 84
 
     # ASS colors (AABBGGRR)
-    COLOR_ACTIVE: str = "&H0000FF00"   # GREEN (current word)
-    COLOR_INACTIVE: str = "&H00FFFFFF" # WHITE (not read)
-    COLOR_OUTLINE: str = "&H00000000"
-    COLOR_SHADOW: str = "&H64000000"
+    COLOR_TEXT: str = "&H00FFFFFF"     # White
+    COLOR_OUTLINE: str = "&H00000000"  # Black
+    COLOR_SHADOW: str = "&H64000000"   # Dark shadow
 
     PLAY_RES_X: int = 1080
     PLAY_RES_Y: int = 1920
 
-    # Position: above gameplay (brain-rot safe)
-    MARGIN_V: int = 720
-    MARGIN_H: int = 60
-    ALIGNMENT: int = 8  # top center
+    # Placement: lower-middle (≈70% down)
+    ALIGNMENT: int = 8  # center
+    MARGIN_H: int = 80
+    MARGIN_V: int = 1350
 
-    OUTLINE: int = 3
-    SHADOW: int = 2
+    # Thickness (VERY IMPORTANT)
+    OUTLINE: int = 6
+    SHADOW: int = 3
 
-    WORDS_PER_LINE: int = 4
+    WORDS_PER_LINE: int = 4  # change to 3 if you want more aggressive pacing
     WHISPER_MODEL: str = "small"
 
 # ==================================================
-# TIME
+# TIME FORMAT
 # ==================================================
 
 def ass_time(t: float) -> str:
@@ -61,7 +66,7 @@ def ass_time(t: float) -> str:
 def ass_header(cfg: Config) -> List[str]:
     return [
         "[Script Info]",
-        "Title: Brain-Rot Kinetic Subtitles",
+        "Title: YouTube Shorts True Crime Subtitles",
         "ScriptType: v4.00+",
         f"PlayResX: {cfg.PLAY_RES_X}",
         f"PlayResY: {cfg.PLAY_RES_Y}",
@@ -73,7 +78,7 @@ def ass_header(cfg: Config) -> List[str]:
         " ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow,"
         " Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Default,{cfg.FONT_NAME},{cfg.FONT_SIZE},"
-        f"{cfg.COLOR_ACTIVE},{cfg.COLOR_INACTIVE},{cfg.COLOR_OUTLINE},"
+        f"{cfg.COLOR_TEXT},{cfg.COLOR_TEXT},{cfg.COLOR_OUTLINE},"
         f"{cfg.COLOR_SHADOW},-1,0,0,0,100,100,0,0,1,"
         f"{cfg.OUTLINE},{cfg.SHADOW},{cfg.ALIGNMENT},"
         f"{cfg.MARGIN_H},{cfg.MARGIN_H},{cfg.MARGIN_V},1",
@@ -83,19 +88,37 @@ def ass_header(cfg: Config) -> List[str]:
     ]
 
 # ==================================================
-# SUBTITLE LINE CREATION
+# MOTION TRANSFORMS
 # ==================================================
 
-def build_karaoke(words: List[Dict]) -> str:
-    parts = []
-    for w in words:
-        dur = max(1, int((w["end"] - w["start"]) * 100))
-        text = w["word"].strip().upper()
-        parts.append(f"{{\\k{dur}}}{text}")
-    return " ".join(parts)
+def hook_transform() -> str:
+    """
+    Stronger pop for hook (first ~2 seconds)
+    """
+    return (
+        r"{\an8\pos(540,1350)\fscx85\fscy85"
+        r"\t(0,140,\fscx105\fscy105)"
+        r"\t(140,260,\fscx100\fscy100)}"
+    )
+
+def normal_transform() -> str:
+    """
+    Subtle pop for rest of video
+    """
+    return (
+        r"{\an8\pos(540,1350)\fscx92\fscy92"
+        r"\t(0,120,\fscx100\fscy100)}"
+    )
+
+# ==================================================
+# WORD CHUNKING
+# ==================================================
 
 def chunk_words(words: List[Dict], n: int) -> List[List[Dict]]:
     return [words[i:i + n] for i in range(0, len(words), n)]
+
+def chunk_text(words: List[Dict]) -> str:
+    return " ".join(w["word"].strip().upper() for w in words)
 
 # ==================================================
 # MAIN
@@ -131,18 +154,19 @@ def main():
         for chunk in chunks:
             start = chunk[0]["start"]
             end = chunk[-1]["end"]
-            text = build_karaoke(chunk)
+            text = chunk_text(chunk)
+
+            # Hook = first ~2 seconds
+            motion = hook_transform() if start < 2.2 else normal_transform()
 
             subs.append(
                 f"Dialogue: 0,{ass_time(start)},{ass_time(end)},"
-                f"Default,,0,0,0,,{text}"
+                f"Default,,0,0,0,,{motion}{text}"
             )
             lines += 1
 
-    with open(cfg.OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(subs))
-
-    print(f"[SUBS] ✅ Generated {lines} kinetic subtitle lines")
+    Path(cfg.OUTPUT_FILE).write_text("\n".join(subs), encoding="utf-8")
+    print(f"[SUBS] ✅ Generated {lines} subtitle lines")
 
 if __name__ == "__main__":
     main()
