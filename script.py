@@ -10,10 +10,6 @@ STRUCTURE:
 5. Mini-hook doubt
 6. Context / unresolved detail
 7. CTA + looping engagement question
-
-- 7 sentences
-- ~35–40 seconds total
-- Visuals mapped dynamically from text
 """
 
 import os
@@ -33,7 +29,6 @@ from groq import Groq
 
 PRIMARY_MODEL = "llama-3.3-70b-instruct"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
-
 
 CASE_FILE = "case.json"
 SCRIPT_FILE = "script.txt"
@@ -76,7 +71,7 @@ def load_case() -> Dict:
     return json.loads(Path(CASE_FILE).read_text())
 
 # ==================================================
-# PROMPT (CONTENT-ENGINEERED)
+# PROMPT
 # ==================================================
 
 def build_prompt(case: Dict) -> str:
@@ -88,40 +83,34 @@ STRICT RULES:
   - No names
   - No locations
   - No dates
-  - Examples: "Was it murder or suicide?" / "What really happened that night?"
 
-• Sentence 2 reveals:
-  - What happened
-  - To whom
-  - Where
-
-• Sentence 3 shows evidence or a POV moment
-• Sentence 4 describes police or investigation action
-• Sentence 5 introduces a MINI-HOOK doubt or contradiction
-• Sentence 6 adds context or unexplained detail
-• Sentence 7 MUST end with a QUESTION (loop)
+• Sentence 2 reveals what happened, to whom, and where
+• Sentence 3 shows evidence or POV
+• Sentence 4 describes investigation or police action
+• Sentence 5 introduces doubt or contradiction
+• Sentence 6 adds unresolved context
+• Sentence 7 MUST end with a question (loop)
 
 STYLE:
 • Calm investigative tone
 • No accusations
 • No conclusions
 • Every sentence must describe ONE clear visual moment
-• No emojis, no hashtags
 
 CASE DETAILS:
 Location: {case['location']}
 Background: {case['summary']}
 
-Output ONLY the 7 sentences as ONE paragraph.
+Output ONLY the 7 sentences as one paragraph.
 """
 
 # ==================================================
-# AI CALL
+# AI CALL (WITH FALLBACK)
 # ==================================================
 
-def call_ai(client: Groq, prompt: str) -> str:
+def call_ai(client: Groq, prompt: str, model: str) -> str:
     res = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -141,7 +130,7 @@ def call_ai(client: Groq, prompt: str) -> str:
     return clean(res.choices[0].message.content)
 
 # ==================================================
-# VISUAL / ASSET MAPPING (CONTENT-DRIVEN)
+# ASSET MAPPING
 # ==================================================
 
 def sentence_to_asset(sentence: str) -> str:
@@ -169,15 +158,15 @@ def sentence_to_asset(sentence: str) -> str:
 # ==================================================
 
 def build_beats(sentences: List[str]) -> List[Dict]:
-    beats = []
-    for i, sentence in enumerate(sentences):
-        beats.append({
+    return [
+        {
             "beat_id": i + 1,
-            "text": sentence.strip(),
+            "text": s.strip(),
             "estimated_duration": BLOCK_DURATION,
-            "asset_key": sentence_to_asset(sentence)
-        })
-    return beats
+            "asset_key": sentence_to_asset(s),
+        }
+        for i, s in enumerate(sentences)
+    ]
 
 # ==================================================
 # MAIN
@@ -188,32 +177,34 @@ def main():
     client = init_client()
 
     script_body = None
+    models = [PRIMARY_MODEL, FALLBACK_MODEL]
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            candidate = call_ai(client, build_prompt(case))
-            sentences = re.findall(r"[^.!?]+[.!?]?", candidate)
+    for model in models:
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                candidate = call_ai(client, build_prompt(case), model)
+                sentences = re.findall(r"[^.!?]+[.!?]?", candidate)
 
-            if len(sentences) == 7:
-                script_body = candidate
-                break
+                if len(sentences) == 7:
+                    script_body = candidate
+                    break
 
-            print(f"[SCRIPT] ⚠️ Attempt {attempt}: got {len(sentences)} sentences")
-            time.sleep(RETRY_DELAY)
+                print(f"[SCRIPT] ⚠️ {model} attempt {attempt}: {len(sentences)} sentences")
+                time.sleep(RETRY_DELAY)
 
-        except Exception as e:
-            print(f"[SCRIPT] ⚠️ Attempt {attempt} failed: {e}")
-            time.sleep(RETRY_DELAY)
+            except Exception as e:
+                print(f"[SCRIPT] ⚠️ {model} attempt {attempt} failed: {e}")
+                time.sleep(RETRY_DELAY)
+
+        if script_body:
+            break
 
     if not script_body:
         sys.exit("[SCRIPT] ❌ Failed to generate valid 7-sentence script")
 
     engagement = random.choice(ENGAGEMENT_QUESTIONS)
 
-    final_script = (
-        script_body.rstrip(". ")
-        + f" {CTA_LINE} {engagement}"
-    )
+    final_script = f"{script_body} {CTA_LINE} {engagement}"
 
     sentences = re.findall(r"[^.!?]+[.!?]?", script_body)
     beats = build_beats(sentences)
