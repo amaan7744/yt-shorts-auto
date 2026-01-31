@@ -1,8 +1,7 @@
-name: Auto YouTube Shorts – Crime (Hardened)
+name: Auto YouTube Shorts – Crime (Asset-Only Hardened)
 
 on:
   workflow_dispatch:
-  
 
 concurrency:
   group: yt-shorts-upload
@@ -18,46 +17,61 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
-      HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
 
     steps:
+      # --------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # --------------------------------------------------
+      # FREE DISK (FFmpeg safety)
+      # --------------------------------------------------
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo rm -rf /usr/share/swift /var/lib/apt/lists/*
+          df -h
 
+      # --------------------------------------------------
+      # PYTHON
+      # --------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # --------------------------------------------------
+      # SYSTEM DEPS
+      # --------------------------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg libass-dev
 
+      # --------------------------------------------------
+      # PYTHON DEPS
+      # --------------------------------------------------
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # Ensure requirements.txt exists or list them directly here
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            # Explicitly adding beautifulsoup4 and lxml to fix your error
-            pip install requests pillow beautifulsoup4 lxml google-api-python-client google-auth-httplib2 google-auth-oauthlib
-          fi
+          pip install -r requirements.txt
 
+      # --------------------------------------------------
+      # CASE SELECTION
+      # --------------------------------------------------
       - name: Select case
         run: |
           set -euo pipefail
           python case_search.py
           test -f case.json
 
+      # --------------------------------------------------
+      # SCRIPT + BEATS (AI TEXT ONLY)
+      # --------------------------------------------------
       - name: Generate script and beats
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
@@ -67,43 +81,72 @@ jobs:
           test -f script.txt
           test -f beats.json
 
+      # --------------------------------------------------
+      # VOICEOVER
+      # --------------------------------------------------
       - name: Generate voiceover
         run: |
           set -euo pipefail
           python tts_generate.py --output final_audio.wav
           test -f final_audio.wav
 
+      # --------------------------------------------------
+      # SUBTITLES
+      # --------------------------------------------------
       - name: Build subtitles
         run: |
           set -euo pipefail
           python subtitles_build.py
           test -f subs.ass
 
-      - name: Generate Visuals
+      # --------------------------------------------------
+      # ASSET VALIDATION (CRITICAL)
+      # --------------------------------------------------
+      - name: Validate assets
         run: |
           set -euo pipefail
-          python scene_composer.py
-          if [ ! "$(ls frames/scene_*.png)" ]; then
-            echo "❌ No images generated"
-            exit 1
-          fi
+          test -d asset
+          test "$(ls asset/*.mp4 | wc -l)" -ge 5
 
+      # --------------------------------------------------
+      # VIDEO BUILD (ASSET ONLY)
+      # --------------------------------------------------
       - name: Build Shorts video
         run: |
           set -euo pipefail
           python video_build.py
           test -f output.mp4
 
-      - name: Validate Orientation
+      # --------------------------------------------------
+      # QUALITY GATES (NO BULLSHIT)
+      # --------------------------------------------------
+      - name: Validate video quality
         run: |
           set -euo pipefail
-          RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 output.mp4)
-          if [ "$RES" != "1080x1920" ]; then
-            echo "❌ Wrong Resolution: $RES"
-            exit 1
-          fi
 
-      - name: Upload to YouTube
+          echo "Checking resolution..."
+          RES=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height \
+            -of csv=s=x:p=0 output.mp4)
+          [ "$RES" = "1080x1920" ] || (echo "❌ Bad resolution: $RES" && exit 1)
+
+          echo "Checking duration..."
+          DUR=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 output.mp4 | awk '{print int($1)}')
+          [ "$DUR" -le 60 ] || (echo "❌ Too long: ${DUR}s" && exit 1)
+
+          echo "Checking codec..."
+          CODEC=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 output.mp4)
+          [ "$CODEC" = "h264" ] || (echo "❌ Wrong codec: $CODEC" && exit 1)
+
+          echo "✅ Quality checks passed"
+
+      # --------------------------------------------------
+      # UPLOAD
+      # --------------------------------------------------
+      - name: Upload to YouTube Shorts
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -112,11 +155,14 @@ jobs:
           set -euo pipefail
           python youtube_upload.py
 
+      # --------------------------------------------------
+      # SAVE MEMORY
+      # --------------------------------------------------
       - name: Persist memory
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add memory/ used_cases.json upload_meta.jsonl || true
-          git commit -m "chore: update production memory [skip ci]" || true
+          git commit -m "chore: update memory [skip ci]" || true
           git push || true
