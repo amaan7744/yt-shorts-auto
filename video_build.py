@@ -3,7 +3,8 @@
 YouTube Shorts Video Builder
 - Asset-driven
 - Vertical-safe
-- FFmpeg-cover equivalent (NO black bars)
+- No black bars
+- ALWAYS ends exactly with audio
 """
 
 import json
@@ -49,6 +50,7 @@ def main():
     # FILTER COMPLEX
     # -----------------------------
     filters = []
+
     for i, beat in enumerate(beats):
         dur = beat["estimated_duration"]
         filters.append(
@@ -61,13 +63,19 @@ def main():
         )
 
     concat_inputs = "".join(f"[v{i}]" for i in range(len(beats)))
-    filters.append(f"{concat_inputs}concat=n={len(beats)}:v=1:a=0[v];")
+    filters.append(
+        f"{concat_inputs}"
+        f"concat=n={len(beats)}:v=1:a=0[vconcat];"
+    )
+
+    # 🔑 PAD VIDEO so it NEVER ends before audio
+    filters.append("[vconcat]tpad=stop_mode=clone[vpad];")
 
     if SUBS_FILE.exists():
-        filters.append(f"[v]ass={SUBS_FILE}[vout]")
+        filters.append(f"[vpad]ass={SUBS_FILE}[vout]")
         vmap = "[vout]"
     else:
-        vmap = "[v]"
+        vmap = "[vpad]"
 
     filter_complex = "".join(filters)
 
@@ -82,16 +90,16 @@ def main():
         "-profile:v", "high",
         "-level", "4.2",
         "-pix_fmt", "yuv420p",
-        "-crf", "18",                # HIGH QUALITY
-        "-preset", "slow",           # Better compression, no blur
+        "-crf", "18",              # High quality
+        "-preset", "slow",
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",
+        "-shortest",               # 🔑 Ends EXACTLY when audio ends
         "-movflags", "+faststart",
         str(OUTPUT)
     ])
 
-    print("[VIDEO] 🎬 Rendering...")
+    print("[VIDEO] 🎬 Rendering…")
     subprocess.run(cmd, check=True)
     print("[VIDEO] ✅ output.mp4 ready")
 
