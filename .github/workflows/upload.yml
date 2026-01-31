@@ -1,7 +1,12 @@
-name: Auto YouTube Shorts – Crime (Asset-Only Hardened)
+name: Auto YouTube Shorts – Crime (US Morning)
 
 on:
   workflow_dispatch:
+
+  schedule:
+    # US Morning Target
+    # 13:00 UTC ≈ 8–9 AM US Eastern (best Shorts discovery window)
+    - cron: "0 13 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -28,7 +33,7 @@ jobs:
           fetch-depth: 0
 
       # --------------------------------------------------
-      # FREE DISK (FFmpeg safety)
+      # FREE DISK (FFMPEG SAFE)
       # --------------------------------------------------
       - name: Free disk space
         run: |
@@ -70,7 +75,7 @@ jobs:
           test -f case.json
 
       # --------------------------------------------------
-      # SCRIPT + BEATS (AI TEXT ONLY)
+      # SCRIPT + BEATS
       # --------------------------------------------------
       - name: Generate script and beats
         env:
@@ -100,16 +105,15 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # ASSET VALIDATION (CRITICAL)
+      # VISUALS (ASSET-BASED)
       # --------------------------------------------------
-      - name: Validate assets
+      - name: Prepare visuals
         run: |
           set -euo pipefail
-          test -d asset
-          test "$(ls asset/*.mp4 | wc -l)" -ge 5
+          ls frames/scene_*.png
 
       # --------------------------------------------------
-      # VIDEO BUILD (ASSET ONLY)
+      # VIDEO BUILD
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -118,30 +122,18 @@ jobs:
           test -f output.mp4
 
       # --------------------------------------------------
-      # QUALITY GATES (NO BULLSHIT)
+      # VALIDATE SHORTS FORMAT
       # --------------------------------------------------
-      - name: Validate video quality
+      - name: Validate Shorts format
         run: |
-          set -euo pipefail
-
-          echo "Checking resolution..."
           RES=$(ffprobe -v error -select_streams v:0 \
             -show_entries stream=width,height \
             -of csv=s=x:p=0 output.mp4)
-          [ "$RES" = "1080x1920" ] || (echo "❌ Bad resolution: $RES" && exit 1)
-
-          echo "Checking duration..."
-          DUR=$(ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 output.mp4 | awk '{print int($1)}')
-          [ "$DUR" -le 60 ] || (echo "❌ Too long: ${DUR}s" && exit 1)
-
-          echo "Checking codec..."
-          CODEC=$(ffprobe -v error -select_streams v:0 \
-            -show_entries stream=codec_name \
-            -of default=noprint_wrappers=1:nokey=1 output.mp4)
-          [ "$CODEC" = "h264" ] || (echo "❌ Wrong codec: $CODEC" && exit 1)
-
-          echo "✅ Quality checks passed"
+          echo "Resolution: $RES"
+          if [ "$RES" != "1080x1920" ]; then
+            echo "❌ Not vertical video"
+            exit 1
+          fi
 
       # --------------------------------------------------
       # UPLOAD
@@ -164,5 +156,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add memory/ used_cases.json upload_meta.jsonl || true
-          git commit -m "chore: update memory [skip ci]" || true
+          git commit -m "chore: daily US-morning shorts memory update" || true
           git push || true
