@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder - Ultra-Resilient Edition
-Fixes black backgrounds and build failures by ensuring proper asset mapping.
+YouTube Shorts Video Builder
+- Uses asset videos only
+- Audio locked
+- No black frames
+- No quality drop
 """
 
 import json
@@ -9,99 +12,90 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Configuration
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
 
-# File Paths
 BEATS = Path("beats.json")
-FRAMES = Path("frames")
 AUDIO = Path("final_audio.wav")
 SUBS = Path("subs.ass")
 OUTPUT = Path("output.mp4")
 
-def die(msg):
-    print(f"[VIDEO] ❌ {msg}")
-    sys.exit(1)
+ASSET_DIR = Path("asset")
 
-def build_video():
-    # 1. Validation
+ASSET_MAP = {
+    "car_pov": "Car POV.mp4",
+    "parked_car": "parked car.mp4",
+    "cctv": "cctv.mp4",
+    "interrogation": "interogationroom.mp4",
+    "hallway": "hallway.mp4",
+    "dark_room": "dark room.mp4",
+    "closing_door": "closing door.mp4",
+    "evidence": "evidence.mp4",
+    "mobile_message": "mobilemessage.mp4",
+    "shadow": "shadow.mp4",
+    "rooftop": "rooftop.mp4",
+    "window_pov": "window pov.mp4",
+    "yellow_tape": "yellow tape.mp4",
+    "dynamics": "dynamics.mp4",
+}
+
+def die(msg):
+    sys.exit(f"[VIDEO] ❌ {msg}")
+
+def main():
     if not BEATS.exists(): die("beats.json missing")
     if not AUDIO.exists(): die("final_audio.wav missing")
     if not SUBS.exists(): die("subs.ass missing")
 
-    try:
-        data = json.loads(BEATS.read_text())
-        beats = data["beats"]
-    except Exception as e:
-        die(f"Failed to parse beats.json: {e}")
+    beats = json.loads(BEATS.read_text())["beats"]
 
-    print(f"[VIDEO] 🎬 Building Short with {len(beats)} scenes...")
+    inputs = []
+    filters = []
+    idx = 0
 
-    # 2. Build the Command
-    cmd = ["ffmpeg", "-y"]
-
-    # Add Image Inputs
     for beat in beats:
-        img_path = FRAMES / f"scene_{beat['beat_id']:02d}.png"
-        if not img_path.exists():
-            print(f"[VIDEO] ⚠️ Warning: {img_path} missing, skipping beat.")
-            continue
-        
-        # -loop 1 + -t defines the duration for each image input
-        duration = float(beat.get("estimated_duration", 3.0))
-        cmd.extend(["-loop", "1", "-t", f"{duration:.2f}", "-i", str(img_path)])
+        key = beat["asset_key"]
+        asset_name = ASSET_MAP.get(key, ASSET_MAP["dynamics"])
+        asset_path = ASSET_DIR / asset_name
 
-    # Add Audio Input
-    cmd.extend(["-i", str(AUDIO)])
+        if not asset_path.exists():
+            die(f"Asset missing: {asset_path}")
 
-    # 3. Filter Complex
-    # We use a single-pass filter to scale, crop, and stack the images
-    filter_parts = []
-    input_count = 0
-    
-    for i in range(len(beats)):
-        img_path = FRAMES / f"scene_{beat['beat_id']:02d}.png"
-        if not img_path.exists(): continue
-        
-        # Force images to fill 1080x1920 to eliminate black gaps
-        filter_parts.append(
-            f"[{input_count}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-            f"crop={WIDTH}:{HEIGHT},setsar=1[v{input_count}];"
+        dur = float(beat["estimated_duration"])
+
+        inputs.extend(["-i", str(asset_path)])
+        filters.append(
+            f"[{idx}:v]trim=0:{dur},setpts=PTS-STARTPTS,"
+            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=cover,"
+            f"crop={WIDTH}:{HEIGHT}[v{idx}];"
         )
-        input_count += 1
-    
-    if input_count == 0:
-        die("No valid images found in frames/ folder.")
+        idx += 1
 
-    # Concatenate visual streams
-    concat_v = "".join(f"[v{i}]" for i in range(input_count))
-    filter_parts.append(f"{concat_v}concat=n={input_count}:v=1:a=0[vconcat];")
-    
-    # Overlay Subtitles
-    filter_parts.append(f"[vconcat]ass={SUBS}[vfinal]")
+    concat = "".join(f"[v{i}]" for i in range(idx))
+    filters.append(f"{concat}concat=n={idx}:v=1:a=0[v];")
+    filters.append(f"[v]ass={SUBS}[vout]")
 
-    # 4. Final Assembly
-    cmd.extend([
-        "-filter_complex", "".join(filter_parts),
-        "-map", "[vfinal]",
-        "-map", f"{input_count}:a",  # Maps the audio which is the last input
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-i", str(AUDIO),
+        "-filter_complex", "".join(filters),
+        "-map", "[vout]",
+        "-map", f"{idx}:a",
         "-c:v", "libx264",
-        "-preset", "superfast",      # Faster render for GitHub Actions
-        "-crf", "22",                # Good balance of size/quality
+        "-crf", "18",
+        "-preset", "slow",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        "-shortest",                 # Cut video if audio ends early
+        "-b:a", "192k",
+        "-shortest",
         "-movflags", "+faststart",
         str(OUTPUT)
-    ])
+    ]
 
-    print("[VIDEO] ⚡ Rendering final video file...")
-    try:
-        subprocess.run(cmd, check=True)
-        print(f"[VIDEO] ✅ SUCCESS → {OUTPUT}")
-    except subprocess.CalledProcessError as e:
-        die(f"FFmpeg failed with exit code {e.returncode}")
+    print("[VIDEO] 🎬 Rendering…")
+    subprocess.run(cmd, check=True)
+    print("[VIDEO] ✅ output.mp4 ready")
 
 if __name__ == "__main__":
-    build_video()
+    main()
