@@ -3,8 +3,9 @@
 YouTube Shorts Video Builder
 - Asset-driven
 - Vertical-safe
-- No black bars
-- ALWAYS ends exactly with audio
+- Never ends early
+- Never runs long
+- HARD-LOCKED to audio duration
 """
 
 import json
@@ -13,7 +14,6 @@ import sys
 from pathlib import Path
 
 WIDTH, HEIGHT = 1080, 1920
-FPS = 30
 
 BEATS_FILE = Path("beats.json")
 ASSET_DIR = Path("asset")
@@ -36,7 +36,7 @@ def main():
     cmd = ["ffmpeg", "-y"]
 
     # -----------------------------
-    # INPUTS
+    # VIDEO INPUTS
     # -----------------------------
     for beat in beats:
         asset = ASSET_DIR / f"{beat['asset_key']}.mp4"
@@ -44,7 +44,10 @@ def main():
             die(f"Missing asset: {asset}")
         cmd.extend(["-i", str(asset)])
 
+    # AUDIO INPUT (LAST INPUT)
     cmd.extend(["-i", str(AUDIO_FILE)])
+
+    audio_index = len(beats)
 
     # -----------------------------
     # FILTER COMPLEX
@@ -64,18 +67,19 @@ def main():
 
     concat_inputs = "".join(f"[v{i}]" for i in range(len(beats)))
     filters.append(
-        f"{concat_inputs}"
-        f"concat=n={len(beats)}:v=1:a=0[vconcat];"
+        f"{concat_inputs}concat=n={len(beats)}:v=1:a=0[vraw];"
     )
 
-    # 🔑 PAD VIDEO so it NEVER ends before audio
-    filters.append("[vconcat]tpad=stop_mode=clone[vpad];")
+    # 🔒 HARD TRIM VIDEO TO AUDIO LENGTH
+    filters.append(
+        f"[vraw]trim=duration=shortest,setpts=PTS-STARTPTS[vtrim];"
+    )
 
     if SUBS_FILE.exists():
-        filters.append(f"[vpad]ass={SUBS_FILE}[vout]")
+        filters.append(f"[vtrim]ass={SUBS_FILE}[vout]")
         vmap = "[vout]"
     else:
-        vmap = "[vpad]"
+        vmap = "[vtrim]"
 
     filter_complex = "".join(filters)
 
@@ -85,21 +89,21 @@ def main():
     cmd.extend([
         "-filter_complex", filter_complex,
         "-map", vmap,
-        "-map", f"{len(beats)}:a",
+        "-map", f"{audio_index}:a",
         "-c:v", "libx264",
         "-profile:v", "high",
         "-level", "4.2",
         "-pix_fmt", "yuv420p",
-        "-crf", "18",              # High quality
+        "-crf", "18",
         "-preset", "slow",
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",               # 🔑 Ends EXACTLY when audio ends
         "-movflags", "+faststart",
+        "-shortest",              # extra safety
         str(OUTPUT)
     ])
 
-    print("[VIDEO] 🎬 Rendering…")
+    print("[VIDEO] 🎬 Rendering (audio-locked)…")
     subprocess.run(cmd, check=True)
     print("[VIDEO] ✅ output.mp4 ready")
 
