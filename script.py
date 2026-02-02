@@ -11,7 +11,12 @@ RULES:
 • FAIL if no match
 """
 
-import os, sys, json, time, re, random
+import os
+import sys
+import json
+import time
+import re
+import random
 from pathlib import Path
 from groq import Groq
 
@@ -32,7 +37,7 @@ TEMPERATURE = 0.35
 MAX_ATTEMPTS = 4
 RETRY_DELAY = 1.5
 
-CTA_LINE = "Part 2 is already up.”
+CTA_LINE = "Part 2 is already up."
 ENGAGEMENT_QUESTIONS = [
     "What do you think really happened?",
     "Which detail doesn’t add up?",
@@ -44,7 +49,6 @@ ENGAGEMENT_QUESTIONS = [
 # ==================================================
 
 ASSET_KEYWORDS = {
-    # ───────────── PEOPLE / DISCOVERY ─────────────
     "5_second_anime_style_cinematic_scene_a_woman_lying.mp4":
         ["woman lying", "found dead", "living room", "body on floor"],
 
@@ -63,7 +67,6 @@ ASSET_KEYWORDS = {
     "stylized_anime_cartoon_woman_collapsed_near_a.mp4":
         ["woman collapsed", "indoors"],
 
-    # ───────────── ROOMS ─────────────
     "a_child_s_bedroom_with_toys_scattered_on.mp4":
         ["child bedroom", "toys", "child room"],
 
@@ -76,7 +79,6 @@ ASSET_KEYWORDS = {
     "dark_room.mp4":
         ["dark room", "inside", "no lights"],
 
-    # ───────────── BATHROOM ─────────────
     "anime_cartoon_realism_bathroom_door_half_open_bright.mp4":
         ["bathroom door", "half open"],
 
@@ -89,27 +91,15 @@ ASSET_KEYWORDS = {
     "stylized_anime_cartoon_foggy_bathroom_mirror_with.mp4":
         ["foggy mirror", "bathroom mirror"],
 
-    # ───────────── CHILD / EMOTIONAL ─────────────
     "crayon_drawing_on_the_floor_dark_shapes.mp4":
         ["child drawing", "crayon drawing"],
 
-    "how_could_a_child_disappear_without_making.mp4":
-        ["child disappear", "missing child"],
-
-    "if_a_child_saw_everything_why_did.mp4":
-        ["child witness", "saw everything"],
-
-    "if_a_child_saw_it_why_was.mp4":
-        ["child saw", "ignored witness"],
-
-    # ───────────── CAFÉ / TABLE ─────────────
     "anime_style_video_a_quiet_cafe_at_night.mp4":
         ["cafe", "coffee shop", "table", "cup"],
 
     "why_was_dinner_still_warm_when_they.mp4":
         ["dinner table", "food still warm"],
 
-    # ───────────── STREET / OUTDOOR ─────────────
     "blurred_alley.mp4":
         ["alley", "narrow street"],
 
@@ -128,7 +118,6 @@ ASSET_KEYWORDS = {
     "window_pov.mp4":
         ["window", "looking out"],
 
-    # ───────────── VEHICLES ─────────────
     "car_pov.mp4":
         ["driving", "car pov"],
 
@@ -144,41 +133,27 @@ ASSET_KEYWORDS = {
     "anime_style_scene_parked_car_at_night_trunk.mp4":
         ["car trunk", "parked car trunk"],
 
-    # ───────────── OFFICE / WORK ─────────────
     "stylized_anime_scene_office_desk_with_laptop.mp4":
         ["office desk", "laptop"],
 
     "why_was_his_computer_still_logged_in.mp4":
         ["computer logged in", "office computer"],
 
-    "why_did_his_coworkers_hear_nothing_that.mp4":
-        ["coworkers", "office night"],
-
-    # ───────────── CCTV / POV ─────────────
     "cctv.mp4":
         ["cctv", "surveillance"],
-
-    "stylized_anime_scene_elevator_interior_man_standing.mp4":
-        ["elevator", "last seen"],
 
     "closing_door.mp4":
         ["closing door", "last moment"],
 
-    # ───────────── HOSPITAL ─────────────
     "elderly_man_in_a_hospital_bed_heart.mp4":
         ["hospital bed", "heart monitor"],
 
     "empty_hospital_hallway_gurney_parked_sideways_shadowy.mp4":
         ["hospital hallway", "gurney"],
 
-    # ───────────── ROOFTOP ─────────────
     "rooftop.mp4":
         ["rooftop"],
 
-    "what_happened_on_this_rooftop_before_sunrise.mp4":
-        ["rooftop before sunrise"],
-
-    # ───────────── MISC ─────────────
     "shadow.mp4":
         ["shadow", "figure watching"],
 
@@ -224,11 +199,11 @@ def pick_asset(sentence: str) -> str:
             matches.append(asset)
 
     if not matches:
-        raise ValueError(f"❌ No asset matches sentence: {sentence}")
+        raise ValueError(f"No asset matches sentence: {sentence}")
 
     asset = random.choice(matches)
     if not (ASSET_DIR / asset).exists():
-        raise FileNotFoundError(f"❌ Asset missing: {asset}")
+        raise FileNotFoundError(f"Asset missing: {asset}")
 
     return asset
 
@@ -252,16 +227,19 @@ def main():
                 temperature=TEMPERATURE,
                 max_tokens=240
             )
+
             text = res.choices[0].message.content.strip()
             sentences = re.findall(r"[^.!?]+[.!?]?", text)
+
             if len(sentences) == 7:
                 script = sentences
                 break
+
         if script:
             break
 
     if not script:
-        sys.exit("❌ Script generation failed")
+        sys.exit("Script generation failed")
 
     beats = []
     for i, s in enumerate(script):
@@ -272,12 +250,18 @@ def main():
             "duration": BLOCK_DURATION
         })
 
-    final_script = " ".join(script) + " " + CTA_LINE + " " + random.choice(ENGAGEMENT_QUESTIONS)
+    final_script = (
+        " ".join(script)
+        + " "
+        + CTA_LINE
+        + " "
+        + random.choice(ENGAGEMENT_QUESTIONS)
+    )
 
-    Path(SCRIPT_FILE).write_text(final_script)
-    Path(BEATS_FILE).write_text(json.dumps({"beats": beats}, indent=2))
+    Path(SCRIPT_FILE).write_text(final_script, encoding="utf-8")
+    Path(BEATS_FILE).write_text(json.dumps({"beats": beats}, indent=2), encoding="utf-8")
 
-    print("✅ Script + assets matched with ZERO guesswork")
+    print("✅ Script + assets matched successfully")
 
 # ==================================================
 if __name__ == "__main__":
