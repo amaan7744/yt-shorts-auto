@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   build-upload:
+    name: Build & Upload Crime Short
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -22,7 +23,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
 
-      # 🔑 REQUIRED SECRETS (EXPLICITLY EXPOSED)
+      # 🔑 REQUIRED SECRETS
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -48,7 +49,7 @@ jobs:
           df -h
 
       # --------------------------------------------------
-      # PYTHON
+      # PYTHON SETUP
       # --------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -72,16 +73,15 @@ jobs:
           pip install -r requirements.txt
 
       # --------------------------------------------------
-      # DEBUG: VERIFY GROQ KEY (SAFE)
+      # VERIFY SECRETS
       # --------------------------------------------------
-      - name: Verify GROQ key
+      - name: Verify GROQ API key
         run: |
           if [ -z "$GROQ_API_KEY" ]; then
-            echo "❌ GROQ_API_KEY not available"
+            echo "❌ GROQ_API_KEY missing"
             exit 1
-          else
-            echo "✅ GROQ_API_KEY detected"
           fi
+          echo "✅ GROQ_API_KEY detected"
 
       # --------------------------------------------------
       # CASE SELECTION
@@ -93,7 +93,7 @@ jobs:
           test -f case.json
 
       # --------------------------------------------------
-      # SCRIPT + BEATS (GROQ)
+      # SCRIPT + BEATS
       # --------------------------------------------------
       - name: Generate script and beats
         run: |
@@ -112,7 +112,7 @@ jobs:
           test -f final_audio.wav
 
       # --------------------------------------------------
-      # SUBTITLES (KINETIC)
+      # SUBTITLES
       # --------------------------------------------------
       - name: Build subtitles
         run: |
@@ -121,7 +121,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD (ASSET-LOCKED)
+      # VIDEO BUILD
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -134,6 +134,7 @@ jobs:
       # --------------------------------------------------
       - name: Validate Shorts compliance
         run: |
+          set -euo pipefail
           ffprobe -v error \
             -select_streams v:0 \
             -show_entries stream=width,height \
@@ -148,7 +149,7 @@ jobs:
           python youtube_upload.py
 
       # --------------------------------------------------
-      # PERSIST MEMORY
+      # PERSIST MEMORY (NON-BLOCKING)
       # --------------------------------------------------
       - name: Persist memory
         if: always()
