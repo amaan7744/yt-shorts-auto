@@ -5,7 +5,7 @@ ABSOLUTE ASSET-LOCKED MATCHING
 
 RULES:
 • EVERY asset on disk MUST be declared
-• NO guessing filenames
+• Filenames must match EXACTLY
 • NO script changes
 • FAIL if mismatch
 """
@@ -27,12 +27,12 @@ BLOCK_DURATION = 5.0
 CTA_LINE = "Follow for part two — what do you think really happened?"
 
 # ==================================================
-# 🔒 EXACT ASSET REGISTRY (FROM SCREENSHOTS)
+# 🔒 EXACT ASSET REGISTRY (VERBATIM)
 # ==================================================
 
 ASSET_KEYWORDS = {
 
-    # --- PEOPLE / DISCOVERY ---
+    # PEOPLE / DISCOVERY
     "5_second_anime_style_cinematic_scene_a_woman_lying.mp4": ["woman lying"],
     "5_second_anime_style_cinematic_scene_a_young_woman.mp4": ["young woman"],
     "anime_style_cinematic_video_elderly_woman_lying_near.mp4": ["elderly woman"],
@@ -43,7 +43,7 @@ ASSET_KEYWORDS = {
     "stylized_anime_cartoon_woman_collapsed_near_a.mp4": ["woman collapsed"],
     "stylized_anime_cartoon_video_a_human_figure.mp4": ["human figure"],
 
-    # --- CHILD / FAMILY ---
+    # CHILD / FAMILY
     "a_child_s_bedroom_with_toys_scattered_on.mp4": ["child bedroom"],
     "crayon_drawing_on_the_floor_dark_shapes.mp4": ["crayon drawing"],
     "anime_style_video_school_backpack_on_sidewalk_early.mp4": ["school backpack"],
@@ -52,7 +52,7 @@ ASSET_KEYWORDS = {
     "if_a_child_saw_it_why_was.mp4": ["child witness"],
     "what_went_wrong_during_a_normal_family.mp4": ["family home"],
 
-    # --- ROOMS / INTERIORS ---
+    # ROOMS / INTERIORS
     "anime_style_scene_bedroom_with_ceiling_fan_rotating.mp4": ["bedroom"],
     "anime_style_cinematic_scene_dark_bedroom_wall_clock.mp4": ["bedroom"],
     "dark_room.mp4": ["dark room"],
@@ -62,22 +62,24 @@ ASSET_KEYWORDS = {
     "anime_style_cinematic_video_backyard_at_dawn_uneven.mp4": ["backyard"],
     "anime_style_scene_swing_moving_slowly_by_itself.mp4": ["swing"],
 
-    # --- DOORS ---
+    # DOORS
     "animate_why_was_the_door_locked_from.mp4": ["door locked"],
     "closing_door.mp4": ["closing door"],
     "who_rang_the_doorbell_and_never_left.mp4": ["doorbell"],
 
-    # --- BATHROOM ---
+    # BATHROOM
     "anime_cartoon_realism_bathroom_door_half_open_bright.mp4": ["bathroom"],
     "anime_style_scene_bathroom_door_closed_police_flashlight.mp4": ["bathroom"],
     "anime_style_scene_sink_overflowing_water_spilling_onto.mp4": ["sink overflowing"],
     "stylized_anime_cartoon_foggy_bathroom_mirror_with.mp4": ["foggy mirror"],
 
-    # --- CAFE / TABLE ---
+    # CAFE / TABLE (BOTH VARIANTS — EXACT)
     "anime_style_video_a_quiet_cafe_at_night.mp4": ["cafe"],
+    "anime_style_video_a_quiet_caf_at_night.mp4": ["cafe"],
+
     "why_was_dinner_still_warm_when_they.mp4": ["dinner table"],
 
-    # --- STREET / OUTDOOR ---
+    # STREET / OUTDOOR
     "blurred_alley.mp4": ["alley"],
     "night_alley.mp4": ["alley"],
     "what_happened_on_this_street_after_midnight.mp4": ["street midnight"],
@@ -85,35 +87,37 @@ ASSET_KEYWORDS = {
     "bridge.mp4": ["bridge"],
     "window_pov.mp4": ["window"],
 
-    # --- VEHICLES ---
+    # VEHICLES (BOTH VARIANTS — EXACT)
     "car_pov.mp4": ["car pov"],
     "person_driving.mp4": ["person driving"],
+    "person driving.mp4": ["person driving"],
+
     "parked_car.mp4": ["parked car"],
     "empty_highway_at_night_car_parked_on.mp4": ["empty highway"],
     "anime_style_scene_parked_car_at_night_trunk.mp4": ["car trunk"],
     "anime_style_cinematic_shot_man_slumped_in_driver_s.mp4": ["driver seat"],
 
-    # --- DIGITAL / CCTV ---
+    # DIGITAL / CCTV
     "mobilemessage.mp4": ["text message"],
     "anime_style_cinematic_close_up_phone_glowing_in_a.mp4": ["phone glowing"],
     "cctv.mp4": ["cctv"],
     "stylized_anime_scene_elevator_interior_man_standing.mp4": ["elevator"],
 
-    # --- OFFICE ---
+    # OFFICE
     "stylized_anime_scene_office_desk_with_laptop.mp4": ["office desk"],
     "why_was_his_computer_still_logged_in.mp4": ["computer"],
     "why_did_his_coworkers_hear_nothing_that.mp4": ["coworkers"],
 
-    # --- MEDICAL ---
+    # MEDICAL
     "elderly_man_in_a_hospital_bed_heart.mp4": ["hospital bed"],
     "empty_hospital_hallway_gurney_parked_sideways_shadowy.mp4": ["hospital hallway"],
 
-    # --- ROOFTOP / TRAIN ---
+    # ROOFTOP / TRAIN
     "rooftop.mp4": ["rooftop"],
     "what_happened_on_this_rooftop_before_sunrise.mp4": ["rooftop"],
     "stylized_anime_cartoon_scene_empty_train_platform.mp4": ["train platform"],
 
-    # --- MISC ---
+    # MISC
     "shadow.mp4": ["shadow"],
     "evidence.mp4": ["evidence"],
     "interogationroom.mp4": ["interrogation"],
@@ -122,7 +126,7 @@ ASSET_KEYWORDS = {
 }
 
 # ==================================================
-# VALIDATION (STRICT)
+# VALIDATION
 # ==================================================
 
 def validate_assets():
