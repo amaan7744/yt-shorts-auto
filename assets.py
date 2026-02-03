@@ -54,6 +54,8 @@ ASSET_KEYWORDS = {
 
     # CAFE
     "anime_style_video_a_quiet_caf_at_night.mp4": ["cafe"],
+    "why_was_dinner_still_warm_when_they.mp4": ["dinner still warm"],
+
 
     # STREET / OUTDOOR
     "blurred_alley.mp4": ["alley"],
