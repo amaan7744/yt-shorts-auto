@@ -1,29 +1,43 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder - FIXED VERSION
-- Proper audio duration detection
-- Accurate beat timing sync
-- No early/late endings
-- Better error handling
+YouTube Shorts Video Builder (STABLE)
+
+FIXES:
+- Supports asset_key OR asset_file
+- Supports estimated_duration OR duration
+- Audio is the timing authority
+- No zero-duration bugs
+- Deterministic, CI-safe
 """
+
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+# ==================================================
+# CONFIG
+# ==================================================
+
 WIDTH, HEIGHT = 1080, 1920
+
 BEATS_FILE = Path("beats.json")
 ASSET_DIR = Path("asset")
 AUDIO_FILE = Path("final_audio.wav")
 SUBS_FILE = Path("subs.ass")
 OUTPUT = Path("output.mp4")
 
+FPS = 30
+
+# ==================================================
+# HELPERS
+# ==================================================
+
 def die(msg):
     print(f"[VIDEO] ❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
-def get_audio_duration(audio_path):
-    """Get exact audio duration using ffprobe"""
+def ffprobe_duration(path: Path) -> float:
     try:
         result = subprocess.run(
             [
@@ -31,28 +45,7 @@ def get_audio_duration(audio_path):
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
-                str(audio_path)
-            ],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        duration = float(result.stdout.strip())
-        print(f"[VIDEO] 🎵 Audio duration: {duration:.3f}s")
-        return duration
-    except Exception as e:
-        die(f"Failed to get audio duration: {e}")
-
-def get_video_duration(video_path):
-    """Get exact video duration using ffprobe"""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                str(video_path)
+                str(path)
             ],
             capture_output=True,
             text=True,
@@ -60,169 +53,166 @@ def get_video_duration(video_path):
         )
         return float(result.stdout.strip())
     except Exception as e:
-        print(f"[VIDEO] ⚠️  Warning: Could not get duration for {video_path}: {e}")
-        return None
+        die(f"Failed to get duration for {path}: {e}")
+
+def get_beat_duration(beat: dict, index: int) -> float:
+    dur = beat.get("estimated_duration") or beat.get("duration")
+    if not dur or dur <= 0:
+        die(f"Beat {index} missing valid duration")
+    return float(dur)
+
+def get_beat_asset(beat: dict, index: int) -> Path:
+    if "asset_file" in beat:
+        asset = ASSET_DIR / beat["asset_file"]
+    elif "asset_key" in beat:
+        asset = ASSET_DIR / f"{beat['asset_key']}.mp4"
+    else:
+        die(f"Beat {index} missing asset reference")
+
+    if not asset.exists():
+        die(f"Missing asset file: {asset}")
+
+    return asset
+
+# ==================================================
+# MAIN
+# ==================================================
 
 def main():
-    # Validation
+    # -------- Validation --------
     if not BEATS_FILE.exists():
         die("beats.json missing")
     if not AUDIO_FILE.exists():
         die("final_audio.wav missing")
     if not ASSET_DIR.exists():
-        die(f"Asset directory missing: {ASSET_DIR}")
+        die("asset directory missing")
 
-    # Load beats
+    # -------- Load beats --------
     try:
         beats_data = json.loads(BEATS_FILE.read_text())
-        beats = beats_data.get("beats", [])
-        if not beats:
-            die("No beats found in beats.json")
+        beats = beats_data.get("beats")
+        if not beats or not isinstance(beats, list):
+            die("beats.json has no valid beats list")
     except Exception as e:
         die(f"Failed to parse beats.json: {e}")
 
-    # Get exact audio duration
-    audio_duration = get_audio_duration(AUDIO_FILE)
+    # -------- Audio duration --------
+    audio_duration = ffprobe_duration(AUDIO_FILE)
+    print(f"[VIDEO] 🎵 Audio duration: {audio_duration:.3f}s")
 
-    # Calculate total estimated duration from beats
-    total_beat_duration = sum(beat.get("estimated_duration", 0) for beat in beats)
-    print(f"[VIDEO] 📊 Total beat duration: {total_beat_duration:.3f}s")
-    
-    if abs(total_beat_duration - audio_duration) > 0.5:
-        print(f"[VIDEO] ⚠️  Warning: Beat duration ({total_beat_duration:.3f}s) differs from audio ({audio_duration:.3f}s)")
+    # -------- Beat validation --------
+    print(f"[VIDEO] 🔍 Validating {len(beats)} beats...")
+    total_beat_duration = 0.0
+    assets = []
 
-    # Verify all assets exist and get their durations
-    print(f"[VIDEO] 🔍 Verifying {len(beats)} assets...")
     for i, beat in enumerate(beats):
-        asset_key = beat.get("asset_key")
-        if not asset_key:
-            die(f"Beat {i} missing 'asset_key'")
-        
-        asset = ASSET_DIR / f"{asset_key}.mp4"
-        if not asset.exists():
-            die(f"Missing asset: {asset}")
-        
-        # Check if asset is long enough
-        video_dur = get_video_duration(asset)
-        beat_dur = beat.get("estimated_duration", 0)
-        if video_dur and video_dur < beat_dur:
-            print(f"[VIDEO] ⚠️  Asset {asset_key}.mp4 ({video_dur:.2f}s) shorter than beat duration ({beat_dur:.2f}s) - will loop")
+        dur = get_beat_duration(beat, i)
+        asset = get_beat_asset(beat, i)
 
-    # Build ffmpeg command
+        total_beat_duration += dur
+        assets.append((asset, dur))
+
+        asset_dur = ffprobe_duration(asset)
+        if asset_dur < dur:
+            print(
+                f"[VIDEO] ⚠️  {asset.name} is shorter ({asset_dur:.2f}s) "
+                f"than beat ({dur:.2f}s) — looping enabled"
+            )
+
+    print(f"[VIDEO] 📊 Total beat duration: {total_beat_duration:.3f}s")
+
+    if abs(total_beat_duration - audio_duration) > 0.75:
+        print(
+            f"[VIDEO] ⚠️  Beat duration differs from audio "
+            f"({total_beat_duration:.2f}s vs {audio_duration:.2f}s)"
+        )
+
+    # -------- FFmpeg build --------
     cmd = ["ffmpeg", "-y", "-hide_banner"]
 
-    # Add all video inputs
-    for beat in beats:
-        asset = ASSET_DIR / f"{beat['asset_key']}.mp4"
+    # Inputs
+    for asset, _ in assets:
         cmd.extend(["-i", str(asset)])
 
-    # Add audio input (last input)
     cmd.extend(["-i", str(AUDIO_FILE)])
-    audio_index = len(beats)
+    audio_index = len(assets)
 
-    # ----------------------------- 
-    # FILTER COMPLEX - FIXED VERSION
-    # ----------------------------- 
+    # -------- Filters --------
     filters = []
-    
-    # Process each video segment
-    for i, beat in enumerate(beats):
-        dur = beat["estimated_duration"]
-        
-        # Handle video processing with proper looping if needed
+
+    for i, (_, dur) in enumerate(assets):
         filters.append(
             f"[{i}:v]"
-            f"fps=30,"  # Normalize frame rate first
+            f"fps={FPS},"
             f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={WIDTH}:{HEIGHT},"
-            f"setsar=1,"  # Set sample aspect ratio
-            f"loop=loop=-1:size=1:start=0,"  # Loop if needed
+            f"setsar=1,"
+            f"loop=loop=-1:size=1:start=0,"
             f"trim=duration={dur},"
             f"setpts=PTS-STARTPTS"
             f"[v{i}];"
         )
-    
-    # Concatenate all segments
-    concat_inputs = "".join(f"[v{i}]" for i in range(len(beats)))
+
+    concat_inputs = "".join(f"[v{i}]" for i in range(len(assets)))
     filters.append(
-        f"{concat_inputs}concat=n={len(beats)}:v=1:a=0[vconcat];"
+        f"{concat_inputs}concat=n={len(assets)}:v=1:a=0[vcat];"
     )
-    
-    # Trim concatenated video to EXACT audio duration
+
     filters.append(
-        f"[vconcat]trim=end={audio_duration},setpts=PTS-STARTPTS[vtrim];"
+        f"[vcat]trim=end={audio_duration},setpts=PTS-STARTPTS[vtrim];"
     )
-    
-    # Add subtitles if present
+
     if SUBS_FILE.exists():
-        # Escape the path properly for ffmpeg
-        subs_path = str(SUBS_FILE).replace('\\', '/').replace(':', '\\:')
-        filters.append(f"[vtrim]ass='{subs_path}'[vout]")
+        subs = str(SUBS_FILE).replace("\\", "/").replace(":", "\\:")
+        filters.append(f"[vtrim]ass='{subs}'[vout]")
         vmap = "[vout]"
-        print(f"[VIDEO] 📝 Adding subtitles from {SUBS_FILE}")
+        print(f"[VIDEO] 📝 Subtitles enabled")
     else:
         vmap = "[vtrim]"
-        print("[VIDEO] ℹ️  No subtitles file found")
+        print(f"[VIDEO] ℹ️  No subtitles")
 
     filter_complex = "".join(filters)
 
-    # ----------------------------- 
-    # OUTPUT SETTINGS
-    # ----------------------------- 
+    # -------- Output --------
     cmd.extend([
         "-filter_complex", filter_complex,
         "-map", vmap,
         "-map", f"{audio_index}:a",
-        
-        # Video encoding
         "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
         "-profile:v", "high",
         "-level", "4.2",
-        "-pix_fmt", "yuv420p",
         "-crf", "18",
-        "-preset", "medium",  # Changed from "slow" for faster encoding
-        "-r", "30",  # Force output frame rate
-        
-        # Audio encoding
+        "-preset", "medium",
+        "-r", str(FPS),
         "-c:a", "aac",
         "-b:a", "192k",
-        "-ar", "44100",  # Audio sample rate
-        
-        # Duration enforcement
-        "-t", str(audio_duration),  # Explicit duration limit
+        "-ar", "44100",
+        "-t", str(audio_duration),
         "-shortest",
-        
-        # Optimization
         "-movflags", "+faststart",
-        
         str(OUTPUT)
     ])
 
-    # Print command for debugging
-    print("[VIDEO] 🎬 FFmpeg command:")
-    print(" ".join(cmd))
-    print()
+    # -------- Run --------
+    print("[VIDEO] 🎬 Rendering video…")
+    subprocess.run(cmd, check=True)
 
-    # Run ffmpeg
-    print("[VIDEO] 🎬 Rendering video (audio-locked)...")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        die(f"FFmpeg failed with exit code {e.returncode}")
-
-    # Verify output
+    # -------- Verify --------
     if not OUTPUT.exists():
-        die("Output file was not created")
-    
-    output_duration = get_video_duration(OUTPUT)
-    print(f"[VIDEO] ✅ output.mp4 ready!")
-    print(f"[VIDEO] 📊 Output duration: {output_duration:.3f}s (target: {audio_duration:.3f}s)")
-    
-    duration_diff = abs(output_duration - audio_duration)
-    if duration_diff > 0.1:
-        print(f"[VIDEO] ⚠️  Duration mismatch: {duration_diff:.3f}s difference")
-    else:
-        print(f"[VIDEO] ✅ Duration match perfect! (±{duration_diff:.3f}s)")
+        die("output.mp4 was not created")
 
+    out_dur = ffprobe_duration(OUTPUT)
+    diff = abs(out_dur - audio_duration)
+
+    print(f"[VIDEO] ✅ output.mp4 ready")
+    print(f"[VIDEO] 📊 Output duration: {out_dur:.3f}s (Δ {diff:.3f}s)")
+
+    if diff > 0.15:
+        print("[VIDEO] ⚠️  Minor duration mismatch")
+    else:
+        print("[VIDEO] ✅ Duration perfectly synced")
+
+# ==================================================
 if __name__ == "__main__":
     main()
