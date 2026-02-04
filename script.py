@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """
-Script Generator – True Crime Shorts (ASSET-LOCKED FINAL)
+Script Generator – True Crime Shorts (FINAL, TIMELINE-FIRST)
+
+ARCHITECTURE:
+1. AI generates ONE continuous 35–40s script
+2. Script is split into ~5s segments (CTA may be shorter)
+3. Each segment gets a narrative ROLE
+4. Keywords are derived from (role + text)
+5. Assets are matched STRICTLY from assets.py
+6. Script adapts to assets — not the other way around
 
 RULES:
-- assets.py is the single source of truth
-- Script AUTO-ADJUSTS to fit assets
+- assets.py is the ONLY source of truth
 - NO random asset picking
-- NO asset reuse per video
+- NO asset reuse in the same video
 - Hook ALWAYS shows a human
-- NO fallback scripts
-- AI failure = pipeline failure
+- CTA always mentions the victim by name
+- Uses Groq streaming API ONLY
+- No fallback script — AI failure = pipeline failure
 """
 
 import json
@@ -20,14 +28,26 @@ from groq import Groq
 
 from assets import ASSET_KEYWORDS, validate_assets
 
+# ==================================================
+# OUTPUT FILES
+# ==================================================
+
 SCRIPT_FILE = "script.txt"
 BEATS_FILE = "beats.json"
 
 # ==================================================
-# CASE INPUT
+# TIMING CONFIG
+# ==================================================
+
+WORDS_PER_SECOND = 2.5        # ~150 WPM narration
+TARGET_SEGMENT_SEC = 5.0     # Shorts pacing
+
+# ==================================================
+# CASE INPUT (EDIT THIS ONLY)
 # ==================================================
 
 CURRENT_CASE = {
+    "victim_name": "Joe",
     "victim_desc": "a night shift nurse",
     "location": "a hospital parking lot",
     "time_of_incident": "3:17 AM",
@@ -36,7 +56,7 @@ CURRENT_CASE = {
 }
 
 # ==================================================
-# GROQ CONFIG (LOCKED)
+# GROQ CONFIG (LOCKED, STREAMING)
 # ==================================================
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -46,126 +66,179 @@ if not GROQ_API_KEY:
     raise RuntimeError("❌ GROQ_API_KEY missing")
 
 # ==================================================
-# BEAT DEFINITIONS (VISUAL LAW)
+# CTA CONFIG (ROTATING, CONTROLLED)
 # ==================================================
 
-BEAT_RULES = {
-    0: {"must_have": ["woman", "man", "elderly", "human"]},     # Hook (human only)
-    1: {"must_have": ["hospital", "street", "bridge", "train"]},
-    2: {"must_have": ["woman", "man", "elderly", "human"]},
-    3: {"must_have": ["hospital", "hallway", "door"]},
-    4: {"must_have": ["phone", "text", "evidence", "computer", "mirror"]},
-    5: {"must_have": ["cctv", "elevator"]},
-    6: {"must_have": ["human", "shadow", "rooftop"]}
-}
+CTA_ACTIONS = [
+    "Subscribe",
+    "Follow",
+    "Stay with us"
+]
+
+def build_cta(victim_name: str) -> str:
+    action = random.choice(CTA_ACTIONS)
+    return (
+        f"{action} to help keep cases like {victim_name}'s alive — "
+        f"was this really the truth?"
+    )
 
 # ==================================================
-# GROQ CLIENT
+# 1. FULL SCRIPT GENERATION (AI ONLY)
 # ==================================================
 
-def init_client():
-    return Groq(api_key=GROQ_API_KEY)
-
-# ==================================================
-# AI SCRIPT GENERATION (STREAMING – CORRECT)
-# ==================================================
-
-def generate_script_with_tags(client):
-    allowed_tags = sorted({t for tags in ASSET_KEYWORDS.values() for t in tags})
+def generate_full_script(client: Groq) -> str:
+    """
+    Generates ONE continuous true-crime script (~35–40s).
+    No beats, no tags, no structure labels.
+    """
 
     prompt = f"""
-Write EXACTLY 7 beats for a true crime YouTube Short.
+Write a continuous true-crime narration for a YouTube Short.
+Target length: 35–40 seconds when spoken.
 
-For EACH beat return JSON with:
-- "text"
-- "tags" (ONLY from the allowed list)
+STYLE:
+- Calm, investigative
+- High retention
+- Short sentences
+- No filler
+- No section labels
+- End with a strong looping question
 
-STRUCTURE:
-1. Hook QUESTION (human present)
-2. What happened + where
-3. Who (victim)
-4. Discovery / investigation
-5. Strange clue (object)
-6. Context / contradiction
-7. CTA + looping QUESTION
+STRUCTURE (IMPLICIT, DO NOT LABEL):
+- Hook question
+- What happened + where + when
+- Who the victim was
+- Discovery / investigation
+- Strange detail that doesn’t add up
+- Context that challenges the official story
+- Looping ending question
 
-CASE:
-Victim: {CURRENT_CASE['victim_desc']}
+CASE DETAILS:
+Victim name: {CURRENT_CASE['victim_name']}
+Victim description: {CURRENT_CASE['victim_desc']}
 Location: {CURRENT_CASE['location']}
 Time: {CURRENT_CASE['time_of_incident']}
-Clue: {CURRENT_CASE['strange_clue']}
-Theory: {CURRENT_CASE['official_theory']}
-
-ALLOWED TAGS:
-{allowed_tags}
-
-RULES:
-- Adjust wording to match tags
-- Do NOT invent tags
-- Beat 1 and 7 MUST be questions
-- Output ONLY raw JSON array
+Strange clue: {CURRENT_CASE['strange_clue']}
+Official theory: {CURRENT_CASE['official_theory']}
 """
 
     completion = client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.35,
-        max_completion_tokens=1024,
+        temperature=0.4,
+        max_completion_tokens=900,
         top_p=1,
         stream=True
     )
 
-    raw = ""
+    script = ""
     for chunk in completion:
         if chunk.choices and chunk.choices[0].delta.content:
-            raw += chunk.choices[0].delta.content
+            script += chunk.choices[0].delta.content
 
-    if not raw.strip():
-        raise RuntimeError("❌ Groq returned empty response")
+    if not script.strip():
+        raise RuntimeError("❌ Groq returned empty script")
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise RuntimeError(f"❌ Invalid JSON from Groq:\n{raw}")
-
-    if not isinstance(data, list) or len(data) != 7:
-        raise RuntimeError("❌ Script must contain exactly 7 beats")
-
-    return data
+    return script.strip()
 
 # ==================================================
-# ASSET RESOLUTION (STRICT, NO RANDOM SHIT)
+# 2. SEGMENTATION (TIME-BASED)
 # ==================================================
 
-def resolve_asset(beat_index, tags, used_assets):
-    rules = BEAT_RULES[beat_index]
+def segment_script(text: str):
+    """
+    Splits script into ~5s segments based on speaking rate.
+    """
+    words = text.split()
+    segments, current, acc_time = [], [], 0.0
 
-    for asset, asset_tags in ASSET_KEYWORDS.items():
+    for w in words:
+        current.append(w)
+        acc_time += 1 / WORDS_PER_SECOND
+
+        if acc_time >= TARGET_SEGMENT_SEC:
+            segments.append(" ".join(current))
+            current, acc_time = [], 0.0
+
+    if current:
+        segments.append(" ".join(current))
+
+    return segments
+
+# ==================================================
+# 3. ROLE ASSIGNMENT (DETERMINISTIC)
+# ==================================================
+
+ROLES = [
+    "hook",
+    "event",
+    "victim",
+    "discovery",
+    "clue",
+    "context",
+    "cta"
+]
+
+def assign_roles(segments):
+    """
+    Assigns roles by position.
+    Extra segments default to context.
+    """
+    out = []
+    for i, seg in enumerate(segments):
+        role = ROLES[i] if i < len(ROLES) else "context"
+        out.append((seg, role))
+    return out
+
+# ==================================================
+# 4. KEYWORD DERIVATION (CONTROLLED, ASSET-AWARE)
+# ==================================================
+
+def derive_keywords(text: str, role: str):
+    t = text.lower()
+
+    # Hook must always show a human
+    if role == "hook":
+        return ["human"]
+
+    # Location-aware
+    if "hospital" in t:
+        return ["hospital"]
+
+    if "car" in t or "keys" in t:
+        return ["car pov"]
+
+    if "door" in t:
+        return ["door locked", "closing door"]
+
+    if role == "clue":
+        return ["evidence", "phone", "text"]
+
+    if role == "cta":
+        return ["human", "shadow"]
+
+    return ["human"]
+
+# ==================================================
+# 5. ASSET MATCHING (STRICT, NO RANDOM SHIT)
+# ==================================================
+
+def match_asset(keywords, used_assets):
+    # First pass: all keywords must match
+    for asset, tags in ASSET_KEYWORDS.items():
         if asset in used_assets:
             continue
-        if any(r in asset_tags for r in rules["must_have"]) and any(t in asset_tags for t in tags):
+        if all(k in tags for k in keywords):
             return asset
 
-    # Auto-adjust: relax to beat rules only
-    for asset, asset_tags in ASSET_KEYWORDS.items():
+    # Second pass: partial match (script auto-adjust)
+    for asset, tags in ASSET_KEYWORDS.items():
         if asset in used_assets:
             continue
-        if any(r in asset_tags for r in rules["must_have"]):
+        if any(k in tags for k in keywords):
             return asset
 
-    raise RuntimeError(f"❌ No valid asset for beat {beat_index + 1}")
-
-# ==================================================
-# DURATION
-# ==================================================
-
-def estimate_duration(text, idx):
-    base = len(text.split()) * 0.42
-    if idx == 4:
-        return round(base + 2.5, 2)
-    if idx == 6:
-        return round(base + 1.5, 2)
-    return round(base + 0.8, 2)
+    raise RuntimeError(f"❌ No asset matches keywords: {keywords}")
 
 # ==================================================
 # MAIN
@@ -175,30 +248,39 @@ def main():
     print("🧪 Validating assets…")
     validate_assets()
 
-    client = init_client()
+    client = Groq(api_key=GROQ_API_KEY)
 
-    print("🧠 Generating script via Groq streaming API…")
-    beats_ai = generate_script_with_tags(client)
+    print("🧠 Generating full script via Groq streaming API…")
+    full_script = generate_full_script(client)
+
+    print("✂️ Segmenting script into 5s blocks…")
+    segments = segment_script(full_script)
+
+    # Inject controlled CTA (overwrites last segment text)
+    segments[-1] = build_cta(CURRENT_CASE["victim_name"])
 
     beats = []
     used_assets = set()
 
-    for i, beat in enumerate(beats_ai):
-        asset = resolve_asset(i, beat["tags"], used_assets)
+    print("🎞️ Matching segments to assets…")
+    for i, (text, role) in enumerate(assign_roles(segments)):
+        keywords = derive_keywords(text, role)
+        asset = match_asset(keywords, used_assets)
         used_assets.add(asset)
 
         beats.append({
             "beat_id": i + 1,
-            "text": beat["text"],
+            "text": text,
+            "role": role,
             "asset_file": asset,
-            "duration": estimate_duration(beat["text"], i),
-            "tags": beat["tags"]
+            "duration": round(len(text.split()) / WORDS_PER_SECOND, 2),
+            "keywords": keywords
         })
 
-    Path(SCRIPT_FILE).write_text(" ".join(b["text"] for b in beats), encoding="utf-8")
+    Path(SCRIPT_FILE).write_text(full_script, encoding="utf-8")
     Path(BEATS_FILE).write_text(json.dumps({"beats": beats}, indent=2), encoding="utf-8")
 
-    print("✅ Script + beats generated (Groq streaming, asset-locked)")
+    print("✅ Script generated, segmented, and asset-matched perfectly")
 
 # ==================================================
 if __name__ == "__main__":
