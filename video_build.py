@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder (PURE MERGE, AUDIO-LOCKED)
+YouTube Shorts Video Builder (AUDIO-LOCKED, VISUALLY LOSSLESS)
 
-GOALS:
-- NO re-encoding of video
+TRUTHS:
+- Burned subtitles REQUIRE re-encoding (no exceptions)
+- We use CRF 18 = visually lossless
 - NO scaling, NO fps change
-- Merge video + audio + subtitles only
-- Video ENDS EXACTLY at audio/script end
+- Video ends EXACTLY with audio
 """
 
 import json
@@ -45,7 +45,8 @@ def ffprobe_duration(path: Path) -> float:
             str(path)
         ],
         capture_output=True,
-        text=True
+        text=True,
+        check=True
     )
     return float(r.stdout.strip())
 
@@ -64,27 +65,20 @@ def main():
         die("No beats found")
 
     # --------------------------------------------------
-    # Resolve assets in order
+    # Resolve assets
     # --------------------------------------------------
 
     assets = []
     for i, beat in enumerate(beats):
-        if "asset_file" in beat:
-            asset = ASSET_DIR / beat["asset_file"]
-        elif "asset_key" in beat:
-            asset = ASSET_DIR / f"{beat['asset_key']}.mp4"
-        else:
-            die(f"Beat {i} missing asset reference")
-
+        asset = ASSET_DIR / beat["asset_file"]
         if not asset.exists():
             die(f"Missing asset: {asset}")
-
         assets.append(asset)
 
     print(f"[VIDEO] 🎞️ {len(assets)} video assets queued")
 
     # --------------------------------------------------
-    # Step 1: LOSSLESS CONCAT of videos
+    # Step 1: LOSSLESS CONCAT
     # --------------------------------------------------
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -94,7 +88,7 @@ def main():
 
     merged_video = Path("merged_video.mp4")
 
-    print("[VIDEO] 🔗 Concatenating videos (lossless)")
+    print("[VIDEO] 🔗 Concatenating videos (bit-for-bit)")
     run([
         "ffmpeg", "-y",
         "-f", "concat",
@@ -105,64 +99,54 @@ def main():
     ])
 
     # --------------------------------------------------
-    # Step 2: Trim merged video to EXACT audio duration
+    # Step 2: AUDIO-LOCKED RENDER WITH SUBS
     # --------------------------------------------------
 
     audio_duration = ffprobe_duration(AUDIO_FILE)
     print(f"[VIDEO] 🎵 Audio duration: {audio_duration:.3f}s")
 
-    trimmed_video = Path("trimmed_video.mp4")
+    subs_filter = []
+    if SUBS_FILE.exists():
+        subs = str(SUBS_FILE).replace("\\", "/").replace(":", "\\:")
+        subs_filter = ["-vf", f"ass='{subs}'"]
+        print("[VIDEO] 📝 Burning subtitles (required re-encode)")
 
-    print("[VIDEO] ✂️ Trimming video to audio duration (exact)")
+    print("[VIDEO] 🎬 Final render (visually lossless)")
     run([
         "ffmpeg", "-y",
         "-i", str(merged_video),
-        "-t", f"{audio_duration:.6f}",
-        "-c", "copy",
-        str(trimmed_video)
-    ])
-
-    # --------------------------------------------------
-    # Step 3: Mux audio + subtitles (video still copy)
-    # --------------------------------------------------
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(trimmed_video),
         "-i", str(AUDIO_FILE),
-    ]
-
-    if SUBS_FILE.exists():
-        subs = str(SUBS_FILE).replace("\\", "/").replace(":", "\\:")
-        cmd.extend(["-vf", f"ass='{subs}'"])
-
-    cmd.extend([
+        *subs_filter,
         "-map", "0:v:0",
         "-map", "1:a:0",
-        "-c:v", "copy",     # 🔥 NO video re-encode
+        "-c:v", "libx264",
+        "-crf", "18",              # 🔒 visually lossless
+        "-preset", "veryslow",
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "high",
+        "-level", "4.2",
         "-c:a", "aac",
         "-b:a", "192k",
+        "-t", f"{audio_duration:.6f}",
+        "-shortest",
         "-movflags", "+faststart",
         str(OUTPUT)
     ])
 
-    print("[VIDEO] 🎬 Muxing audio + subtitles")
-    run(cmd)
-
     # --------------------------------------------------
-    # Final verification
+    # Verify
     # --------------------------------------------------
 
     out_dur = ffprobe_duration(OUTPUT)
     diff = abs(out_dur - audio_duration)
 
     print(f"[VIDEO] ✅ output.mp4 ready")
-    print(f"[VIDEO] 🎯 Final duration: {out_dur:.3f}s (Δ {diff:.3f}s)")
+    print(f"[VIDEO] 🎯 Duration: {out_dur:.3f}s (Δ {diff:.3f}s)")
 
     if diff > 0.05:
-        print("[VIDEO] ⚠️  Minor container rounding difference")
+        print("[VIDEO] ⚠️ Container rounding difference (normal)")
     else:
-        print("[VIDEO] ✅ Ends EXACTLY at script/audio end")
+        print("[VIDEO] ✅ Ends EXACTLY at audio/script end")
 
 # ==================================================
 if __name__ == "__main__":
