@@ -3,10 +3,10 @@
 YouTube Shorts Upload Script
 Hardened + Honest Edition
 
-- Validates Shorts eligibility
-- Prints upload quality report
-- Uses strong Shorts classification signals
-- Does NOT attempt impossible compression hacks
+- Strong Shorts classification
+- Safe ffprobe parsing
+- Honest quality reporting
+- No fake compression hacks
 """
 
 import os
@@ -28,7 +28,7 @@ VIDEO_FILE = "output.mp4"
 SCRIPT_FILE = "script.txt"
 META_FILE = "memory/upload_meta.jsonl"
 
-CATEGORY_ID = "22"  # People & Blogs (Shorts-safe)
+CATEGORY_ID = "22"  # People & Blogs
 UPLOAD_COOLDOWN_MINUTES = 90
 
 # --------------------------------------------------
@@ -80,23 +80,25 @@ def should_pause():
 
 def extract_title(script: str) -> str:
     """
-    Shorts-first hook title.
-    Question-based, short, curiosity driven.
+    Extract first full QUESTION sentence.
     """
-    first = script.split("?")[0].strip()
-    words = first.split()
-    title = " ".join(words[:7]).rstrip(".?!")
-    return f"{title[:52]}? #Shorts"
+    for line in script.splitlines():
+        if "?" in line:
+            title = line.strip()
+            break
+    else:
+        title = script[:60]
+
+    title = title.rstrip(".?!")
+    title = title[:55]
+
+    return f"{title}? #Shorts"
 
 def build_metadata():
-    """
-    Shorts classification relies heavily on description.
-    #Shorts MUST appear early.
-    """
     description = (
         "#Shorts #TrueCrime\n"
-        "Unresolved case. Verified records. No conclusions.\n\n"
-        "What really happened that night?"
+        "An unresolved case. One detail didn’t make sense.\n\n"
+        "What do YOU think really happened?"
     )
 
     tags = [
@@ -105,50 +107,47 @@ def build_metadata():
         "true crime shorts",
         "unsolved mystery",
         "crime story",
+        "mystery short",
         "vertical video",
     ]
 
     return description, tags
 
 # --------------------------------------------------
-# QUALITY & SHORTS VALIDATION
+# SHORTS VALIDATION (SAFE)
 # --------------------------------------------------
 
 def validate_shorts_format():
-    """
-    YouTube will NOT classify as Shorts if:
-    - Horizontal
-    - Over 60s
-    """
     try:
         cmd = [
             "ffprobe", "-v", "error",
             "-show_entries", "stream=width,height:format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-of", "json",
             VIDEO_FILE
         ]
-        out = subprocess.check_output(cmd).decode().split()
+        data = json.loads(subprocess.check_output(cmd).decode())
 
-        width = int(out[0])
-        height = int(out[1])
-        duration = float(out[2])
+        stream = data["streams"][0]
+        width = int(stream["width"])
+        height = int(stream["height"])
+        duration = float(data["format"]["duration"])
 
         print(f"[YT] 📊 Video Stats → {width}x{height}, {duration:.2f}s")
 
         if height <= width:
-            sys.exit("[YT] ❌ Video is NOT vertical. Shorts shelf impossible.")
+            sys.exit("[YT] ❌ Video not vertical (Shorts rejected)")
 
         if duration > 60:
-            sys.exit("[YT] ❌ Video longer than 60s. Treated as long-form.")
+            sys.exit("[YT] ❌ Video longer than 60s (Shorts rejected)")
 
     except Exception as e:
         sys.exit(f"[YT] ❌ Shorts validation failed: {e}")
 
+# --------------------------------------------------
+# QUALITY REPORT
+# --------------------------------------------------
+
 def print_quality_report():
-    """
-    Transparency: shows exactly what you're uploading.
-    This does NOT stop compression — it ensures strong input quality.
-    """
     try:
         cmd = [
             "ffprobe", "-v", "error",
@@ -175,7 +174,6 @@ def upload_video(youtube, title, description, tags):
             "description": description,
             "tags": tags,
             "categoryId": CATEGORY_ID,
-            "defaultLanguage": "en",
         },
         "status": {
             "privacyStatus": "public",
@@ -234,13 +232,9 @@ def main():
         print("[YT] ⏸ Upload paused (cooldown active)")
         sys.exit(0)
 
-    # 1. Hard Shorts validation
     validate_shorts_format()
-
-    # 2. Print quality transparency report
     print_quality_report()
 
-    # 3. Metadata
     script = open(SCRIPT_FILE, "r", encoding="utf-8").read().strip()
     title = extract_title(script)
     description, tags = build_metadata()
