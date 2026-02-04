@@ -1,43 +1,42 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – Script Generator (FINAL, ASSET-LOCKED)
+True Crime Shorts – Script Generator (FINAL)
 
-CORE GUARANTEES:
-- assets.py is the ONLY source of asset truth
-- Script drives visuals, NOT the other way around
-- Every 5s segment maps to a REAL asset keyword
-- Hook ALWAYS shows a real human asset
-- NO fake tags (like 'human')
-- NO random scenery
+ABSOLUTE RULES:
+- assets.py is the single source of truth
+- Script defines intent → assets follow
+- NO approximate keywords
+- NO random visuals
+- NO fake tags like "human"
+- Hook ALWAYS shows a person
 - CTA rotates + names victim + loops
 """
 
 import os
 import json
 import random
-import re
 from pathlib import Path
 from groq import Groq
 
 from assets import ASSET_KEYWORDS, validate_assets
 
 # ==================================================
-# FILES
+# OUTPUT FILES
 # ==================================================
 
 SCRIPT_FILE = "script.txt"
 BEATS_FILE = "beats.json"
 
 # ==================================================
-# CASE INPUT (EDIT ONLY THIS)
+# CASE INPUT (ONLY EDIT THIS)
 # ==================================================
 
 CURRENT_CASE = {
     "victim_name": "Joe",
-    "victim_gender": "male",          # male / female / unknown
-    "victim_age": "elderly",           # child / adult / elderly / unknown
+    "victim_gender": "male",      # male / female
+    "victim_age": "elderly",      # child / adult / elderly
     "victim_desc": "an elderly man",
-    "incident_type": "accident",       # accident / murder / suicide / mystery
+    "incident_type": "accident",  # accident / murder / suicide / mystery
     "location": "a hospital parking lot",
     "time": "3:17 AM",
     "key_clue": "his car keys were still in the ignition",
@@ -58,7 +57,7 @@ def build_cta(victim_name: str) -> str:
     )
 
 # ==================================================
-# GROQ CLIENT (STREAMING, EXACT API)
+# GROQ CLIENT (STREAMING – EXACT USAGE)
 # ==================================================
 
 def init_client():
@@ -71,30 +70,35 @@ def init_client():
 # SCRIPT GENERATION (RETENTION FORMULA)
 # ==================================================
 
-def generate_script(client: Groq) -> str:
+def generate_script(client: Groq):
     """
-    Generates a 35–40s script following:
-    Hook → What happened → Who → Where/When → Clue → Contradiction → CTA
+    Returns EXACTLY 7 lines:
+    1. Hook question
+    2. What happened
+    3. Who
+    4. Where + when
+    5. Strange clue
+    6. Official story + doubt
+    7. CTA question (will be replaced)
     """
 
     prompt = f"""
 Write a true crime YouTube Shorts script.
 
-STRICT STRUCTURE (DO NOT BREAK):
-1. HOOK: A sharp QUESTION implying {CURRENT_CASE['incident_type']}
-2. WHAT HAPPENED
-3. WHO IT HAPPENED TO
-4. WHERE + WHEN
-5. STRANGE CLUE
-6. OFFICIAL STORY + DOUBT
-7. CTA-style QUESTION (no subscribe words)
-
-RULES:
-- Short sentences
+STRICT FORMAT:
+- EXACTLY 7 short lines
 - Calm investigative tone
 - No conclusions
-- No names except the victim
-- Each line must describe a VISUAL moment
+- No filler
+
+STRUCTURE:
+1. Hook QUESTION implying {CURRENT_CASE['incident_type']}
+2. What happened
+3. Who it happened to
+4. Where and when
+5. Strange clue
+6. Official explanation + doubt
+7. Looping question
 
 CASE DETAILS:
 Victim: {CURRENT_CASE['victim_desc']}
@@ -103,7 +107,7 @@ Time: {CURRENT_CASE['time']}
 Clue: {CURRENT_CASE['key_clue']}
 Official story: {CURRENT_CASE['official_story']}
 
-Return EXACTLY 7 lines, one per line.
+Return ONLY the 7 lines, one per line.
 """
 
     completion = client.chat.completions.create(
@@ -111,65 +115,78 @@ Return EXACTLY 7 lines, one per line.
         messages=[{"role": "user", "content": prompt}],
         temperature=0.35,
         max_completion_tokens=512,
-        stream=True,
+        stream=True
     )
 
-    script = ""
+    text = ""
     for chunk in completion:
-        script += chunk.choices[0].delta.content or ""
+        text += chunk.choices[0].delta.content or ""
 
-    lines = [l.strip() for l in script.split("\n") if l.strip()]
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
     if len(lines) != 7:
-        raise RuntimeError("❌ Script must be exactly 7 lines")
+        raise RuntimeError(f"❌ Script must be exactly 7 lines, got {len(lines)}")
 
     return lines
 
 # ==================================================
-# KEYWORD DERIVATION (NO FAKE TAGS)
+# INTENT → ASSET TAG MAP (NO GUESSING)
 # ==================================================
 
-def derive_keywords(text: str, index: int):
-    t = text.lower()
+INTENT_TAG_MAP = {
+    "victim_male_elderly": ["elderly man"],
+    "victim_female_elderly": ["elderly woman"],
+    "victim_male": ["human figure"],
+    "victim_female": ["woman"],
 
-    # -------- PERSON (HOOK + WHO) --------
+    "hospital": ["hospital", "hospital hallway"],
+    "parking": ["parked car", "highway", "trunk"],
+
+    "phone_clue": ["phone", "text"],
+    "investigation": ["evidence", "interrogation"],
+    "cta": ["shadow", "human figure"]
+}
+
+# ==================================================
+# KEYWORD DERIVATION (STRICT)
+# ==================================================
+
+def derive_keywords(line: str, index: int):
+    t = line.lower()
+
+    # ---- HOOK + WHO ----
     if index in (0, 2):
         if CURRENT_CASE["victim_age"] == "elderly" and CURRENT_CASE["victim_gender"] == "male":
-            return ["elderly man"]
+            return INTENT_TAG_MAP["victim_male_elderly"]
         if CURRENT_CASE["victim_age"] == "elderly" and CURRENT_CASE["victim_gender"] == "female":
-            return ["elderly woman"]
+            return INTENT_TAG_MAP["victim_female_elderly"]
         if CURRENT_CASE["victim_gender"] == "female":
-            return ["woman"]
-        if CURRENT_CASE["victim_gender"] == "male":
-            return ["man"]
-        return ["human figure"]
+            return INTENT_TAG_MAP["victim_female"]
+        return INTENT_TAG_MAP["victim_male"]
 
-    # -------- LOCATION --------
+    # ---- LOCATION ----
     if "hospital" in t:
-        return ["hospital"]
+        return INTENT_TAG_MAP["hospital"]
+
     if "parking" in t or "car" in t:
-        return ["parked car"]
-    if "street" in t:
-        return ["street"]
+        return INTENT_TAG_MAP["parking"]
 
-    # -------- CLUE --------
-    if "key" in t or "keys" in t:
-        return ["trunk", "car pov"]
-    if "phone" in t or "text" in t:
-        return ["phone", "text"]
+    # ---- CLUE ----
+    if "key" in t or "keys" in t or "phone" in t or "text" in t:
+        return INTENT_TAG_MAP["phone_clue"]
 
-    # -------- INVESTIGATION --------
-    if "official" in t or "ruled" in t:
-        return ["interrogation", "evidence"]
+    # ---- INVESTIGATION ----
+    if "ruled" in t or "official" in t or "police" in t:
+        return INTENT_TAG_MAP["investigation"]
 
-    # -------- CTA --------
+    # ---- CTA ----
     if index == 6:
-        return ["shadow", "human figure"]
+        return INTENT_TAG_MAP["cta"]
 
-    # -------- SAFE FALLBACK --------
-    return ["human figure"]
+    raise RuntimeError(f"❌ Cannot derive asset intent from line: {line}")
 
 # ==================================================
-# ASSET MATCHING (STRICT)
+# ASSET MATCHING (STRICT, NON-RANDOM)
 # ==================================================
 
 def match_asset(keywords, used_assets):
@@ -193,7 +210,7 @@ def main():
     print("🧠 Generating full script via Groq streaming API…")
     lines = generate_script(client)
 
-    # Replace last line with controlled CTA
+    # Replace final line with controlled CTA
     lines[-1] = build_cta(CURRENT_CASE["victim_name"])
 
     print("✂️ Segmenting script into 5s blocks…")
@@ -217,7 +234,7 @@ def main():
     Path(BEATS_FILE).write_text(json.dumps({"beats": beats}, indent=2), encoding="utf-8")
 
     print("✅ Script + beats generated")
-    print("🎯 Visuals are 1:1 aligned with narrative")
+    print("🎯 Script and visuals are strictly aligned")
 
 # ==================================================
 if __name__ == "__main__":
