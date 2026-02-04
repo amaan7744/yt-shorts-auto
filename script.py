@@ -8,6 +8,8 @@ RULES:
 - NO random asset picking
 - NO asset reuse per video
 - Hook ALWAYS shows a human
+- NO fallback scripts
+- AI failure = pipeline failure
 """
 
 import json
@@ -22,7 +24,7 @@ SCRIPT_FILE = "script.txt"
 BEATS_FILE = "beats.json"
 
 # ==================================================
-# CASE INPUT (ONLY EDIT THIS)
+# CASE INPUT
 # ==================================================
 
 CURRENT_CASE = {
@@ -34,26 +36,27 @@ CURRENT_CASE = {
 }
 
 # ==================================================
-# GROQ MODELS (SAFE)
+# GROQ CONFIG (LOCKED)
 # ==================================================
 
-GROQ_MODELS = [
-    "llama3-8b-8192",
-    "mixtral-8x7b-32768"
-]
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    raise RuntimeError("❌ GROQ_API_KEY missing")
 
 # ==================================================
 # BEAT DEFINITIONS (VISUAL LAW)
 # ==================================================
 
 BEAT_RULES = {
-    0: {"must_have": ["woman", "man", "elderly", "child", "human"], "human_required": True},
-    1: {"must_have": ["hospital", "street", "home", "parking", "bridge", "train"]},
-    2: {"must_have": ["woman", "man", "elderly", "child", "human"]},
-    3: {"must_have": ["hospital", "hallway", "door", "police"]},
-    4: {"must_have": ["phone", "text", "evidence", "mirror", "computer", "key"]},
-    5: {"must_have": ["cctv", "clock", "elevator", "timeline"]},
-    6: {"must_have": ["shadow", "human", "rooftop"]}
+    0: {"must_have": ["woman", "man", "elderly", "human"]},     # Hook (human only)
+    1: {"must_have": ["hospital", "street", "bridge", "train"]},
+    2: {"must_have": ["woman", "man", "elderly", "human"]},
+    3: {"must_have": ["hospital", "hallway", "door"]},
+    4: {"must_have": ["phone", "text", "evidence", "computer", "mirror"]},
+    5: {"must_have": ["cctv", "elevator"]},
+    6: {"must_have": ["human", "shadow", "rooftop"]}
 }
 
 # ==================================================
@@ -61,24 +64,21 @@ BEAT_RULES = {
 # ==================================================
 
 def init_client():
-    key = os.getenv("GROQ_API_KEY")
-    if not key:
-        raise RuntimeError("❌ GROQ_API_KEY missing")
-    return Groq(api_key=key)
+    return Groq(api_key=GROQ_API_KEY)
 
 # ==================================================
-# AI SCRIPT GENERATION (TAG-AWARE)
+# AI SCRIPT GENERATION (STREAMING – CORRECT)
 # ==================================================
 
 def generate_script_with_tags(client):
-    asset_tags = sorted({t for tags in ASSET_KEYWORDS.values() for t in tags})
+    allowed_tags = sorted({t for tags in ASSET_KEYWORDS.values() for t in tags})
 
     prompt = f"""
 Write EXACTLY 7 beats for a true crime YouTube Short.
 
-For EACH beat, output JSON with:
-- "text": the sentence
-- "tags": a list of semantic tags
+For EACH beat return JSON with:
+- "text"
+- "tags" (ONLY from the allowed list)
 
 STRUCTURE:
 1. Hook QUESTION (human present)
@@ -89,77 +89,71 @@ STRUCTURE:
 6. Context / contradiction
 7. CTA + looping QUESTION
 
-CASE DETAILS:
+CASE:
 Victim: {CURRENT_CASE['victim_desc']}
 Location: {CURRENT_CASE['location']}
 Time: {CURRENT_CASE['time_of_incident']}
-Strange clue: {CURRENT_CASE['strange_clue']}
-Official theory: {CURRENT_CASE['official_theory']}
+Clue: {CURRENT_CASE['strange_clue']}
+Theory: {CURRENT_CASE['official_theory']}
 
-IMPORTANT RULES:
-- Tags MUST come ONLY from this list:
-{asset_tags}
+ALLOWED TAGS:
+{allowed_tags}
 
-- If unsure, CHANGE THE TEXT to match tags
-- Do NOT invent new tags
+RULES:
+- Adjust wording to match tags
+- Do NOT invent tags
 - Beat 1 and 7 MUST be questions
-
-Return ONLY valid JSON array.
+- Output ONLY raw JSON array
 """
 
-    for model in GROQ_MODELS:
-        try:
-            res = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You write asset-aware true crime Shorts."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=400
-            )
+    completion = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.35,
+        max_completion_tokens=1024,
+        top_p=1,
+        stream=True
+    )
 
-            data = json.loads(res.choices[0].message.content)
+    raw = ""
+    for chunk in completion:
+        if chunk.choices and chunk.choices[0].delta.content:
+            raw += chunk.choices[0].delta.content
 
-            if len(data) != 7:
-                raise ValueError("Script must have exactly 7 beats")
+    if not raw.strip():
+        raise RuntimeError("❌ Groq returned empty response")
 
-            return data
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"❌ Invalid JSON from Groq:\n{raw}")
 
-        except Exception as e:
-            print(f"⚠️ Model {model} failed: {e}")
+    if not isinstance(data, list) or len(data) != 7:
+        raise RuntimeError("❌ Script must contain exactly 7 beats")
 
-    raise RuntimeError("❌ All AI models failed")
+    return data
 
 # ==================================================
-# ASSET RESOLUTION (STRICT)
+# ASSET RESOLUTION (STRICT, NO RANDOM SHIT)
 # ==================================================
 
 def resolve_asset(beat_index, tags, used_assets):
     rules = BEAT_RULES[beat_index]
 
-    candidates = []
     for asset, asset_tags in ASSET_KEYWORDS.items():
         if asset in used_assets:
             continue
-        if all(
-            any(r in at for at in asset_tags)
-            for r in rules["must_have"]
-            if r in tags
-        ):
-            candidates.append(asset)
+        if any(r in asset_tags for r in rules["must_have"]) and any(t in asset_tags for t in tags):
+            return asset
 
-    if not candidates:
-        # AUTO-ADJUST SCRIPT LOGIC: loosen tag requirement
-        for asset, asset_tags in ASSET_KEYWORDS.items():
-            if asset in used_assets:
-                continue
-            if any(t in asset_tags for t in tags):
-                return asset
+    # Auto-adjust: relax to beat rules only
+    for asset, asset_tags in ASSET_KEYWORDS.items():
+        if asset in used_assets:
+            continue
+        if any(r in asset_tags for r in rules["must_have"]):
+            return asset
 
-        raise RuntimeError(f"❌ No valid asset for beat {beat_index + 1}")
-
-    return random.choice(candidates)
+    raise RuntimeError(f"❌ No valid asset for beat {beat_index + 1}")
 
 # ==================================================
 # DURATION
@@ -183,7 +177,7 @@ def main():
 
     client = init_client()
 
-    print("🧠 Generating script with semantic tags…")
+    print("🧠 Generating script via Groq streaming API…")
     beats_ai = generate_script_with_tags(client)
 
     beats = []
@@ -201,17 +195,10 @@ def main():
             "tags": beat["tags"]
         })
 
-    Path(SCRIPT_FILE).write_text(
-        " ".join(b["text"] for b in beats),
-        encoding="utf-8"
-    )
+    Path(SCRIPT_FILE).write_text(" ".join(b["text"] for b in beats), encoding="utf-8")
+    Path(BEATS_FILE).write_text(json.dumps({"beats": beats}, indent=2), encoding="utf-8")
 
-    Path(BEATS_FILE).write_text(
-        json.dumps({"beats": beats}, indent=2),
-        encoding="utf-8"
-    )
-
-    print("✅ Script + beats generated with PERFECT visual alignment")
+    print("✅ Script + beats generated (Groq streaming, asset-locked)")
 
 # ==================================================
 if __name__ == "__main__":
