@@ -3,8 +3,11 @@ name: Auto YouTube Shorts – Crime (Production)
 on:
   workflow_dispatch:
   schedule:
-    # 8:00 AM US Eastern Time = 12:00 UTC
-    - cron: "0 12 * * *"
+    # 🇺🇸 Morning – 9:00 AM US Eastern
+    - cron: "0 14 * * *"
+
+    # 🇺🇸 Lunch – 1:00 PM US Eastern
+    - cron: "0 18 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -49,7 +52,7 @@ jobs:
           df -h
 
       # --------------------------------------------------
-      # PYTHON
+      # PYTHON SETUP
       # --------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -57,7 +60,7 @@ jobs:
           python-version: "3.10"
 
       # --------------------------------------------------
-      # SYSTEM DEPENDENCIES (PINNED FFMPEG)
+      # SYSTEM DEPENDENCIES (NO QUALITY LOSS)
       # --------------------------------------------------
       - name: Install system dependencies
         run: |
@@ -74,7 +77,7 @@ jobs:
           pip install -r requirements.txt
 
       # --------------------------------------------------
-      # VERIFY GROQ KEY
+      # VERIFY GROQ API KEY
       # --------------------------------------------------
       - name: Verify GROQ API key
         run: |
@@ -122,7 +125,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD (QUALITY-LOCKED)
+      # VIDEO BUILD (QUALITY LOCKED)
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
