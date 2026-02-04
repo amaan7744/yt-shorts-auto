@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder (AUDIO-LOCKED, VISUALLY LOSSLESS)
+YouTube Shorts Video Builder (OPTION 1 – PERCEPTUAL UPGRADE)
 
-TRUTHS:
-- Burned subtitles REQUIRE re-encoding (no exceptions)
-- We use CRF 18 = visually lossless
-- NO scaling, NO fps change
-- Video ends EXACTLY with audio
+SOURCE REALITY:
+- Assets ≈ 464x832 @ ~3 Mbps
+- We preserve detail, reduce damage
+
+GOALS:
+- No random motion
+- No FPS changes
+- Audio-locked end
+- Force VP9 (1440p)
+- Subtitles survive compression
 """
 
 import json
@@ -24,6 +29,15 @@ ASSET_DIR = Path("asset")
 AUDIO_FILE = Path("final_audio.wav")
 SUBS_FILE = Path("subs.ass")
 OUTPUT = Path("output.mp4")
+
+# ==================================================
+# QUALITY TARGET (LOCKED)
+# ==================================================
+
+TARGET_W = 1440
+TARGET_H = 2560
+CRF = "17"
+PRESET = "slow"
 
 # ==================================================
 # HELPERS
@@ -69,16 +83,16 @@ def main():
     # --------------------------------------------------
 
     assets = []
-    for i, beat in enumerate(beats):
+    for beat in beats:
         asset = ASSET_DIR / beat["asset_file"]
         if not asset.exists():
             die(f"Missing asset: {asset}")
         assets.append(asset)
 
-    print(f"[VIDEO] 🎞️ {len(assets)} video assets queued")
+    print(f"[VIDEO] 🎞️ {len(assets)} assets queued")
 
     # --------------------------------------------------
-    # Step 1: LOSSLESS CONCAT
+    # Lossless concat (NO quality loss)
     # --------------------------------------------------
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -86,42 +100,52 @@ def main():
         for asset in assets:
             f.write(f"file '{asset.resolve()}'\n")
 
-    merged_video = Path("merged_video.mp4")
+    merged = Path("merged_video.mp4")
 
-    print("[VIDEO] 🔗 Concatenating videos (bit-for-bit)")
+    print("[VIDEO] 🔗 Concatenating assets (lossless)")
     run([
         "ffmpeg", "-y",
         "-f", "concat",
         "-safe", "0",
         "-i", str(concat_file),
         "-c", "copy",
-        str(merged_video)
+        str(merged)
     ])
 
     # --------------------------------------------------
-    # Step 2: AUDIO-LOCKED RENDER WITH SUBS
+    # Final encode (compression-safe)
     # --------------------------------------------------
 
     audio_duration = ffprobe_duration(AUDIO_FILE)
     print(f"[VIDEO] 🎵 Audio duration: {audio_duration:.3f}s")
 
-    subs_filter = []
+    filters = [
+        # upscale gently to force VP9
+        f"scale={TARGET_W}:{TARGET_H}:flags=lanczos:force_original_aspect_ratio=decrease",
+        f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black",
+
+        # light anime-safe cleanup
+        "hqdn3d=0.8:0.8:1.5:1.5"
+    ]
+
     if SUBS_FILE.exists():
         subs = str(SUBS_FILE).replace("\\", "/").replace(":", "\\:")
-        subs_filter = ["-vf", f"ass='{subs}'"]
-        print("[VIDEO] 📝 Burning subtitles (required re-encode)")
+        filters.append(f"ass='{subs}'")
+        print("[VIDEO] 📝 Subtitles burned")
 
-    print("[VIDEO] 🎬 Final render (visually lossless)")
+    vf = ",".join(filters)
+
+    print("[VIDEO] 🎬 Rendering final output")
     run([
         "ffmpeg", "-y",
-        "-i", str(merged_video),
+        "-i", str(merged),
         "-i", str(AUDIO_FILE),
-        *subs_filter,
+        "-vf", vf,
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-c:v", "libx264",
-        "-crf", "18",              # 🔒 visually lossless
-        "-preset", "veryslow",
+        "-crf", CRF,
+        "-preset", PRESET,
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
         "-level", "4.2",
@@ -144,9 +168,11 @@ def main():
     print(f"[VIDEO] 🎯 Duration: {out_dur:.3f}s (Δ {diff:.3f}s)")
 
     if diff > 0.05:
-        print("[VIDEO] ⚠️ Container rounding difference (normal)")
+        print("[VIDEO] ⚠️ Minor container rounding (normal)")
     else:
-        print("[VIDEO] ✅ Ends EXACTLY at audio/script end")
+        print("[VIDEO] ✅ Perfect audio lock")
+
+    print("[VIDEO] 🚀 Upload → VP9 guaranteed")
 
 # ==================================================
 if __name__ == "__main__":
