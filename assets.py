@@ -84,7 +84,7 @@ VIDEO_ASSET_KEYWORDS = {
     "anime_style_scene_parked_car_at_night_trunk.mp4": ["trunk"],
     "anime_style_cinematic_shot_man_slumped_in_driver_s.mp4": ["driver seat"],
 
-    "mobilemessage.mp4": ["text"],
+   
     "anime_style_cinematic_close_up_phone_glowing_in_a.mp4": ["phone"],
     "cctv.mp4": ["cctv"],
     "stylized_anime_scene_elevator_interior_man_standing.mp4": ["elevator"],
