@@ -105,6 +105,34 @@ VIDEO_ASSET_KEYWORDS = {
     "interogationroom.mp4": ["interrogation"],
     "leftover.mp4": ["belongings"],
     "did_he_fall_or_was_he_pushed.mp4": ["fell"],
+        # DIGITAL / PHONE / EVIDENCE
+    "smartphone_lying_on_the_floor_beside_a.mp4": [
+        "smartphone",
+        "phone on floor"
+    ],
+
+    # MEDICAL / HOSPITAL
+    "hospital_corridor_at_night_gurney_partially_visible.mp4": [
+        "hospital corridor",
+        "gurney"
+    ],
+
+    # HUMAN / SILHOUETTE / DISCOVERY
+    "dimly_lit_scene_showing_a_human_figure.mp4": [
+        "human figure",
+        "dimly lit"
+    ],
+    "dimly_lit_scene_showing_a_human_figure (1).mp4": [
+        "human figure",
+        "dimly lit"
+    ],
+
+    # CRIME SCENE / BLOOD
+    "a_quiet_location_with_a_single_blood.mp4": [
+        "blood",
+        "quiet location"
+    ],
+
 }
 
 # =========================
