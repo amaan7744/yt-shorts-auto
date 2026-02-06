@@ -1,1 +1,165 @@
+name: Auto YouTube Shorts – Crime (Production)
 
+on:
+  workflow_dispatch:
+  schedule:
+    # 🇺🇸 Morning Upload – 9:00 AM US Eastern
+    - cron: "0 14 * * *"
+
+    # 🇺🇸 Lunch Upload – 1:00 PM US Eastern
+    - cron: "0 18 * * *"
+
+concurrency:
+  group: yt-shorts-upload
+  cancel-in-progress: true
+
+jobs:
+  build-upload:
+    name: Build & Upload Crime Short
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: write
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      PIP_NO_CACHE_DIR: "1"
+
+      # 🔑 REQUIRED SECRETS
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+      YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
+
+    steps:
+      # --------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # --------------------------------------------------
+      # FREE DISK (FFMPEG SAFETY)
+      # --------------------------------------------------
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/share/swift /var/lib/apt/lists/*
+          df -h
+
+      # --------------------------------------------------
+      # PYTHON
+      # --------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # --------------------------------------------------
+      # SYSTEM DEPENDENCIES (NO CUSTOM FFMPEG)
+      # --------------------------------------------------
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libass-dev
+          ffmpeg -version
+
+      # --------------------------------------------------
+      # PYTHON DEPENDENCIES
+      # --------------------------------------------------
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # --------------------------------------------------
+      # VERIFY GROQ
+      # --------------------------------------------------
+      - name: Verify GROQ API key
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY missing"
+            exit 1
+          fi
+          echo "✅ GROQ_API_KEY detected"
+
+      # --------------------------------------------------
+      # CASE SELECTION (NON-REPEATING)
+      # --------------------------------------------------
+      - name: Select unused case
+        run: |
+          set -euo pipefail
+          python case_search.py
+          test -f case.json
+
+      # --------------------------------------------------
+      # SCRIPT + BEATS (ASSET-LOCKED)
+      # --------------------------------------------------
+      - name: Generate script and beats
+        run: |
+          set -euo pipefail
+          python script.py
+          test -f script.txt
+          test -f beats.json
+
+      # --------------------------------------------------
+      # VOICEOVER
+      # --------------------------------------------------
+      - name: Generate voiceover
+        run: |
+          set -euo pipefail
+          python tts_generate.py --output final_audio.wav
+          test -f final_audio.wav
+
+      # --------------------------------------------------
+      # SUBTITLES
+      # --------------------------------------------------
+      - name: Build subtitles
+        run: |
+          set -euo pipefail
+          python subtitles_build.py
+          test -f subs.ass
+
+      # --------------------------------------------------
+      # VIDEO BUILD (PURE MERGE, NO RE-ENCODE)
+      # --------------------------------------------------
+      - name: Build Shorts video
+        run: |
+          set -euo pipefail
+          python video_build.py
+          test -f output.mp4
+
+      # --------------------------------------------------
+      # QUALITY VALIDATION (VISUAL ONLY)
+      # --------------------------------------------------
+      - name: Validate video quality
+        run: |
+          set -euo pipefail
+          ffprobe -v error \
+            -select_streams v:0 \
+            -show_entries stream=width,height,pix_fmt \
+            -of default=noprint_wrappers=1 output.mp4
+
+      # --------------------------------------------------
+      # UPLOAD (NO TRANSCODE CONTROL — YT HANDLES IT)
+      # --------------------------------------------------
+      - name: Upload to YouTube Shorts
+        run: |
+          set -euo pipefail
+          python youtube_upload.py
+
+      # --------------------------------------------------
+      # PERSIST MEMORY (NON-BLOCKING)
+      # --------------------------------------------------
+      - name: Persist memory
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add memory used_cases.json upload_meta.jsonl || true
+          git commit -m "chore: update memory [skip ci]" || true
+          git push || true
