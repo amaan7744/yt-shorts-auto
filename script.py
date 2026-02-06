@@ -4,7 +4,7 @@ True Crime Shorts – Script Generator (FINAL, LOCKED)
 
 GUARANTEES:
 - CTA is GENERATED, not injected
-- Script explicitly describes visuals
+- Script explicitly describes visuals (from an ALLOWED SET)
 - Assets FOLLOW script, never random
 - Hook uses STATIC IMAGES word-by-word
 - Videos play ONLY after hook
@@ -23,9 +23,6 @@ from assets import (
     validate_hook_images,
     CORE_MURDER_SUICIDE_MYSTERY,
     PSYCHOLOGICAL_HOOKS,
-    CRIME_SCENE_DOUBT,
-    HUMAN_FOCUSED_HOOKS,
-    DARK_CURIOSITY,
 )
 
 # ==================================================
@@ -40,7 +37,7 @@ USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
 LAST_HOOK_FILE = MEMORY_DIR / "last_hook_category.txt"
 
 # ==================================================
-# CASE INPUT
+# CASE INPUT (SINGLE SOURCE OF TRUTH)
 # ==================================================
 
 CURRENT_CASE = {
@@ -52,11 +49,11 @@ CURRENT_CASE = {
     "location": "a hospital parking lot",
     "time": "3:17 AM",
     "key_clue": "his car keys were still in the ignition",
-    "official_story": "it was ruled an accident"
+    "official_story": "it was ruled an accident",
 }
 
 # ==================================================
-# CASE MEMORY (NEVER REPEAT)
+# MEMORY (NEVER REPEAT)
 # ==================================================
 
 def case_id(case: dict) -> str:
@@ -78,9 +75,7 @@ def save_used_case(cid: str):
 # ==================================================
 
 def load_last_hook():
-    if LAST_HOOK_FILE.exists():
-        return LAST_HOOK_FILE.read_text().strip()
-    return None
+    return LAST_HOOK_FILE.read_text().strip() if LAST_HOOK_FILE.exists() else None
 
 def save_last_hook(cat: str):
     LAST_HOOK_FILE.write_text(cat)
@@ -96,14 +91,32 @@ def init_client():
     return Groq(api_key=key)
 
 # ==================================================
-# SCRIPT GENERATION
+# SCRIPT GENERATION (VISUAL-LOCKED)
 # ==================================================
+
+ALLOWED_VISUALS = [
+    "elderly man lying on stair landing",
+    "elderly man seated indoors",
+    "elderly man in hospital bed",
+    "hospital corridor with gurney",
+    "parked car at night",
+    "driver slumped in driver seat",
+    "phone lying on floor",
+    "dimly lit human figure",
+    "empty hospital hallway",
+    "dark bedroom interior",
+    "hallway interior",
+    "motel room interior",
+    "crime scene with blood",
+    "interrogation room",
+    "evidence on table",
+]
 
 def generate_script(client: Groq, hook_category: str):
     """
     AI WRITES ALL 7 LINES INCLUDING CTA
-    Line 1 = HOOK QUESTION (words only)
-    Lines 2–7 = MUST include [VISUAL: ...]
+    Line 1 = HOOK QUESTION
+    Lines 2–7 = MUST USE ALLOWED VISUALS ONLY
     """
 
     prompt = f"""
@@ -111,27 +124,24 @@ Write a true crime YouTube Shorts script.
 
 ABSOLUTE RULES:
 - EXACTLY 7 lines
-- Line 1 is a HOOK QUESTION (no visuals, no brackets)
+- Line 1 is a HOOK QUESTION (no visuals)
 - Lines 2–7 MUST include [VISUAL: ...]
-- Every visual must be concrete and filmable
-- NO abstract language
-- NO conclusions
+- Use ONLY visuals from the ALLOWED VISUALS list
+- NO abstract or invented visuals
 - Calm investigative tone
+- NO conclusions
+
+ALLOWED VISUALS (MUST MATCH EXACTLY):
+{chr(10).join("- " + v for v in ALLOWED_VISUALS)}
 
 STRUCTURE:
-1. Hook question about the case
+1. Hook question
 2. What physically happened [VISUAL]
 3. Who the victim is [VISUAL]
 4. Where and when [VISUAL]
 5. A strange physical clue [VISUAL]
 6. The official explanation that feels wrong [VISUAL]
-7. CTA that:
-   - Mentions {CURRENT_CASE['victim_name']}
-   - Includes Subscribe or Follow
-   - Ends with a QUESTION
-
-HOOK CATEGORY:
-{hook_category}
+7. CTA mentioning {CURRENT_CASE['victim_name']} and Subscribe/Follow, ending with a QUESTION
 
 CASE FACTS:
 Victim: {CURRENT_CASE['victim_desc']}
@@ -147,8 +157,8 @@ Return ONLY the 7 lines.
     res = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.35,
-        max_completion_tokens=600
+        temperature=0.3,
+        max_completion_tokens=600,
     )
 
     lines = [l.strip() for l in res.choices[0].message.content.split("\n") if l.strip()]
@@ -159,7 +169,7 @@ Return ONLY the 7 lines.
     return lines
 
 # ==================================================
-# ASSET MATCHING (STRICT)
+# ASSET MATCHING (DETERMINISTIC, NOT GUESSY)
 # ==================================================
 
 def video_asset_for_visual(visual: str, used: set):
@@ -168,7 +178,7 @@ def video_asset_for_visual(visual: str, used: set):
     for asset, tags in VIDEO_ASSET_KEYWORDS.items():
         if asset in used:
             continue
-        if all(tag in visual_l for tag in tags):
+        if any(tag in visual_l for tag in tags):
             return asset
 
     raise RuntimeError(f"❌ No video asset matches visual: {visual}")
@@ -187,7 +197,11 @@ def main():
         raise RuntimeError("❌ This case has already been used. Aborting.")
 
     last_hook = load_last_hook()
-    hook_category = CORE_MURDER_SUICIDE_MYSTERY if last_hook != CORE_MURDER_SUICIDE_MYSTERY else PSYCHOLOGICAL_HOOKS
+    hook_category = (
+        CORE_MURDER_SUICIDE_MYSTERY
+        if last_hook != CORE_MURDER_SUICIDE_MYSTERY
+        else PSYCHOLOGICAL_HOOKS
+    )
     save_last_hook(hook_category)
 
     client = init_client()
@@ -203,14 +217,20 @@ def main():
     hook_images = [
         img for img, cat in HOOK_IMAGE_CATEGORIES.items()
         if cat == hook_category
-    ][:len(hook_words)]
+    ][: len(hook_words)]
+
+    if not hook_images:
+        raise RuntimeError("❌ No hook images available for category")
+
+    per_word_duration = 0.6  # SAFE default, builder can override with audio timing
 
     for i, img in enumerate(hook_images):
         beats.append({
             "beat_id": len(beats) + 1,
+            "type": "image",
             "text": hook_words[i],
             "asset_file": img,
-            "duration": None  # driven by word timing
+            "duration": per_word_duration,
         })
 
     # --------------------
@@ -230,9 +250,9 @@ def main():
 
         beats.append({
             "beat_id": len(beats) + 1,
+            "type": "video",
             "text": text.strip(),
             "asset_file": asset,
-            "duration": 5.0
         })
 
     Path(SCRIPT_FILE).write_text(" ".join(lines), encoding="utf-8")
@@ -241,7 +261,7 @@ def main():
     save_used_case(cid)
 
     print("✅ Script written")
-    print("🎞️ Hook images synced to hook words")
+    print("🎞️ Hook images locked to hook words")
     print("🔒 Case permanently locked")
 
 # ==================================================
