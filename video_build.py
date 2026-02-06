@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder (OPTION 1 – PERCEPTUAL UPGRADE)
+YouTube Shorts Video Builder (FINAL – HOOK AWARE, AUDIO LOCKED)
 
-SOURCE REALITY:
-- Assets ≈ 464x832 @ ~3 Mbps
-- We preserve detail, reduce damage
-
-GOALS:
-- No random motion
-- No FPS changes
-- Audio-locked end
-- Force VP9 (1440p)
-- Subtitles survive compression
+GUARANTEES:
+- Hook images persist ONLY for hook audio duration
+- Hard cuts between images (no motion)
+- Images converted → video clips deterministically
+- Videos are NEVER dropped
+- Single final encode (quality preserved)
+- Output ends EXACTLY with audio
+- 1440p upscale → YouTube VP9
 """
 
 import json
 import subprocess
 import sys
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 # ==================================================
 # FILES
@@ -40,7 +38,7 @@ CRF = "17"
 PRESET = "slow"
 
 # ==================================================
-# HELPERS
+# UTILS
 # ==================================================
 
 def die(msg):
@@ -65,6 +63,29 @@ def ffprobe_duration(path: Path) -> float:
     return float(r.stdout.strip())
 
 # ==================================================
+# IMAGE → VIDEO (STATIC, NO MOTION)
+# ==================================================
+
+def image_to_video(image: Path, duration: float, out: Path):
+    run([
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", str(image),
+        "-t", f"{duration:.6f}",
+        "-vf",
+        f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,"
+        f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "high",
+        "-level", "4.2",
+        "-crf", CRF,
+        "-preset", PRESET,
+        "-movflags", "+faststart",
+        str(out)
+    ])
+
+# ==================================================
 # MAIN
 # ==================================================
 
@@ -74,35 +95,51 @@ def main():
     if not AUDIO_FILE.exists():
         die("final_audio.wav missing")
 
-    beats = json.loads(BEATS_FILE.read_text()).get("beats", [])
+    beats = json.loads(BEATS_FILE.read_text()).get("beats")
     if not beats:
         die("No beats found")
 
-    # --------------------------------------------------
-    # Resolve assets
-    # --------------------------------------------------
-
-    assets = []
-    for beat in beats:
-        asset = ASSET_DIR / beat["asset_file"]
-        if not asset.exists():
-            die(f"Missing asset: {asset}")
-        assets.append(asset)
-
-    print(f"[VIDEO] 🎞️ {len(assets)} assets queued")
+    temp_dir = Path(tempfile.mkdtemp(prefix="clips_"))
+    clips = []
 
     # --------------------------------------------------
-    # Lossless concat (NO quality loss)
+    # Build clip list (HOOK IMAGES → VIDEO)
     # --------------------------------------------------
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        concat_file = Path(f.name)
-        for asset in assets:
-            f.write(f"file '{asset.resolve()}'\n")
+    for i, beat in enumerate(beats, start=1):
+        asset_path = ASSET_DIR / beat["asset_file"]
+        if not asset_path.exists():
+            die(f"Missing asset: {asset_path}")
 
-    merged = Path("merged_video.mp4")
+        if beat["type"] == "image":
+            if "duration" not in beat or beat["duration"] <= 0:
+                die(f"Image beat {i} missing valid duration")
 
-    print("[VIDEO] 🔗 Concatenating assets (lossless)")
+            out_clip = temp_dir / f"hook_{i:03d}.mp4"
+            print(f"[VIDEO] 🖼️ Hook image → video ({beat['duration']:.2f}s)")
+            image_to_video(asset_path, beat["duration"], out_clip)
+            clips.append(out_clip)
+
+        elif beat["type"] == "video":
+            clips.append(asset_path)
+
+        else:
+            die(f"Unknown beat type: {beat['type']}")
+
+    print(f"[VIDEO] 🎞️ {len(clips)} clips ready")
+
+    # --------------------------------------------------
+    # Concat (LOSSLESS)
+    # --------------------------------------------------
+
+    concat_file = temp_dir / "concat.txt"
+    with concat_file.open("w") as f:
+        for clip in clips:
+            f.write(f"file '{clip.resolve()}'\n")
+
+    merged = temp_dir / "merged.mp4"
+
+    print("[VIDEO] 🔗 Concatenating (no re-encode)")
     run([
         "ffmpeg", "-y",
         "-f", "concat",
@@ -113,18 +150,15 @@ def main():
     ])
 
     # --------------------------------------------------
-    # Final encode (compression-safe)
+    # Final Encode (AUDIO LOCKED)
     # --------------------------------------------------
 
     audio_duration = ffprobe_duration(AUDIO_FILE)
     print(f"[VIDEO] 🎵 Audio duration: {audio_duration:.3f}s")
 
     filters = [
-        # upscale gently to force VP9
         f"scale={TARGET_W}:{TARGET_H}:flags=lanczos:force_original_aspect_ratio=decrease",
         f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black",
-
-        # light anime-safe cleanup
         "hqdn3d=0.8:0.8:1.5:1.5"
     ]
 
