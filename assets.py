@@ -41,6 +41,19 @@ VIDEO_ASSET_KEYWORDS = {
     "stylized_anime_cartoon_woman_collapsed_near_a.mp4": ["woman collapsed"],
     "stylized_anime_cartoon_video_a_human_figure.mp4": ["human figure"],
 
+        # CRIME SCENE DOUBT
+    "anime_style_crime_board_scene_detective_room_with.jpeg": CRIME_SCENE_DOUBT,
+
+    # CORE — Murder / Suicide / Mystery
+    "anime_style_illustration_of_a_crime_scene_hallway.jpeg": CORE_MURDER_SUICIDE_MYSTERY,
+
+    # HUMAN-FOCUSED HOOKS
+    "close_up_anime_crime_scene_shot_investigator_s_gloved.jpeg": HUMAN_FOCUSED_HOOKS,
+
+    # PSYCHOLOGICAL HOOKS
+    "anime_style_crime_scene_illustration_dimly_lit_bedroom.jpeg": PSYCHOLOGICAL_HOOKS,
+
+
     "a_child_s_bedroom_with_toys_scattered_on.mp4": ["child bedroom"],
     "crayon_drawing_on_the_floor_dark_shapes.mp4": ["crayon drawing"],
     "anime_style_video_school_backpack_on_sidewalk_early.mp4": ["school backpack"],
