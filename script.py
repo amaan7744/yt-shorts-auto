@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – Script Generator (ULTIMATE VERSION)
+True Crime Shorts – Script Generator (ENHANCED WEIGHTED VERSION)
 
-FEATURES:
-- 50+ case-aware hooks (matched to case details)
-- Dynamic script structure (4-7 lines based on case complexity)
-- Multiple CTA variations (all use person's name)
-- Smart final loop (question format, name-specific)
-- Case type detection (murder/suicide/missing/cold case/suspicious)
-- Enhanced contradiction building
-- Emotional arc construction
-- Never repeats cases or hooks (with cooldown)
+TIMING: 35-45 seconds (strict)
+STRUCTURE: 7 lines exactly
+- Hook (statement) - 3-4 sec
+- Facts (name/place/time) - 5-6 sec
+- Context (who they were) - 5-6 sec
+- Contradiction (the weight) - 7-8 sec
+- Official Story - 7-8 sec
+- CTA (fixed) - 4-5 sec
+- Loop (question) - 4-5 sec
+
+TONE: Heavy, investigative, weighted - NOT storytelling
 """
 
 import os
@@ -28,7 +30,6 @@ SCRIPT_FILE = Path("script.txt")
 MEMORY_DIR = Path("memory")
 USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
 USED_HOOKS_FILE = MEMORY_DIR / "used_hooks.json"
-HOOK_PERFORMANCE_FILE = MEMORY_DIR / "hook_performance.json"
 
 MEMORY_DIR.mkdir(exist_ok=True)
 
@@ -79,7 +80,6 @@ def detect_case_type(case):
     """Detect case type from summary and details"""
     text = f"{case['summary']} {case['key_detail']} {case['official_story']}".lower()
     
-    # Priority order matters
     if any(word in text for word in ["cold case", "decades", "years later", "unsolved", "solved after"]):
         return "cold_case"
     
@@ -101,168 +101,151 @@ def detect_case_type(case):
     return "mystery"
 
 # ==================================================
-# EXPANDED HOOK SYSTEM (CASE-AWARE)
+# WEIGHTED HOOKS (STATEMENT FORMAT - NO QUESTIONS)
 # ==================================================
 
-HOOK_CATEGORIES = {
+WEIGHTED_HOOKS = {
     "locked_impossible": [
         "A locked door. No forced entry. No explanation.",
-        "An impossible scene. No witnesses. No answers.",
-        "Sealed from inside. No way out. No sense.",
-        "A locked room. A body. An impossibility.",
+        "The room was sealed from inside. The body was inside. The killer was not.",
+        "Investigators found the door locked. The windows sealed. The scene impossible.",
+        "Every exit was secured. Every entry was blocked. Someone still got in.",
     ],
     
-    "timeline_contradiction": [
-        "The timeline didn't add up.",
-        "The clock told one story. The evidence told another.",
-        "Twenty minutes. That's all it took. Or was it.",
-        "The timeline broke. The alibi held. Something was wrong.",
+    "timeline_shattered": [
+        "The timeline didn't just break. It shattered everything they thought they knew.",
+        "Forty-seven minutes. That's how long the alibi held before forensics proved otherwise.",
+        "The clock said one thing. The body temperature said another. Someone was lying.",
+        "They had twelve hours. The evidence showed twelve minutes. The case fell apart.",
     ],
     
-    "evidence_missing": [
-        "The weapon was never found.",
-        "Evidence disappeared. Questions remained.",
-        "What wasn't there mattered more than what was.",
-        "The missing piece changed everything.",
-        "Something was taken. Something that mattered.",
+    "evidence_vanished": [
+        "The weapon vanished. The motive stayed. The questions multiplied.",
+        "Three critical pieces of evidence. Three unexplained disappearances. One conclusion.",
+        "What wasn't at the scene told investigators more than what was.",
+        "The evidence they needed most was the evidence that disappeared first.",
     ],
     
-    "staged_scene": [
-        "Too perfect. Too clean. Too staged.",
-        "A scene arranged. A story prepared. A lie exposed.",
-        "Nothing out of place. Except everything.",
-        "The scene told a story. But not the real one.",
+    "too_perfect": [
+        "The scene was too clean. Too organized. Too perfectly wrong.",
+        "Everything was in place. Except the truth.",
+        "Staged scenes leave patterns. This one left fingerprints all over the lie.",
+        "When a crime scene looks rehearsed, someone rehearsed it.",
     ],
     
-    "witness_contradiction": [
-        "Two witnesses. Two stories. One lie.",
-        "Everyone saw something different.",
-        "The stories didn't match. Someone was lying.",
-        "What they said changed. What they knew stayed hidden.",
+    "witness_collapse": [
+        "Three witnesses. Three versions. Three lies that fell apart under pressure.",
+        "The story changed every time they told it. The truth never did.",
+        "What they saw didn't match. What they heard didn't align. What they knew stayed buried.",
+        "Eyewitness accounts crumbled. Physical evidence didn't.",
     ],
     
-    "quick_conclusion": [
-        "Case closed. Questions ignored.",
-        "An answer that came too fast.",
-        "They stopped looking. They shouldn't have.",
-        "The investigation ended. The mystery didn't.",
-        "Solved in hours. Doubted for years.",
+    "rushed_verdict": [
+        "The case closed in forty-eight hours. The questions lasted decades.",
+        "They called it solved before the autopsy came back. They were wrong.",
+        "An answer came fast. Too fast. The real investigation never happened.",
+        "When authorities rush to judgment, they rush past the truth.",
     ],
     
-    "hidden_detail": [
-        "One detail changed everything.",
-        "What they found changed what they knew.",
-        "A small detail. A massive lie.",
-        "The truth was in what they almost missed.",
+    "buried_detail": [
+        "One detail buried in the report. One detail that changed everything.",
+        "Investigators missed it the first time. The second time, it was too late.",
+        "The evidence was there. Filed away. Ignored. Critical.",
+        "What they overlooked became what they couldn't explain.",
     ],
     
-    "double_life": [
-        "A secret life. A public death.",
-        "Everyone knew them. No one knew the truth.",
-        "Two lives. One person. Fatal secrets.",
-        "The person they knew never existed.",
+    "double_existence": [
+        "The person everyone knew never existed. The person no one knew was real.",
+        "A public life. A secret life. A fatal collision between the two.",
+        "They thought they knew them. They didn't know anything.",
+        "Two identities. One body. Infinite questions.",
     ],
     
-    "no_motive": [
-        "No motive. No suspect. No sense.",
-        "Who benefits when no one should.",
-        "A death without reason. Or so it seemed.",
-        "The motive was there. Hidden in plain sight.",
+    "motiveless": [
+        "No enemies. No motive. No reason anyone could see. Except one.",
+        "The question wasn't who wanted them dead. It was who benefited from the secret staying buried.",
+        "When there's no apparent motive, the real motive is buried deeper.",
+        "Follow the money, they said. The money led nowhere. The truth led somewhere else.",
     ],
     
-    "forensic_contradiction": [
-        "The body told a different story.",
-        "Forensics revealed what investigators missed.",
-        "The science didn't match the scene.",
-        "What killed them wasn't what they thought.",
+    "forensic_warfare": [
+        "The autopsy revealed what the scene concealed.",
+        "Forensic evidence doesn't lie. Crime scenes do.",
+        "The medical examiner saw what detectives missed. And it changed everything.",
+        "Science said one thing. The official story said another. Science won.",
     ],
     
-    "final_message": [
-        "The last thing they said changed everything.",
-        "A final call. A cryptic message. A warning unheeded.",
-        "Their last words held the answer.",
-        "What they wrote before they died.",
+    "final_communication": [
+        "The last message they sent. The one no one understood until after.",
+        "Their final words weren't random. They were a warning.",
+        "What they said in their last moments stayed silent until investigators listened.",
+        "The message was there. Encrypted in plain sight. Deadly accurate.",
     ],
     
-    "wrong_person": [
-        "The suspect everyone believed. The truth no one saw.",
-        "An arrest. A conviction. A mistake.",
-        "They got their killer. But not the right one.",
-        "Justice served. Truth buried.",
+    "wrong_conviction": [
+        "They arrested the obvious suspect. Charged them. Convicted them. And got it wrong.",
+        "A confession under pressure. Evidence that didn't fit. A verdict that couldn't stand.",
+        "The right person went to prison. For the wrong crime. While the real killer walked.",
+        "Justice served doesn't mean truth found.",
     ],
     
-    "location_significance": [
-        "That place. That time. Not a coincidence.",
-        "The location told its own story.",
-        "Why there. Why then. The answers mattered.",
-        "Geography revealed intent.",
+    "location_speaks": [
+        "The place they died told investigators exactly how they died. If only they'd listened.",
+        "Location matters. Timing matters. Both together reveal intent.",
+        "That specific spot. That specific moment. Nothing about it was coincidence.",
+        "Geography doesn't lie about motive.",
     ],
 }
 
-HOOK_COOLDOWN = 20  # videos before reusing same hook
+HOOK_COOLDOWN = 20
 
 def match_hook_to_case(case, case_type):
     """Select best hook category based on case details"""
     text = f"{case['summary']} {case['key_detail']} {case['official_story']}".lower()
     
-    # Score each category
     scores = {}
     
-    # Locked/impossible
     if any(word in text for word in ["locked", "sealed", "closed door", "no entry", "impossible"]):
         scores["locked_impossible"] = 10
     
-    # Timeline
-    if any(word in text for word in ["timeline", "time", "minutes", "hours", "when", "alibi"]):
-        scores["timeline_contradiction"] = 8
+    if any(word in text for word in ["timeline", "time", "minutes", "hours", "when", "alibi", "clock"]):
+        scores["timeline_shattered"] = 9
     
-    # Missing evidence
-    if any(word in text for word in ["missing", "never found", "disappeared", "weapon", "evidence"]):
-        scores["evidence_missing"] = 9
+    if any(word in text for word in ["missing", "never found", "disappeared", "weapon", "evidence", "vanished"]):
+        scores["evidence_vanished"] = 9
     
-    # Staged
-    if any(word in text for word in ["staged", "arranged", "too clean", "perfect", "organized"]):
-        scores["staged_scene"] = 10
+    if any(word in text for word in ["staged", "arranged", "too clean", "perfect", "organized", "rehearsed"]):
+        scores["too_perfect"] = 10
     
-    # Witness issues
-    if any(word in text for word in ["witness", "saw", "heard", "reported", "statement", "testimony"]):
-        scores["witness_contradiction"] = 7
+    if any(word in text for word in ["witness", "saw", "heard", "reported", "statement", "testimony", "account"]):
+        scores["witness_collapse"] = 8
     
-    # Quick conclusion
-    if any(word in text for word in ["quickly", "closed", "ruled", "determined", "concluded"]):
-        scores["quick_conclusion"] = 8
+    if any(word in text for word in ["quickly", "closed", "ruled", "determined", "concluded", "rushed", "hours", "days"]):
+        scores["rushed_verdict"] = 8
     
-    # Hidden detail
-    if any(word in text for word in ["detail", "discovered", "found", "revealed", "uncovered"]):
-        scores["hidden_detail"] = 6
+    if any(word in text for word in ["detail", "discovered", "found", "revealed", "uncovered", "missed", "overlooked"]):
+        scores["buried_detail"] = 7
     
-    # Double life
-    if any(word in text for word in ["secret", "hidden", "unknown", "double", "affair"]):
-        scores["double_life"] = 9
+    if any(word in text for word in ["secret", "hidden", "unknown", "double", "affair", "identity", "life"]):
+        scores["double_existence"] = 9
     
-    # No motive
-    if any(word in text for word in ["no motive", "no reason", "why", "unexplained"]):
-        scores["no_motive"] = 8
+    if any(word in text for word in ["no motive", "no reason", "why", "unexplained", "no enemies"]):
+        scores["motiveless"] = 8
     
-    # Forensic
-    if any(word in text for word in ["forensic", "autopsy", "body", "examination", "pathologist"]):
-        scores["forensic_contradiction"] = 7
+    if any(word in text for word in ["forensic", "autopsy", "body", "examination", "pathologist", "medical examiner"]):
+        scores["forensic_warfare"] = 8
     
-    # Final message
-    if any(word in text for word in ["last", "final", "message", "call", "text", "note", "wrote"]):
-        scores["final_message"] = 10
+    if any(word in text for word in ["last", "final", "message", "call", "text", "note", "wrote", "said"]):
+        scores["final_communication"] = 10
     
-    # Wrong person
-    if any(word in text for word in ["arrest", "suspect", "charged", "convicted", "wrong"]):
-        scores["wrong_person"] = 9
+    if any(word in text for word in ["arrest", "suspect", "charged", "convicted", "wrong", "innocent"]):
+        scores["wrong_conviction"] = 9
     
-    # Location
-    if any(word in text for word in ["location", "place", "where", "scene", "found at"]):
-        scores["location_significance"] = 5
+    if any(word in text for word in ["location", "place", "where", "scene", "found at", "spot"]):
+        scores["location_speaks"] = 6
     
-    # Return top scoring categories (or default to mystery)
     if not scores:
-        return ["quick_conclusion", "hidden_detail", "no_motive"]
+        return ["rushed_verdict", "buried_detail", "motiveless"]
     
     sorted_categories = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [cat for cat, score in sorted_categories[:3]]
@@ -272,29 +255,22 @@ def select_hook(case, case_type):
     used_hooks = load_json(USED_HOOKS_FILE, [])
     recent = used_hooks[-HOOK_COOLDOWN:] if len(used_hooks) >= HOOK_COOLDOWN else used_hooks
     
-    # Get relevant categories for this case
     relevant_categories = match_hook_to_case(case, case_type)
     
-    # Collect available hooks from relevant categories
     available = []
     for category in relevant_categories:
-        if category in HOOK_CATEGORIES:
-            category_hooks = [h for h in HOOK_CATEGORIES[category] if h not in recent]
+        if category in WEIGHTED_HOOKS:
+            category_hooks = [h for h in WEIGHTED_HOOKS[category] if h not in recent]
             available.extend(category_hooks)
     
-    # Fallback: use any hook not in recent
     if not available:
-        all_hooks = [h for category in HOOK_CATEGORIES.values() for h in category]
+        all_hooks = [h for category in WEIGHTED_HOOKS.values() for h in category]
         available = [h for h in all_hooks if h not in recent]
     
-    # Emergency fallback: reset if all hooks used
     if not available:
-        available = [h for category in HOOK_CATEGORIES.values() for h in category]
+        available = [h for category in WEIGHTED_HOOKS.values() for h in category]
     
-    # Select first available (deterministic)
     hook = available[0]
-    
-    # Update used hooks
     used_hooks.append(hook)
     save_json(USED_HOOKS_FILE, used_hooks)
     
@@ -315,208 +291,161 @@ def init_client():
 # ==================================================
 
 CTA_TEMPLATES = {
-    "cold_case": [
-        "Like and subscribe so {name}'s story isn't forgotten.",
-        "Share this so {name}'s case stays alive.",
-        "Don't let {name}'s story disappear.",
-    ],
-    "murder": [
-        "Like and subscribe so {name} gets justice.",
-        "Share this. {name} deserves to be remembered.",
-        "Don't scroll past {name}'s story.",
-    ],
-    "suspicious_death": [
-        "Like and subscribe so {name}'s questions get answered.",
-        "Share this. {name} deserves the truth.",
-        "Don't let {name}'s case go cold.",
-    ],
-    "suspicious_suicide": [
-        "Like and subscribe so {name}'s truth comes out.",
-        "Share this. {name}'s family deserves answers.",
-        "Don't ignore what happened to {name}.",
-    ],
-    "missing_found": [
-        "Like and subscribe so {name} isn't just another statistic.",
-        "Share this. {name} was found. The questions weren't.",
-        "Don't let {name} be forgotten.",
-    ],
-    "suspicious_accident": [
-        "Like and subscribe so {name}'s accident gets investigated.",
-        "Share this. {name} deserves a real investigation.",
-        "Don't accept the easy answer for {name}.",
-    ],
-    "mystery": [
-        "Like and subscribe so {name}'s mystery gets solved.",
-        "Share this. {name} deserves answers.",
-        "Don't let {name}'s case stay unsolved.",
-    ],
+    "cold_case": "Like and subscribe so {name}'s story isn't forgotten.",
+    "murder": "Like and subscribe so {name} gets justice.",
+    "suspicious_death": "Like and subscribe so {name}'s questions get answered.",
+    "suspicious_suicide": "Like and subscribe so {name}'s truth comes out.",
+    "missing_found": "Like and subscribe so {name} isn't just another statistic.",
+    "suspicious_accident": "Like and subscribe so {name}'s accident gets investigated.",
+    "mystery": "Like and subscribe so {name}'s mystery gets solved.",
 }
 
 def get_cta(case_type, name):
     """Get appropriate CTA for case type"""
-    templates = CTA_TEMPLATES.get(case_type, CTA_TEMPLATES["mystery"])
-    # Use first template (deterministic)
-    return templates[0].format(name=name)
+    template = CTA_TEMPLATES.get(case_type, CTA_TEMPLATES["mystery"])
+    return template.format(name=name)
 
 # ==================================================
 # FINAL LOOP VARIATIONS (QUESTION FORMAT, NAME-SPECIFIC)
 # ==================================================
 
 LOOP_TEMPLATES = {
-    "cold_case": [
-        "So what really happened to {name}?",
-        "Who killed {name}?",
-        "Will {name} ever get justice?",
-    ],
-    "murder": [
-        "So what really happened to {name}?",
-        "Who killed {name}?",
-        "Why did {name} have to die?",
-    ],
-    "suspicious_death": [
-        "So what really happened to {name}?",
-        "How did {name} really die?",
-        "Was {name}'s death really an accident?",
-    ],
-    "suspicious_suicide": [
-        "Did {name} really take their own life?",
-        "So what really happened to {name}?",
-        "Was {name}'s suicide what it seemed?",
-    ],
-    "missing_found": [
-        "What happened to {name} before they were found?",
-        "So what really happened to {name}?",
-        "Who killed {name}?",
-    ],
-    "suspicious_accident": [
-        "Was {name}'s death really an accident?",
-        "So what really happened to {name}?",
-        "Did {name} fall, or were they pushed?",
-    ],
-    "mystery": [
-        "So what really happened to {name}?",
-        "What's the truth about {name}?",
-        "Will we ever know what happened to {name}?",
-    ],
+    "cold_case": "So what really happened to {name}?",
+    "murder": "Who killed {name}?",
+    "suspicious_death": "So what really happened to {name}?",
+    "suspicious_suicide": "Did {name} really take their own life?",
+    "missing_found": "What happened to {name} before they were found?",
+    "suspicious_accident": "Was {name}'s death really an accident?",
+    "mystery": "So what really happened to {name}?",
 }
 
 def get_final_loop(case_type, name):
     """Get appropriate final loop question"""
-    templates = LOOP_TEMPLATES.get(case_type, LOOP_TEMPLATES["mystery"])
-    # Use first template (deterministic)
-    return templates[0].format(name=name)
+    template = LOOP_TEMPLATES.get(case_type, LOOP_TEMPLATES["mystery"])
+    return template.format(name=name)
 
 # ==================================================
-# SCRIPT GENERATION (ENHANCED)
+# WEIGHTED SCRIPT GENERATION (7-LINE STRUCTURE)
 # ==================================================
 
-def generate_body(client: Groq, case, case_type):
-    """Generate script body with dynamic structure"""
+def generate_weighted_script(client: Groq, case, case_type):
+    """
+    Generate 7-line script with weighted, investigative tone
     
-    # Determine script complexity based on case details
-    detail_count = len(case['key_detail']) + len(case['summary'])
-    use_extended = detail_count > 300  # Longer cases get more lines
+    STRUCTURE:
+    1. HOOK - already generated (statement)
+    2. FACTS - name, place, time (5-6 sec / 15-18 words)
+    3. CONTEXT - who they were (5-6 sec / 15-18 words)
+    4. CONTRADICTION - the weight, the detail (7-8 sec / 21-24 words)
+    5. OFFICIAL STORY - what authorities say (7-8 sec / 21-24 words)
+    6. CTA - already generated (4-5 sec)
+    7. LOOP - already generated (question)
+    """
     
     cta_text = get_cta(case_type, case['full_name'])
     
-    if use_extended:
-        # 5-line body for complex cases
-        prompt = f"""
-Write a factual true crime short script.
+    prompt = f"""You are writing a TRUE CRIME INVESTIGATION SCRIPT. This is NOT storytelling. This is WEIGHTED, HEAVY, FACTUAL reporting.
 
-CRITICAL RULES:
-- NO questions anywhere in the script
-- NO emotional language or dramatic phrases
-- Clear, direct investigative tone
-- State facts, evidence, and contradictions
-- EXACTLY 5 lines
+CRITICAL TONE REQUIREMENTS:
+- Write like a forensic investigator presenting evidence
+- Every word carries weight
+- No dramatic flourishes or emotional language
+- State facts that make the audience lean in
+- Use SHORT, IMPACTFUL sentences
+- Create weight through WHAT you say, not HOW you say it
 
 CASE TYPE: {case_type.replace('_', ' ').title()}
 
-STRUCTURE (5 LINES):
-Line 1: Full name, location, date, time - establish the facts
-Line 2: What was discovered - the scene, the body, the initial finding
-Line 3: The key contradiction - what didn't fit, what investigators noticed
-Line 4: What forensics/evidence revealed - the critical detail that changed things
-Line 5: Official story - what authorities concluded or are investigating
+Generate EXACTLY 5 LINES (lines 2-6 of the full script):
 
-CRITICAL: 
-- Line 5 MUST be EXACTLY: "{cta_text}"
-- NO questions in any line
-- Keep each line under 20 words
-- Use factual, investigative language
+LINE 2 - FACTS (15-18 words, 5-6 seconds):
+State: Full name, exact location, specific date, exact time.
+Format: "[Full Name]. [Location]. [Date]. [Time]."
+Example: "Rebecca Zahau. Coronado, California. July 13th, 2011. 6:48 AM."
+Make it hit like case file entries.
+
+LINE 3 - CONTEXT (15-18 words, 5-6 seconds):
+Who they were. Their role. Their connection. Make it matter.
+Example: "The girlfriend of a pharmaceutical executive. Found hanging in his mansion. Just days after his son's fatal accident."
+NO generic descriptions. Specific details that add weight.
+
+LINE 4 - CONTRADICTION (21-24 words, 7-8 seconds):
+The ONE detail that doesn't fit. The weight of the case. What makes this suspicious.
+State it like evidence. Make it impossible to ignore.
+Example: "Her hands were bound behind her back. Her feet were bound. Her mouth was not. The sheriff called it suicide."
+This line should make the viewer's stomach drop.
+
+LINE 5 - OFFICIAL STORY (21-24 words, 7-8 seconds):
+What authorities concluded. What they ruled. What they're investigating.
+State it factually, let the contradiction speak.
+Example: "The San Diego County Sheriff ruled it suicide. No charges filed. The family hired independent forensics. The contradictions multiplied."
+
+LINE 6 - CTA (MUST BE EXACT):
+"{cta_text}"
 
 CASE DATA:
 Name: {case['full_name']}
 Location: {case['location']}
 Date: {case['date']}
 Time: {case['time']}
-Key detail: {case['key_detail']}
-Official story: {case['official_story']}
 Summary: {case['summary']}
-
-Write ONLY the 5 lines, nothing else:
-"""
-    else:
-        # 4-line body for standard cases
-        prompt = f"""
-Write a factual true crime short script.
+Key Detail: {case['key_detail']}
+Official Story: {case['official_story']}
 
 CRITICAL RULES:
-- NO questions anywhere in the script
-- NO emotional language or dramatic phrases
-- Clear, direct investigative tone
-- State facts, evidence, and contradictions
-- EXACTLY 4 lines
+- NO questions in lines 2-6 (questions ONLY in final loop)
+- NO storytelling language ("little did they know", "what they found was shocking")
+- NO emotional manipulations
+- Use PERIODS for weight, not ellipses
+- Each fact should feel like a case file entry
+- Make contradictions UNDENIABLE through facts alone
+- Line 6 MUST be EXACTLY the CTA provided above
 
-CASE TYPE: {case_type.replace('_', ' ').title()}
-
-STRUCTURE (4 LINES):
-Line 1: Full name, location, date, time - establish the facts
-Line 2: The key contradiction - what didn't fit, what was suspicious
-Line 3: What investigators found or concluded - the official story
-Line 4: MUST be EXACTLY: "{cta_text}"
-
-CRITICAL:
-- Line 4 MUST be word-for-word: "{cta_text}"
-- NO questions in any line
-- Keep each line under 20 words
-- Use factual, investigative language
-
-CASE DATA:
-Name: {case['full_name']}
-Location: {case['location']}
-Date: {case['date']}
-Time: {case['time']}
-Key detail: {case['key_detail']}
-Official story: {case['official_story']}
-Summary: {case['summary']}
-
-Write ONLY the 4 lines, nothing else:
+Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
 """
     
     res = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_completion_tokens=400,
+        temperature=0.3,
+        max_completion_tokens=500,
     )
     
     lines = [
         l.strip()
         for l in res.choices[0].message.content.split("\n")
-        if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("Line")
+        if l.strip() 
+        and not l.strip().startswith("#") 
+        and not l.strip().startswith("LINE")
+        and not l.strip().startswith("Line")
+        and not l.strip().lower().startswith("here")
     ]
     
-    expected_lines = 5 if use_extended else 4
+    # Filter out any explanatory text
+    lines = [l for l in lines if len(l) > 20 and not l.startswith("(")]
     
-    if len(lines) != expected_lines:
-        raise RuntimeError(f"❌ Script body must be exactly {expected_lines} lines, got {len(lines)}")
+    if len(lines) != 5:
+        raise RuntimeError(f"❌ Script body must be exactly 5 lines, got {len(lines)}")
     
-    # Validate no questions
-    for line in lines:
+    # Validate no questions in body
+    for i, line in enumerate(lines, 2):
         if "?" in line:
-            raise RuntimeError(f"❌ Questions not allowed in script body: {line}")
+            raise RuntimeError(f"❌ Questions not allowed in line {i}: {line}")
+    
+    # Validate word counts for timing
+    word_counts = [len(line.split()) for line in lines[:4]]  # Exclude CTA
+    
+    if not (12 <= word_counts[0] <= 20):  # FACTS
+        print(f"⚠️  Warning: FACTS line word count {word_counts[0]} (target: 15-18)")
+    
+    if not (12 <= word_counts[1] <= 20):  # CONTEXT
+        print(f"⚠️  Warning: CONTEXT line word count {word_counts[1]} (target: 15-18)")
+    
+    if not (18 <= word_counts[2] <= 28):  # CONTRADICTION
+        print(f"⚠️  Warning: CONTRADICTION line word count {word_counts[2]} (target: 21-24)")
+    
+    if not (18 <= word_counts[3] <= 28):  # OFFICIAL STORY
+        print(f"⚠️  Warning: OFFICIAL STORY line word count {word_counts[3]} (target: 21-24)")
     
     return lines
 
@@ -525,36 +454,55 @@ Write ONLY the 4 lines, nothing else:
 # ==================================================
 
 def validate_script(lines, case):
-    """Validate script quality and accuracy"""
+    """Validate script quality and timing"""
     
-    # Check minimum length
-    if len(lines) < 6:
-        raise RuntimeError(f"❌ Script too short: {len(lines)} lines")
+    if len(lines) != 7:
+        raise RuntimeError(f"❌ Script must be exactly 7 lines, got {len(lines)}")
     
-    # Check each line has content
-    for i, line in enumerate(lines, 1):
-        if len(line) < 10:
-            raise RuntimeError(f"❌ Line {i} too short: '{line}'")
-        if len(line) > 200:
-            raise RuntimeError(f"❌ Line {i} too long: '{line}'")
+    # Estimate timing (assuming 3 words per second)
+    total_words = sum(len(line.split()) for line in lines)
+    estimated_seconds = total_words / 3
     
-    # Check name appears in script
+    if estimated_seconds < 35:
+        raise RuntimeError(f"❌ Script too short: ~{estimated_seconds:.1f}s (need 35-45s)")
+    
+    if estimated_seconds > 45:
+        raise RuntimeError(f"❌ Script too long: ~{estimated_seconds:.1f}s (need 35-45s)")
+    
+    # Check name appears
     name_parts = case['full_name'].split()
     name_found = any(part in " ".join(lines) for part in name_parts if len(part) > 3)
     
     if not name_found:
         raise RuntimeError(f"❌ Name '{case['full_name']}' not found in script")
     
-    # Check final line is a question
+    # Check final line is question
     if not lines[-1].endswith("?"):
         raise RuntimeError(f"❌ Final loop must be a question: '{lines[-1]}'")
     
-    # Check only final line has question mark
-    for line in lines[:-1]:
+    # Check only final line has question
+    for i, line in enumerate(lines[:-1], 1):
         if "?" in line:
-            raise RuntimeError(f"❌ Questions only allowed in final loop: '{line}'")
+            raise RuntimeError(f"❌ Questions only allowed in final loop (line {i}): '{line}'")
     
-    print("✅ Script validation passed")
+    # Check for storytelling language
+    bad_phrases = [
+        "little did they know",
+        "what they found was",
+        "shocking",
+        "chilling",
+        "horrifying",
+        "terrifying",
+        "unbelievable",
+        "unimaginable",
+    ]
+    
+    script_text = " ".join(lines).lower()
+    for phrase in bad_phrases:
+        if phrase in script_text:
+            print(f"⚠️  Warning: Storytelling language detected: '{phrase}'")
+    
+    print(f"✅ Script validation passed (~{estimated_seconds:.1f} seconds)")
 
 # ==================================================
 # MAIN
@@ -562,7 +510,7 @@ def validate_script(lines, case):
 
 def main():
     print("="*60)
-    print("🎬 SCRIPT GENERATOR - ULTIMATE VERSION")
+    print("🎬 WEIGHTED SCRIPT GENERATOR - 35-45 SECOND FORMAT")
     print("="*60)
     
     # Check for duplicate case
@@ -574,18 +522,20 @@ def main():
     
     # Detect case type
     case_type = detect_case_type(CASE)
-    print(f"📊 Case type detected: {case_type.replace('_', ' ').title()}")
+    print(f"📊 Case type: {case_type.replace('_', ' ').title()}")
     
-    # Select hook
-    hook = select_hook(CASE, case_type)
-    print(f"🎣 Hook selected: '{hook}'")
-    
-    # Generate body
+    # Generate components
     client = init_client()
-    body = generate_body(client, CASE, case_type)
+    
+    # 1. HOOK (statement)
+    hook = select_hook(CASE, case_type)
+    print(f"🎣 Hook: '{hook}'")
+    
+    # 2-6. Generate weighted body
+    body = generate_weighted_script(client, CASE, case_type)
     print(f"📝 Body generated: {len(body)} lines")
     
-    # Generate final loop
+    # 7. LOOP (question)
     loop = get_final_loop(case_type, CASE["full_name"])
     print(f"🔄 Loop: '{loop}'")
     
@@ -603,22 +553,31 @@ def main():
     save_json(USED_CASES_FILE, used_cases)
     
     print("\n" + "="*60)
-    print("✅ SCRIPT WRITTEN SUCCESSFULLY")
+    print("✅ WEIGHTED SCRIPT GENERATED")
     print("="*60)
-    print(f"📄 Total lines: {len(full_script)}")
-    print(f"🎯 Structure: Hook + {len(body)} body + Loop")
-    print(f"👤 Featured: {CASE['full_name']}")
-    print(f"🔒 Case fingerprint saved")
-    print(f"📜 Ready for visual assignment")
+    print(f"📊 Structure: HOOK → FACTS → CONTEXT → CONTRADICTION → OFFICIAL → CTA → LOOP")
+    print(f"👤 Case: {CASE['full_name']}")
+    print(f"⏱️  Timing: 35-45 seconds")
+    print(f"🎯 Tone: Investigative, weighted, factual")
     print("="*60)
     
-    # Display script
+    # Display script with timing
     print("\n📋 GENERATED SCRIPT:")
     print("-"*60)
-    for i, line in enumerate(full_script, 1):
-        print(f"{i}. {line}")
+    labels = ["HOOK", "FACTS", "CONTEXT", "CONTRADICTION", "OFFICIAL STORY", "CTA", "LOOP"]
+    
+    for i, (line, label) in enumerate(zip(full_script, labels), 1):
+        word_count = len(line.split())
+        est_time = word_count / 3
+        print(f"{i}. [{label}] ({word_count} words / ~{est_time:.1f}s)")
+        print(f"   {line}")
+        print()
+    
+    total_words = sum(len(line.split()) for line in full_script)
+    total_time = total_words / 3
+    print("-"*60)
+    print(f"TOTAL: {total_words} words / ~{total_time:.1f} seconds")
     print("-"*60)
 
-# ==================================================
 if __name__ == "__main__":
     main()
