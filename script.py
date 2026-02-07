@@ -334,12 +334,14 @@ def generate_weighted_script(client: Groq, case, case_type):
     
     STRUCTURE:
     1. HOOK - already generated (statement)
-    2. FACTS - name, place, time (5-6 sec / 15-18 words)
-    3. CONTEXT - who they were (5-6 sec / 15-18 words)
-    4. CONTRADICTION - the weight, the detail (7-8 sec / 21-24 words)
-    5. OFFICIAL STORY - what authorities say (7-8 sec / 21-24 words)
+    2. FACTS - name, place, time (5-6 sec / 16-20 words)
+    3. CONTEXT - who they were (6-7 sec / 18-22 words)
+    4. CONTRADICTION - the weight, the detail (8-9 sec / 24-28 words)
+    5. OFFICIAL STORY - what authorities say (8-9 sec / 24-28 words)
     6. CTA - already generated (4-5 sec)
     7. LOOP - already generated (question)
+    
+    TOTAL TARGET: 38-42 seconds (safe middle of 35-45 range)
     """
     
     cta_text = get_cta(case_type, case['full_name'])
@@ -351,34 +353,38 @@ CRITICAL TONE REQUIREMENTS:
 - Every word carries weight
 - No dramatic flourishes or emotional language
 - State facts that make the audience lean in
-- Use SHORT, IMPACTFUL sentences
+- Use complete, detailed sentences with SPECIFIC information
 - Create weight through WHAT you say, not HOW you say it
 
 CASE TYPE: {case_type.replace('_', ' ').title()}
 
 Generate EXACTLY 5 LINES (lines 2-6 of the full script):
 
-LINE 2 - FACTS (15-18 words, 5-6 seconds):
-State: Full name, exact location, specific date, exact time.
-Format: "[Full Name]. [Location]. [Date]. [Time]."
+LINE 2 - FACTS (MUST BE 16-20 WORDS, 5-6 seconds):
+State: Full name, exact location with city and state, specific date, exact time.
+Format: "[Full Name]. [City, State]. [Full Date]. [Time with AM/PM]."
 Example: "Rebecca Zahau. Coronado, California. July 13th, 2011. 6:48 AM."
-Make it hit like case file entries.
+CRITICAL: Include middle name if available. Include full state name. Be specific.
+MINIMUM 16 words required.
 
-LINE 3 - CONTEXT (15-18 words, 5-6 seconds):
-Who they were. Their role. Their connection. Make it matter.
-Example: "The girlfriend of a pharmaceutical executive. Found hanging in his mansion. Just days after his son's fatal accident."
-NO generic descriptions. Specific details that add weight.
+LINE 3 - CONTEXT (MUST BE 18-22 WORDS, 6-7 seconds):
+Who they were. Their specific role. Their exact connection. What they were doing. Why it matters.
+Example: "The girlfriend of a pharmaceutical executive. Found hanging naked from a balcony in his mansion. Just two days after his son's fatal accident."
+NO generic descriptions. Specific job titles, relationships, circumstances.
+MINIMUM 18 words required.
 
-LINE 4 - CONTRADICTION (21-24 words, 7-8 seconds):
-The ONE detail that doesn't fit. The weight of the case. What makes this suspicious.
-State it like evidence. Make it impossible to ignore.
-Example: "Her hands were bound behind her back. Her feet were bound. Her mouth was not. The sheriff called it suicide."
+LINE 4 - CONTRADICTION (MUST BE 24-28 WORDS, 8-9 seconds):
+The ONE detail that doesn't fit. State the contradiction with FULL context and implications.
+State it like presenting evidence in court. Make it impossible to ignore.
+Example: "Her hands were bound behind her back with red rope. Her feet were bound at the ankles. Her mouth was not gagged. The San Diego County Sheriff ruled it suicide."
 This line should make the viewer's stomach drop.
+MINIMUM 24 words required. Add specific details about HOW things don't fit.
 
-LINE 5 - OFFICIAL STORY (21-24 words, 7-8 seconds):
-What authorities concluded. What they ruled. What they're investigating.
-State it factually, let the contradiction speak.
-Example: "The San Diego County Sheriff ruled it suicide. No charges filed. The family hired independent forensics. The contradictions multiplied."
+LINE 5 - OFFICIAL STORY (MUST BE 24-28 WORDS, 8-9 seconds):
+What authorities concluded. What evidence they cited or ignored. What happened next. The current status.
+State it factually with full context, let the contradiction with LINE 4 speak for itself.
+Example: "The San Diego County Sheriff ruled it suicide within five days. No charges were filed against anyone. The family hired independent forensic pathologists. Their findings contradicted the official report completely."
+MINIMUM 24 words required. Include timeline, ruling, and aftermath.
 
 LINE 6 - CTA (MUST BE EXACT):
 "{cta_text}"
@@ -392,14 +398,19 @@ Summary: {case['summary']}
 Key Detail: {case['key_detail']}
 Official Story: {case['official_story']}
 
-CRITICAL RULES:
-- NO questions in lines 2-6 (questions ONLY in final loop)
-- NO storytelling language ("little did they know", "what they found was shocking")
-- NO emotional manipulations
-- Use PERIODS for weight, not ellipses
-- Each fact should feel like a case file entry
-- Make contradictions UNDENIABLE through facts alone
-- Line 6 MUST be EXACTLY the CTA provided above
+CRITICAL WORD COUNT RULES:
+- Line 2: MINIMUM 16 words (if less, ADD more location/time specifics)
+- Line 3: MINIMUM 18 words (if less, ADD more context about who they were)
+- Line 4: MINIMUM 24 words (if less, ADD more details about the contradiction)
+- Line 5: MINIMUM 24 words (if less, ADD timeline, aftermath, investigation status)
+
+EXAMPLE OF CORRECT LENGTH (Line 4 - 27 words):
+"Her hands were bound behind her back with red rope. Her feet were bound together at the ankles. Her mouth was left completely ungagged. The medical examiner ruled it suicide."
+
+EXAMPLE OF TOO SHORT (Line 4 - 15 words):
+"Her hands were bound. Her feet were bound. The sheriff called it suicide."
+
+YOU MUST MATCH THE LONGER EXAMPLE STYLE.
 
 Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
 """
@@ -407,8 +418,8 @@ Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
     res = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_completion_tokens=500,
+        temperature=0.4,
+        max_completion_tokens=600,
     )
     
     lines = [
@@ -435,17 +446,31 @@ Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
     # Validate word counts for timing
     word_counts = [len(line.split()) for line in lines[:4]]  # Exclude CTA
     
-    if not (12 <= word_counts[0] <= 20):  # FACTS
-        print(f"⚠️  Warning: FACTS line word count {word_counts[0]} (target: 15-18)")
+    # STRICT ENFORCEMENT - reject if any line is too short
+    if word_counts[0] < 16:  # FACTS
+        raise RuntimeError(f"❌ FACTS line too short ({word_counts[0]} words). Need minimum 16 words with full location details.")
     
-    if not (12 <= word_counts[1] <= 20):  # CONTEXT
-        print(f"⚠️  Warning: CONTEXT line word count {word_counts[1]} (target: 15-18)")
+    if word_counts[1] < 18:  # CONTEXT
+        raise RuntimeError(f"❌ CONTEXT line too short ({word_counts[1]} words). Need minimum 18 words with specific details about who they were.")
     
-    if not (18 <= word_counts[2] <= 28):  # CONTRADICTION
-        print(f"⚠️  Warning: CONTRADICTION line word count {word_counts[2]} (target: 21-24)")
+    if word_counts[2] < 24:  # CONTRADICTION
+        raise RuntimeError(f"❌ CONTRADICTION line too short ({word_counts[2]} words). Need minimum 24 words with full details of what doesn't fit.")
     
-    if not (18 <= word_counts[3] <= 28):  # OFFICIAL STORY
-        print(f"⚠️  Warning: OFFICIAL STORY line word count {word_counts[3]} (target: 21-24)")
+    if word_counts[3] < 24:  # OFFICIAL STORY
+        raise RuntimeError(f"❌ OFFICIAL STORY line too short ({word_counts[3]} words). Need minimum 24 words with ruling, timeline, and aftermath.")
+    
+    # Warnings for upper bounds
+    if not (16 <= word_counts[0] <= 22):  # FACTS
+        print(f"⚠️  Warning: FACTS line word count {word_counts[0]} (target: 16-20)")
+    
+    if not (18 <= word_counts[1] <= 24):  # CONTEXT
+        print(f"⚠️  Warning: CONTEXT line word count {word_counts[1]} (target: 18-22)")
+    
+    if not (24 <= word_counts[2] <= 30):  # CONTRADICTION
+        print(f"⚠️  Warning: CONTRADICTION line word count {word_counts[2]} (target: 24-28)")
+    
+    if not (24 <= word_counts[3] <= 30):  # OFFICIAL STORY
+        print(f"⚠️  Warning: OFFICIAL STORY line word count {word_counts[3]} (target: 24-28)")
     
     return lines
 
@@ -464,10 +489,13 @@ def validate_script(lines, case):
     estimated_seconds = total_words / 3
     
     if estimated_seconds < 35:
-        raise RuntimeError(f"❌ Script too short: ~{estimated_seconds:.1f}s (need 35-45s)")
+        raise RuntimeError(f"❌ Script too short: ~{estimated_seconds:.1f}s (need 35-45s). Lines need more detail.")
+    
+    if estimated_seconds > 48:
+        raise RuntimeError(f"❌ Script too long: ~{estimated_seconds:.1f}s (max 48s). Lines need to be more concise.")
     
     if estimated_seconds > 45:
-        raise RuntimeError(f"❌ Script too long: ~{estimated_seconds:.1f}s (need 35-45s)")
+        print(f"⚠️  Warning: Script slightly long at ~{estimated_seconds:.1f}s (target: 35-45s)")
     
     # Check name appears
     name_parts = case['full_name'].split()
