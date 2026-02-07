@@ -2,12 +2,13 @@
 """
 True Crime Shorts – Script Generator (FINAL, LOCKED)
 
-GUARANTEES:
-- CTA is GENERATED, not injected
-- Script explicitly describes visuals (from an ALLOWED SET)
-- Assets FOLLOW script, never random
+ABSOLUTE GUARANTEES:
+- Filenames are NEVER invented
+- Assets are chosen ONLY from disk
+- Registry must exactly match disk
 - Hook uses STATIC IMAGES word-by-word
 - Videos play ONLY after hook
+- CTA is GENERATED, not injected
 - A case is NEVER reused
 """
 
@@ -32,12 +33,15 @@ from assets import (
 SCRIPT_FILE = "script.txt"
 BEATS_FILE = "beats.json"
 
+ASSET_DIR = Path("asset")
+HOOK_DIR = ASSET_DIR / "hook_static"
+
 MEMORY_DIR = Path("memory")
 USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
 LAST_HOOK_FILE = MEMORY_DIR / "last_hook_category.txt"
 
 # ==================================================
-# CASE INPUT (SINGLE SOURCE OF TRUTH)
+# CASE INPUT
 # ==================================================
 
 CURRENT_CASE = {
@@ -91,6 +95,31 @@ def init_client():
     return Groq(api_key=key)
 
 # ==================================================
+# DISK-LOCKED HOOK IMAGE ACCESS
+# ==================================================
+
+def hook_images_on_disk(category: str):
+    """
+    Returns ONLY hook images that:
+    - exist on disk
+    - are declared in the registry
+    - belong to the requested category
+    """
+    disk_files = {p.name for p in HOOK_DIR.glob("*.jpeg")}
+
+    images = [
+        name for name, cat in HOOK_IMAGE_CATEGORIES.items()
+        if cat == category and name in disk_files
+    ]
+
+    if not images:
+        raise RuntimeError(
+            f"❌ No hook images on disk for category: {category}"
+        )
+
+    return images
+
+# ==================================================
 # SCRIPT GENERATION (VISUAL-LOCKED)
 # ==================================================
 
@@ -114,9 +143,8 @@ ALLOWED_VISUALS = [
 
 def generate_script(client: Groq, hook_category: str):
     """
-    AI WRITES ALL 7 LINES INCLUDING CTA
-    Line 1 = HOOK QUESTION
-    Lines 2–7 = MUST USE ALLOWED VISUALS ONLY
+    Line 1: Hook question
+    Lines 2–7: MUST use allowed visuals ONLY
     """
 
     prompt = f"""
@@ -126,8 +154,8 @@ ABSOLUTE RULES:
 - EXACTLY 7 lines
 - Line 1 is a HOOK QUESTION (no visuals)
 - Lines 2–7 MUST include [VISUAL: ...]
-- Use ONLY visuals from the ALLOWED VISUALS list
-- NO abstract or invented visuals
+- Visuals MUST be chosen ONLY from the ALLOWED VISUALS list
+- NO invented or abstract visuals
 - Calm investigative tone
 - NO conclusions
 
@@ -169,7 +197,7 @@ Return ONLY the 7 lines.
     return lines
 
 # ==================================================
-# ASSET MATCHING (DETERMINISTIC, NOT GUESSY)
+# VIDEO ASSET MATCHING (DISK-FIRST)
 # ==================================================
 
 def video_asset_for_visual(visual: str, used: set):
@@ -179,6 +207,9 @@ def video_asset_for_visual(visual: str, used: set):
         if asset in used:
             continue
         if any(tag in visual_l for tag in tags):
+            path = ASSET_DIR / asset
+            if not path.exists():
+                raise RuntimeError(f"❌ Declared video missing on disk: {asset}")
             return asset
 
     raise RuntimeError(f"❌ No video asset matches visual: {visual}")
@@ -191,6 +222,16 @@ def main():
     print("🧪 Validating assets…")
     validate_video_assets()
     validate_hook_images()
+
+    # HARD LOCK: registry must equal disk
+    hook_disk = {p.name for p in HOOK_DIR.glob("*.jpeg")}
+    hook_declared = set(HOOK_IMAGE_CATEGORIES.keys())
+    if hook_disk != hook_declared:
+        raise RuntimeError(
+            f"❌ Hook registry mismatch\n"
+            f"Missing: {hook_disk - hook_declared}\n"
+            f"Extra: {hook_declared - hook_disk}"
+        )
 
     cid = case_id(CURRENT_CASE)
     if cid in load_used_cases():
@@ -213,23 +254,16 @@ def main():
     # HOOK (STATIC IMAGES)
     # --------------------
     hook_words = [w.strip("?,.") for w in lines[0].split() if len(w) > 4]
+    hook_images = hook_images_on_disk(hook_category)
 
-    hook_images = [
-        img for img, cat in HOOK_IMAGE_CATEGORIES.items()
-        if cat == hook_category
-    ][: len(hook_words)]
+    per_word_duration = 0.6
 
-    if not hook_images:
-        raise RuntimeError("❌ No hook images available for category")
-
-    per_word_duration = 0.6  # SAFE default, builder can override with audio timing
-
-    for i, img in enumerate(hook_images):
+    for i, word in enumerate(hook_words):
         beats.append({
             "beat_id": len(beats) + 1,
             "type": "image",
-            "text": hook_words[i],
-            "asset_file": img,
+            "text": word,
+            "asset_file": hook_images[i % len(hook_images)],
             "duration": per_word_duration,
         })
 
@@ -239,9 +273,6 @@ def main():
     used_assets = set()
 
     for line in lines[1:]:
-        if "[VISUAL:" not in line:
-            raise RuntimeError("❌ Missing [VISUAL] in story line")
-
         text, visual = line.split("[VISUAL:")
         visual = visual.replace("]", "").strip()
 
@@ -261,7 +292,7 @@ def main():
     save_used_case(cid)
 
     print("✅ Script written")
-    print("🎞️ Hook images locked to hook words")
+    print("🎞️ Assets selected ONLY from disk")
     print("🔒 Case permanently locked")
 
 # ==================================================
