@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – Script Generator (HARD-LOCKED v2)
+True Crime Shorts – Script Generator (SCRIPT ONLY – FINAL)
 
 GUARANTEES:
 - Hook is ROTATED, never fixed
@@ -10,9 +10,12 @@ GUARANTEES:
 - Full name, location, date, time REQUIRED
 - CTA is FIXED
 - Final loop is PERSON-SPECIFIC
-- Assets chosen ONLY from disk
 - Script is fully written to output
 - Cases NEVER repeat
+
+NOTE:
+- NO visual logic lives here
+- Visuals are assigned later by visual_assigner.py
 """
 
 import os
@@ -20,14 +23,11 @@ import json
 from pathlib import Path
 from groq import Groq
 
-from assets import VIDEO_ASSET_KEYWORDS, validate_video_assets
-
 # ==================================================
 # FILES
 # ==================================================
 
 SCRIPT_FILE = Path("script.txt")
-BEATS_FILE = Path("beats.json")
 
 MEMORY_DIR = Path("memory")
 USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
@@ -45,28 +45,37 @@ if not CASE_FILE.exists():
 
 CASE = json.loads(CASE_FILE.read_text(encoding="utf-8"))
 
-REQUIRED_FIELDS = ["full_name", "location", "date", "time", "summary", "key_detail", "official_story"]
+REQUIRED_FIELDS = [
+    "full_name",
+    "location",
+    "date",
+    "time",
+    "summary",
+    "key_detail",
+    "official_story",
+]
+
 for f in REQUIRED_FIELDS:
     if not CASE.get(f):
         raise RuntimeError(f"❌ Missing required case field: {f}")
 
 # ==================================================
-# MEMORY
+# MEMORY HELPERS
 # ==================================================
 
-def load_json(path, default):
+def load_json(path: Path, default):
     if not path.exists():
         path.write_text(json.dumps(default, indent=2))
     return json.loads(path.read_text())
 
-def save_json(path, data):
+def save_json(path: Path, data):
     path.write_text(json.dumps(data, indent=2))
 
 def case_fingerprint(c):
     return f"{c['full_name']}|{c['location']}|{c['date']}|{c['time']}".lower()
 
 # ==================================================
-# HOOK SYSTEM (ROTATING)
+# HOOK SYSTEM (ROTATING, LOCKED)
 # ==================================================
 
 HOOK_POOL = [
@@ -82,10 +91,11 @@ HOOK_COOLDOWN = 15  # videos
 
 def select_hook():
     used = load_json(USED_HOOKS_FILE, [])
-    available = [h for h in HOOK_POOL if h not in used[-HOOK_COOLDOWN:]]
+    recent = used[-HOOK_COOLDOWN:]
+    available = [h for h in HOOK_POOL if h not in recent]
 
     if not available:
-        available = HOOK_POOL[:]  # reset safely
+        available = HOOK_POOL[:]  # safe reset
 
     hook = available[0]
     used.append(hook)
@@ -103,7 +113,7 @@ def init_client():
     return Groq(api_key=key)
 
 # ==================================================
-# SCRIPT GENERATION
+# SCRIPT GENERATION (BODY ONLY)
 # ==================================================
 
 CTA_LINE = "Like and subscribe so stories like {name} don’t disappear."
@@ -114,7 +124,7 @@ Write a factual true crime short.
 
 RULES:
 - No questions
-- No emotion bait
+- No emotional language
 - Clear investigative tone
 - EXACTLY 4 lines
 
@@ -142,41 +152,32 @@ Summary: {CASE['summary']}
         max_completion_tokens=300,
     )
 
-    lines = [l.strip() for l in res.choices[0].message.content.split("\n") if l.strip()]
+    lines = [
+        l.strip()
+        for l in res.choices[0].message.content.split("\n")
+        if l.strip()
+    ]
+
     if len(lines) != 4:
-        raise RuntimeError("❌ Body must be exactly 4 lines")
+        raise RuntimeError("❌ Script body must be exactly 4 lines")
+
     return lines
 
 # ==================================================
 # FINAL LOOP (PERSON-SPECIFIC)
 # ==================================================
 
-def final_loop(name):
+def final_loop(name: str) -> str:
     return f"So what really happened to {name}?"
-
-# ==================================================
-# ASSET MATCHING
-# ==================================================
-
-def asset_for_line(line, used):
-    text = line.lower()
-    for asset, tags in VIDEO_ASSET_KEYWORDS.items():
-        if asset in used:
-            continue
-        if any(tag in text for tag in tags):
-            return asset
-    raise RuntimeError(f"❌ No asset matches line: {line}")
 
 # ==================================================
 # MAIN
 # ==================================================
 
 def main():
-    print("🧪 Validating assets…")
-    validate_video_assets()
-
     used_cases = load_json(USED_CASES_FILE, [])
     cid = case_fingerprint(CASE)
+
     if cid in used_cases:
         raise RuntimeError("❌ Case already used")
 
@@ -187,27 +188,14 @@ def main():
 
     full_script = [hook] + body + [loop]
 
-    beats = []
-    used_assets = set()
-
-    for line in full_script:
-        beat = {"text": line}
-        try:
-            asset = asset_for_line(line, used_assets)
-            used_assets.add(asset)
-            beat["asset_file"] = asset
-        except:
-            pass
-        beats.append(beat)
-
     SCRIPT_FILE.write_text("\n".join(full_script), encoding="utf-8")
-    BEATS_FILE.write_text(json.dumps({"beats": beats}, indent=2), encoding="utf-8")
 
     used_cases.append(cid)
     save_json(USED_CASES_FILE, used_cases)
 
     print("✅ Script written")
     print("🔒 Case & hook locked")
+    print("📜 Visuals will be assigned separately")
 
 # ==================================================
 if __name__ == "__main__":
