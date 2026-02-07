@@ -60,7 +60,7 @@ jobs:
           python-version: "3.10"
 
       # --------------------------------------------------
-      # SYSTEM DEPENDENCIES (NO CUSTOM FFMPEG)
+      # SYSTEM DEPENDENCIES
       # --------------------------------------------------
       - name: Install system dependencies
         run: |
@@ -97,23 +97,31 @@ jobs:
           test -f case.json
 
       # --------------------------------------------------
-      # SCRIPT + BEATS (ASSET-LOCKED)
+      # SCRIPT (TEXT ONLY)
       # --------------------------------------------------
-      - name: Generate script and beats
+      - name: Generate script
         run: |
           set -euo pipefail
           python script.py
           test -f script.txt
-          test -f beats.json
 
       # --------------------------------------------------
-      # VOICEOVER
+      # VOICEOVER (AUDIO FIRST)
       # --------------------------------------------------
       - name: Generate voiceover
         run: |
           set -euo pipefail
           python tts_generate.py --output final_audio.wav
           test -f final_audio.wav
+
+      # --------------------------------------------------
+      # VISUAL ASSIGNMENT (AUDIO-AWARE)
+      # --------------------------------------------------
+      - name: Assign visuals
+        run: |
+          set -euo pipefail
+          python visual_assigner.py
+          test -f beats.json
 
       # --------------------------------------------------
       # SUBTITLES
@@ -125,7 +133,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD (PURE MERGE, NO RE-ENCODE)
+      # VIDEO BUILD (SINGLE FINAL ENCODE)
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -134,7 +142,7 @@ jobs:
           test -f output.mp4
 
       # --------------------------------------------------
-      # QUALITY VALIDATION (VISUAL ONLY)
+      # QUALITY VALIDATION (NO TRANSCODE)
       # --------------------------------------------------
       - name: Validate video quality
         run: |
@@ -145,7 +153,7 @@ jobs:
             -of default=noprint_wrappers=1 output.mp4
 
       # --------------------------------------------------
-      # UPLOAD (NO TRANSCODE CONTROL — YT HANDLES IT)
+      # UPLOAD TO YOUTUBE
       # --------------------------------------------------
       - name: Upload to YouTube Shorts
         run: |
