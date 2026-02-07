@@ -44,7 +44,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (CrimeCaseFinder/5.0; +https://example.com)"
 }
 
-MIN_TEXT_LEN = 400
+MIN_TEXT_LEN = 120
 MAX_TEXT_LEN = 1200
 
 GOOGLE_NEWS_RSS = [
