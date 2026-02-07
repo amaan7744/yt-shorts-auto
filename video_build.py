@@ -225,19 +225,10 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
         return "[0:v]null[out]"
     
     filter_parts = []
-    current_offset = 0.0
     
+    # Simple approach: Just prepare all inputs
     for i in range(len(clips)):
-        # Hook images (first N clips) - no crossfade, just concat
-        if i < hook_count:
-            if i == 0:
-                filter_parts.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}]")
-            else:
-                filter_parts.append(f"[{i}:v]setpts=PTS-STARTPTS+{current_offset:.3f}/TB[v{i}]")
-            current_offset += durations[i]
-        else:
-            # Story videos - apply crossfade
-            filter_parts.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}]")
+        filter_parts.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}]")
     
     # Concatenate hooks without crossfade
     if hook_count > 0:
@@ -245,36 +236,44 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
         filter_parts.append(f"{hook_concat}concat=n={hook_count}:v=1:a=0[hooks]")
     
     # Crossfade story videos
-    if len(clips) > hook_count:
-        story_start = hook_count
-        
-        if len(clips) - hook_count == 1:
-            # Only one story video
-            if hook_count > 0:
-                filter_parts.append(f"[hooks][v{story_start}]concat=n=2:v=1:a=0[out]")
-            else:
-                filter_parts.append(f"[v{story_start}]null[out]")
-        else:
-            # Multiple story videos - apply crossfades
-            prev_label = f"v{story_start}"
-            
-            for i in range(story_start + 1, len(clips)):
-                offset = durations[i-1] - CROSSFADE_DURATION
-                current_label = f"cf{i}"
-                
-                filter_parts.append(
-                    f"[{prev_label}][v{i}]xfade=transition=fade:duration={CROSSFADE_DURATION}:offset={offset:.3f}[{current_label}]"
-                )
-                prev_label = current_label
-            
-            # Combine hooks and crossfaded stories
-            if hook_count > 0:
-                filter_parts.append(f"[hooks][{prev_label}]concat=n=2:v=1:a=0[out]")
-            else:
-                filter_parts.append(f"[{prev_label}]null[out]")
-    else:
+    story_count = len(clips) - hook_count
+    
+    if story_count == 0:
         # Only hooks, no story videos
         filter_parts.append("[hooks]null[out]")
+    elif story_count == 1:
+        # Only one story video - just concat with hooks
+        story_idx = hook_count
+        if hook_count > 0:
+            filter_parts.append(f"[hooks][v{story_idx}]concat=n=2:v=1:a=0[out]")
+        else:
+            filter_parts.append(f"[v{story_idx}]null[out]")
+    else:
+        # Multiple story videos - apply crossfades
+        story_start = hook_count
+        
+        # Build crossfade chain with cumulative offsets
+        cumulative_offset = 0.0
+        prev_label = f"v{story_start}"
+        
+        for i in range(story_start + 1, len(clips)):
+            # Each crossfade offset is cumulative
+            offset = cumulative_offset + durations[i-1] - CROSSFADE_DURATION
+            current_label = f"cf{i}"
+            
+            filter_parts.append(
+                f"[{prev_label}][v{i}]xfade=transition=fade:duration={CROSSFADE_DURATION}:offset={offset:.3f}[{current_label}]"
+            )
+            
+            # Update cumulative offset for next iteration
+            cumulative_offset = offset + CROSSFADE_DURATION
+            prev_label = current_label
+        
+        # Combine hooks and crossfaded stories
+        if hook_count > 0:
+            filter_parts.append(f"[hooks][{prev_label}]concat=n=2:v=1:a=0[out]")
+        else:
+            filter_parts.append(f"[{prev_label}]null[out]")
     
     return ";".join(filter_parts)
 
