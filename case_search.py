@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 """
-Case Search + AI Enrichment (PRODUCTION – HARDENED)
+Case Search + AI Enrichment (PRODUCTION – CI SAFE)
 
-OUTPUT GUARANTEES:
-- full_name
-- location (City, State, United States)
-- date (human readable)
-- time (exact or approximate)
-- summary
-- key_detail
-- official_story
-
-If ANY field cannot be confidently inferred → case is discarded.
-Pipeline NEVER crashes due to source failure.
+GOALS:
+- STRICT output schema (script-safe)
+- FLEXIBLE input acceptance
+- NO invented data
+- NO CI crashes if news is dry
 """
 
 import json
@@ -22,7 +16,6 @@ import hashlib
 import random
 import requests
 from pathlib import Path
-from datetime import datetime
 from bs4 import BeautifulSoup
 from groq import Groq
 
@@ -41,10 +34,10 @@ MEMORY_DIR.mkdir(exist_ok=True)
 # ==================================================
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (CrimeCaseFinder/5.0; +https://example.com)"
+    "User-Agent": "Mozilla/5.0 (CrimeCaseFinder/6.0)"
 }
 
-MIN_TEXT_LEN = 120
+MIN_TEXT_LEN = 120   # realistic for news snippets
 MAX_TEXT_LEN = 1200
 
 GOOGLE_NEWS_RSS = [
@@ -85,16 +78,18 @@ def clean(text: str) -> str:
 def fetch_google_news():
     try:
         feed = random.choice(GOOGLE_NEWS_RSS)
-        resp = requests.get(feed, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
+        r = requests.get(feed, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
             return None
 
-        soup = BeautifulSoup(resp.text, "xml")
+        soup = BeautifulSoup(r.text, "xml")
         items = soup.find_all("item")
         random.shuffle(items)
 
         for item in items:
-            text = clean(item.description.text if item.description else "")
+            title = clean(item.title.text if item.title else "")
+            desc = clean(item.description.text if item.description else "")
+            text = f"{title}. {desc}"
             if len(text) >= MIN_TEXT_LEN:
                 return text
     except Exception:
@@ -103,14 +98,14 @@ def fetch_google_news():
     return None
 
 def fetch_reddit():
-    url = random.choice(REDDIT_ENDPOINTS)
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
+        url = random.choice(REDDIT_ENDPOINTS)
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
             return None
 
         try:
-            data = resp.json()
+            data = r.json()
         except Exception:
             return None
 
@@ -119,10 +114,10 @@ def fetch_reddit():
 
         for p in posts:
             body = p.get("data", {}).get("selftext", "")
-            text = clean(body)
+            title = p.get("data", {}).get("title", "")
+            text = clean(f"{title}. {body}")
             if len(text) >= MIN_TEXT_LEN:
                 return text
-
     except Exception:
         return None
 
@@ -130,11 +125,11 @@ def fetch_reddit():
 
 def fetch_wikipedia():
     try:
-        resp = requests.get(WIKI_BACKUP, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
+        r = requests.get(WIKI_BACKUP, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
             return None
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(r.text, "html.parser")
         items = soup.select("li")
         random.shuffle(items)
 
@@ -148,7 +143,7 @@ def fetch_wikipedia():
     return None
 
 # ==================================================
-# AI ENRICHMENT (STRICT SCHEMA)
+# AI ENRICHMENT (STRICT OUTPUT)
 # ==================================================
 
 def init_client():
@@ -157,20 +152,17 @@ def init_client():
         raise RuntimeError("❌ GROQ_API_KEY missing")
     return Groq(api_key=key)
 
-def enrich_case(client: Groq, raw_text: str) -> dict | None:
+def enrich_case(client: Groq, raw_text: str):
     prompt = f"""
-You are a crime data extraction system.
-
-TASK:
-Convert the raw text below into STRICT JSON.
+Extract a TRUE CRIME CASE into STRICT JSON.
 
 RULES:
 - US cases ONLY
 - No guessing
-- If time is unknown, use approximate wording (e.g. "late night")
-- If ANY required field cannot be inferred, output null
+- Approximate time allowed ("late night", "early morning")
+- If ANY required field cannot be inferred → return null
 
-REQUIRED JSON SCHEMA:
+REQUIRED JSON:
 {{
   "full_name": "",
   "location": "City, State, United States",
@@ -186,7 +178,7 @@ RAW TEXT:
 {raw_text[:MAX_TEXT_LEN]}
 \"\"\"
 
-Return ONLY valid JSON or null.
+Return ONLY JSON or null.
 """
 
     try:
@@ -200,7 +192,6 @@ Return ONLY valid JSON or null.
         return None
 
     content = res.choices[0].message.content.strip()
-
     if content.lower() == "null":
         return None
 
@@ -234,13 +225,12 @@ Return ONLY valid JSON or null.
 def main():
     used = load_used()
     client = init_client()
-
     sources = [fetch_google_news, fetch_reddit, fetch_wikipedia]
 
     for _ in range(40):
-        raw = None
         random.shuffle(sources)
 
+        raw = None
         for src in sources:
             raw = src()
             if raw:
@@ -268,10 +258,12 @@ def main():
         used.add(case_fp)
         save_used(used)
 
-        print("✅ Case selected, enriched, and locked")
+        print("✅ Case selected and written")
         return
 
-    raise RuntimeError("❌ No valid case found after exhaustive search")
+    # IMPORTANT: do NOT crash CI
+    print("⚠️ No valid case found this run — skipping upload")
+    return
 
 if __name__ == "__main__":
     main()
