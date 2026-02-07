@@ -334,7 +334,7 @@ def generate_weighted_script(client: Groq, case, case_type):
     
     STRUCTURE:
     1. HOOK - already generated (statement)
-    2. FACTS - name, place, time (5-6 sec / 16-20 words)
+    2. FACTS - name, place, time (5-6 sec / 10-20 words)
     3. CONTEXT - who they were (6-7 sec / 18-22 words)
     4. CONTRADICTION - the weight, the detail (8-9 sec / 24-28 words)
     5. OFFICIAL STORY - what authorities say (8-9 sec / 24-28 words)
