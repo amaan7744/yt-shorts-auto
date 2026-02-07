@@ -4,8 +4,8 @@ Visual Assigner (FINAL – AUDIO FIRST, DETERMINISTIC)
 
 RESPONSIBILITY:
 - Assign visuals AFTER audio exists
-- Hook = images only
-- Story = 5s videos only
+- Hook = images only (from hook_static/)
+- Story = 5s videos only (from asset/)
 - Assets chosen ONLY from registry
 - NO randomness
 - NO invented filenames
@@ -216,13 +216,16 @@ beats = []
 current_time = 0.0
 beat_id = 1
 
-# ---- HOOK (IMAGES ONLY)
+# ---- HOOK (IMAGES ONLY) - PREFIX WITH hook_static/
 print("\n[VISUAL] === HOOK SECTION ===")
 for img in hook_images:
+    # CRITICAL FIX: Add hook_static/ prefix to the asset path
+    asset_path = f"hook_static/{img}"
+    
     beats.append({
         "beat_id": beat_id,
         "type": "image",
-        "asset_file": img,
+        "asset_file": asset_path,  # Now includes hook_static/
         "start": round(current_time, 3),
         "duration": round(per_image, 3),
     })
@@ -240,7 +243,7 @@ for line in BODY_LINES:
     beats.append({
         "beat_id": beat_id,
         "type": "video",
-        "asset_file": asset,
+        "asset_file": asset,  # Videos are directly in asset/
         "start": round(current_time, 3),
         "duration": VIDEO_DURATION,
         "text": line,
@@ -257,7 +260,7 @@ final_asset = list(used_videos)[-1] if used_videos else list(VIDEO_ASSET_KEYWORD
 beats.append({
     "beat_id": beat_id,
     "type": "video",
-    "asset_file": final_asset,
+    "asset_file": final_asset,  # Videos are directly in asset/
     "start": round(current_time, 3),
     "duration": round(final_duration, 3),
     "text": FINAL_LOOP,
