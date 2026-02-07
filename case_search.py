@@ -1,223 +1,231 @@
 #!/usr/bin/env python3
 """
-CASE SEARCH ENGINE – TRUE CRIME (US-FOCUSED, LOCKED)
+Case Search + Enrichment (PRODUCTION)
 
-SOURCES:
-- Wikipedia (archive / cold cases)
-- Reddit (fresh mystery cases)
-- Google News (current investigations)
+OUTPUT GUARANTEES:
+- full_name
+- location (city, state, country)
+- date (human readable)
+- time (exact OR approximate allowed)
+- summary
+- key_detail
+- official_story
 
-GUARANTEES:
-- ONE global uniqueness lock
-- US-biased case selection
-- Script-compatible output
-- No case repetition, ever
+If ANY field cannot be confidently filled → case is rejected.
+Cases NEVER repeat.
 """
 
 import json
+import os
 import re
 import hashlib
 import random
 import requests
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 from bs4 import BeautifulSoup
+from groq import Groq
 
 # ==================================================
 # FILES
 # ==================================================
 
 OUT_FILE = Path("case.json")
-USED_FILE = Path("used_cases.json")
+MEMORY_DIR = Path("memory")
+USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
+
+MEMORY_DIR.mkdir(exist_ok=True)
 
 # ==================================================
 # CONFIG
 # ==================================================
 
-HEADERS = {"User-Agent": "TrueCrimeCaseEngine/1.0"}
-
-MIN_CHARS = 500
-MAX_CHARS = 900
-
+HEADERS = {"User-Agent": "CrimeCaseFinder/5.0"}
 CURRENT_YEAR = datetime.utcnow().year
 
-REDDIT_SUBS = [
-    "UnresolvedMysteries",
-    "TrueCrime",
-    "ColdCases",
-    "MissingPersons",
+GOOGLE_NEWS_RSS = [
+    "https://news.google.com/rss/search?q=death+investigation+United+States",
+    "https://news.google.com/rss/search?q=body+found+United+States",
+    "https://news.google.com/rss/search?q=unsolved+death+United+States",
 ]
 
-WIKI_PAGES = [
-    "https://en.wikipedia.org/wiki/List_of_unsolved_deaths",
-    "https://en.wikipedia.org/wiki/List_of_people_who_disappeared",
+REDDIT_ENDPOINTS = [
+    "https://www.reddit.com/r/TrueCrime/.json?limit=50",
+    "https://www.reddit.com/r/UnresolvedMysteries/.json?limit=50",
 ]
 
-NEWS_QUERIES = [
-    "mysterious death",
-    "found dead under investigation",
-    "ruled accidental police investigating",
-]
+WIKI_BACKUP = "https://en.wikipedia.org/wiki/List_of_unsolved_deaths"
+
+MIN_TEXT_LEN = 400
+MAX_TEXT_LEN = 1200
 
 # ==================================================
 # UTILS
 # ==================================================
 
-def clean(t: str) -> str:
-    return re.sub(r"\s+", " ", t).strip()
-
-def normalize(raw: str) -> str:
-    raw = raw.lower()
-    raw = re.sub(r"\b(killed|murdered|shot|stabbed)\b", "was found", raw)
-    raw = clean(raw)
-    clipped = raw[:MAX_CHARS].rsplit(" ", 1)[0]
-    return clipped.capitalize()
-
-def extract_year(t: str) -> str:
-    m = re.search(r"\b(18\d{2}|19\d{2}|20\d{2})\b", t)
-    return m.group(1) if m else "unknown"
-
-def extract_location(t: str) -> str:
-    m = re.search(
-        r"\b(in|at|near)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)",
-        t
-    )
-    return m.group(2) if m else "unknown"
-
-def us_bias_score(text: str) -> int:
-    score = 0
-    if re.search(r"\b(us|usa|california|texas|new york|florida|ohio)\b", text.lower()):
-        score += 2
-    if "police" in text.lower():
-        score += 1
-    if "investigation" in text.lower():
-        score += 1
-    return score
-
-def case_fingerprint(year: str, location: str, summary: str) -> str:
-    base = f"{year}|{location}|{summary[:120]}"
-    return hashlib.sha256(base.encode()).hexdigest()
-
 def load_used():
-    return set(json.loads(USED_FILE.read_text())) if USED_FILE.exists() else set()
+    if not USED_CASES_FILE.exists():
+        USED_CASES_FILE.write_text("[]")
+    return set(json.loads(USED_CASES_FILE.read_text()))
 
-def save_used(u):
-    USED_FILE.write_text(json.dumps(sorted(u), indent=2))
+def save_used(s):
+    USED_CASES_FILE.write_text(json.dumps(sorted(s), indent=2))
+
+def fingerprint(text: str) -> str:
+    return hashlib.sha256(text.lower().encode()).hexdigest()
+
+def clean(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
 # ==================================================
-# SOURCES
+# RAW CASE FETCHERS
 # ==================================================
 
-def fetch_wikipedia():
-    page = random.choice(WIKI_PAGES)
-    soup = BeautifulSoup(
-        requests.get(page, headers=HEADERS, timeout=15).text,
-        "html.parser"
-    )
-    items = soup.select("li")
+def fetch_google_news():
+    feed = random.choice(GOOGLE_NEWS_RSS)
+    xml = requests.get(feed, headers=HEADERS, timeout=15).text
+    soup = BeautifulSoup(xml, "xml")
+    items = soup.find_all("item")
     random.shuffle(items)
-
-    for li in items:
-        text = clean(li.get_text())
-        if len(text) >= MIN_CHARS:
+    for item in items:
+        text = clean(item.description.text if item.description else "")
+        if len(text) >= MIN_TEXT_LEN:
             return text
     return None
 
 def fetch_reddit():
-    sub = random.choice(REDDIT_SUBS)
-    url = f"https://www.reddit.com/r/{sub}/top.json?limit=50&t=year"
-
-    r = requests.get(url, headers=HEADERS, timeout=15)
-    if r.status_code != 200:
-        return None
-
-    posts = r.json()["data"]["children"]
+    url = random.choice(REDDIT_ENDPOINTS)
+    data = requests.get(url, headers=HEADERS, timeout=15).json()
+    posts = data.get("data", {}).get("children", [])
     random.shuffle(posts)
-
     for p in posts:
-        data = p["data"]
-        text = clean(f"{data.get('title','')} {data.get('selftext','')}")
-        if len(text) >= MIN_CHARS:
+        body = p["data"].get("selftext", "")
+        text = clean(body)
+        if len(text) >= MIN_TEXT_LEN:
             return text
     return None
 
-def fetch_news():
-    query = random.choice(NEWS_QUERIES)
-    url = f"https://news.google.com/search?q={query.replace(' ','+')}&hl=en-US&gl=US&ceid=US:en"
-
-    soup = BeautifulSoup(
-        requests.get(url, headers=HEADERS, timeout=15).text,
-        "html.parser"
-    )
-
-    articles = soup.select("article")
-    random.shuffle(articles)
-
-    for a in articles:
-        text = clean(a.get_text())
-        if len(text) >= MIN_CHARS:
+def fetch_wikipedia():
+    html = requests.get(WIKI_BACKUP, headers=HEADERS, timeout=15).text
+    soup = BeautifulSoup(html, "html.parser")
+    items = soup.select("li")
+    random.shuffle(items)
+    for li in items:
+        text = clean(li.get_text())
+        if len(text) >= MIN_TEXT_LEN:
             return text
     return None
 
 # ==================================================
-# MAIN ENGINE
+# AI ENRICHMENT (STRICT)
+# ==================================================
+
+def init_client():
+    key = os.getenv("GROQ_API_KEY")
+    if not key:
+        raise RuntimeError("❌ GROQ_API_KEY missing")
+    return Groq(api_key=key)
+
+def enrich_case(client: Groq, raw_text: str) -> dict | None:
+    prompt = f"""
+You are a crime data extractor.
+
+TASK:
+Convert the following raw crime text into STRICT JSON.
+
+RULES:
+- US cases ONLY
+- No guessing
+- If unsure, use approximate wording (e.g. "late night")
+- If ANY required field cannot be inferred, output null
+
+REQUIRED JSON SCHEMA:
+{{
+  "full_name": "",
+  "location": "City, State, United States",
+  "date": "Month Day, Year",
+  "time": "Exact time OR approximate",
+  "summary": "",
+  "key_detail": "",
+  "official_story": ""
+}}
+
+RAW TEXT:
+\"\"\"
+{raw_text[:MAX_TEXT_LEN]}
+\"\"\"
+
+Return ONLY valid JSON or null.
+"""
+
+    res = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_completion_tokens=500,
+    )
+
+    content = res.choices[0].message.content.strip()
+
+    if content.lower() == "null":
+        return None
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+
+    required = ["full_name", "location", "date", "time", "summary", "key_detail", "official_story"]
+    if not all(data.get(k) for k in required):
+        return None
+
+    if "United States" not in data["location"]:
+        return None
+
+    return data
+
+# ==================================================
+# MAIN
 # ==================================================
 
 def main():
     used = load_used()
+    client = init_client()
 
-    candidates = []
+    sources = [fetch_google_news, fetch_reddit, fetch_wikipedia]
 
-    # Pull from all sources
-    for _ in range(15):
-        for fetcher in (fetch_reddit, fetch_news, fetch_wikipedia):
-            raw = fetcher()
-            if not raw:
-                continue
+    for _ in range(30):
+        raw = None
+        random.shuffle(sources)
+        for src in sources:
+            raw = src()
+            if raw:
+                break
+        if not raw:
+            continue
 
-            summary = normalize(raw)
-            year = extract_year(raw)
-            location = extract_location(raw)
+        fp = fingerprint(raw)
+        if fp in used:
+            continue
 
-            if year == "unknown" or location == "unknown":
-                continue
+        enriched = enrich_case(client, raw)
+        if not enriched:
+            continue
 
-            fp = case_fingerprint(year, location, summary)
-            if fp in used:
-                continue
+        case_fp = fingerprint(
+            f"{enriched['full_name']}|{enriched['location']}|{enriched['date']}|{enriched['time']}"
+        )
+        if case_fp in used:
+            continue
 
-            score = us_bias_score(raw)
+        OUT_FILE.write_text(json.dumps(enriched, indent=2), encoding="utf-8")
+        used.add(case_fp)
+        save_used(used)
 
-            candidates.append({
-                "fingerprint": fp,
-                "year": year,
-                "location": location,
-                "summary": summary,
-                "score": score,
-            })
+        print("✅ Case selected & enriched")
+        return
 
-    if not candidates:
-        raise SystemExit("❌ No unique cases found")
+    raise RuntimeError("❌ No valid case found")
 
-    # Pick best US-biased case
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    chosen = candidates[0]
-
-    OUT_FILE.write_text(json.dumps({
-        "victim_desc": "a person",
-        "incident_type": "death",
-        "location": chosen["location"],
-        "time": f"{chosen['year']}",
-        "key_clue": "details at the scene raised questions",
-        "official_story": "authorities ruled it an accident",
-        "summary": chosen["summary"],
-    }, indent=2))
-
-    used.add(chosen["fingerprint"])
-    save_used(used)
-
-    print("✅ Case selected (global uniqueness locked, US-focused)")
-
-# ==================================================
 if __name__ == "__main__":
     main()
