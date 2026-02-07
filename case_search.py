@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Case Search + Enrichment (PRODUCTION)
+Case Search + AI Enrichment (PRODUCTION – HARDENED)
 
 OUTPUT GUARANTEES:
 - full_name
-- location (city, state, country)
+- location (City, State, United States)
 - date (human readable)
-- time (exact OR approximate allowed)
+- time (exact or approximate)
 - summary
 - key_detail
 - official_story
 
-If ANY field cannot be confidently filled → case is rejected.
-Cases NEVER repeat.
+If ANY field cannot be confidently inferred → case is discarded.
+Pipeline NEVER crashes due to source failure.
 """
 
 import json
@@ -40,8 +40,12 @@ MEMORY_DIR.mkdir(exist_ok=True)
 # CONFIG
 # ==================================================
 
-HEADERS = {"User-Agent": "CrimeCaseFinder/5.0"}
-CURRENT_YEAR = datetime.utcnow().year
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (CrimeCaseFinder/5.0; +https://example.com)"
+}
+
+MIN_TEXT_LEN = 400
+MAX_TEXT_LEN = 1200
 
 GOOGLE_NEWS_RSS = [
     "https://news.google.com/rss/search?q=death+investigation+United+States",
@@ -56,20 +60,17 @@ REDDIT_ENDPOINTS = [
 
 WIKI_BACKUP = "https://en.wikipedia.org/wiki/List_of_unsolved_deaths"
 
-MIN_TEXT_LEN = 400
-MAX_TEXT_LEN = 1200
-
 # ==================================================
 # UTILS
 # ==================================================
 
 def load_used():
     if not USED_CASES_FILE.exists():
-        USED_CASES_FILE.write_text("[]")
+        USED_CASES_FILE.write_text("[]", encoding="utf-8")
     return set(json.loads(USED_CASES_FILE.read_text()))
 
 def save_used(s):
-    USED_CASES_FILE.write_text(json.dumps(sorted(s), indent=2))
+    USED_CASES_FILE.write_text(json.dumps(sorted(s), indent=2), encoding="utf-8")
 
 def fingerprint(text: str) -> str:
     return hashlib.sha256(text.lower().encode()).hexdigest()
@@ -78,46 +79,76 @@ def clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 # ==================================================
-# RAW CASE FETCHERS
+# RAW CASE FETCHERS (FAIL-SAFE)
 # ==================================================
 
 def fetch_google_news():
-    feed = random.choice(GOOGLE_NEWS_RSS)
-    xml = requests.get(feed, headers=HEADERS, timeout=15).text
-    soup = BeautifulSoup(xml, "xml")
-    items = soup.find_all("item")
-    random.shuffle(items)
-    for item in items:
-        text = clean(item.description.text if item.description else "")
-        if len(text) >= MIN_TEXT_LEN:
-            return text
+    try:
+        feed = random.choice(GOOGLE_NEWS_RSS)
+        resp = requests.get(feed, headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp.text, "xml")
+        items = soup.find_all("item")
+        random.shuffle(items)
+
+        for item in items:
+            text = clean(item.description.text if item.description else "")
+            if len(text) >= MIN_TEXT_LEN:
+                return text
+    except Exception:
+        return None
+
     return None
 
 def fetch_reddit():
     url = random.choice(REDDIT_ENDPOINTS)
-    data = requests.get(url, headers=HEADERS, timeout=15).json()
-    posts = data.get("data", {}).get("children", [])
-    random.shuffle(posts)
-    for p in posts:
-        body = p["data"].get("selftext", "")
-        text = clean(body)
-        if len(text) >= MIN_TEXT_LEN:
-            return text
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+
+        posts = data.get("data", {}).get("children", [])
+        random.shuffle(posts)
+
+        for p in posts:
+            body = p.get("data", {}).get("selftext", "")
+            text = clean(body)
+            if len(text) >= MIN_TEXT_LEN:
+                return text
+
+    except Exception:
+        return None
+
     return None
 
 def fetch_wikipedia():
-    html = requests.get(WIKI_BACKUP, headers=HEADERS, timeout=15).text
-    soup = BeautifulSoup(html, "html.parser")
-    items = soup.select("li")
-    random.shuffle(items)
-    for li in items:
-        text = clean(li.get_text())
-        if len(text) >= MIN_TEXT_LEN:
-            return text
+    try:
+        resp = requests.get(WIKI_BACKUP, headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = soup.select("li")
+        random.shuffle(items)
+
+        for li in items:
+            text = clean(li.get_text())
+            if len(text) >= MIN_TEXT_LEN:
+                return text
+    except Exception:
+        return None
+
     return None
 
 # ==================================================
-# AI ENRICHMENT (STRICT)
+# AI ENRICHMENT (STRICT SCHEMA)
 # ==================================================
 
 def init_client():
@@ -128,15 +159,15 @@ def init_client():
 
 def enrich_case(client: Groq, raw_text: str) -> dict | None:
     prompt = f"""
-You are a crime data extractor.
+You are a crime data extraction system.
 
 TASK:
-Convert the following raw crime text into STRICT JSON.
+Convert the raw text below into STRICT JSON.
 
 RULES:
 - US cases ONLY
 - No guessing
-- If unsure, use approximate wording (e.g. "late night")
+- If time is unknown, use approximate wording (e.g. "late night")
 - If ANY required field cannot be inferred, output null
 
 REQUIRED JSON SCHEMA:
@@ -144,7 +175,7 @@ REQUIRED JSON SCHEMA:
   "full_name": "",
   "location": "City, State, United States",
   "date": "Month Day, Year",
-  "time": "Exact time OR approximate",
+  "time": "Exact or approximate",
   "summary": "",
   "key_detail": "",
   "official_story": ""
@@ -158,12 +189,15 @@ RAW TEXT:
 Return ONLY valid JSON or null.
 """
 
-    res = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_completion_tokens=500,
-    )
+    try:
+        res = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_completion_tokens=500,
+        )
+    except Exception:
+        return None
 
     content = res.choices[0].message.content.strip()
 
@@ -172,10 +206,19 @@ Return ONLY valid JSON or null.
 
     try:
         data = json.loads(content)
-    except json.JSONDecodeError:
+    except Exception:
         return None
 
-    required = ["full_name", "location", "date", "time", "summary", "key_detail", "official_story"]
+    required = [
+        "full_name",
+        "location",
+        "date",
+        "time",
+        "summary",
+        "key_detail",
+        "official_story",
+    ]
+
     if not all(data.get(k) for k in required):
         return None
 
@@ -194,18 +237,20 @@ def main():
 
     sources = [fetch_google_news, fetch_reddit, fetch_wikipedia]
 
-    for _ in range(30):
+    for _ in range(40):
         raw = None
         random.shuffle(sources)
+
         for src in sources:
             raw = src()
             if raw:
                 break
+
         if not raw:
             continue
 
-        fp = fingerprint(raw)
-        if fp in used:
+        raw_fp = fingerprint(raw)
+        if raw_fp in used:
             continue
 
         enriched = enrich_case(client, raw)
@@ -215,6 +260,7 @@ def main():
         case_fp = fingerprint(
             f"{enriched['full_name']}|{enriched['location']}|{enriched['date']}|{enriched['time']}"
         )
+
         if case_fp in used:
             continue
 
@@ -222,10 +268,10 @@ def main():
         used.add(case_fp)
         save_used(used)
 
-        print("✅ Case selected & enriched")
+        print("✅ Case selected, enriched, and locked")
         return
 
-    raise RuntimeError("❌ No valid case found")
+    raise RuntimeError("❌ No valid case found after exhaustive search")
 
 if __name__ == "__main__":
     main()
