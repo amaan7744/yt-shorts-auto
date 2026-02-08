@@ -87,26 +87,48 @@ def die(msg):
     print(f"[VIDEO PRO] ❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
-def run(cmd, silent=False):
-    if silent:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        subprocess.run(cmd, check=True)
+def run(cmd, silent=False, show_on_error=True):
+    """Run command with better error handling"""
+    try:
+        if silent:
+            result = subprocess.run(
+                cmd, 
+                check=True, 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.PIPE if show_on_error else subprocess.DEVNULL,
+                text=True
+            )
+        else:
+            result = subprocess.run(cmd, check=True, text=True, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Command failed with exit code {e.returncode}", file=sys.stderr)
+        print(f"Command: {' '.join(str(x) for x in cmd)}", file=sys.stderr)
+        if show_on_error and e.stderr:
+            print(f"\nError output:\n{e.stderr}", file=sys.stderr)
+        raise
 
 def ffprobe_duration(path: Path) -> float:
     """Get exact duration of media file"""
-    r = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path)
-        ],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    return float(r.stdout.strip())
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path)
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        duration_str = r.stdout.strip()
+        if not duration_str:
+            raise ValueError(f"ffprobe returned empty duration for {path}")
+        return float(duration_str)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffprobe failed for {path}: {e.stderr}")
+    except ValueError as e:
+        raise RuntimeError(f"Invalid duration value for {path}: {e}")
 
 # ==================================================
 # KEN BURNS EFFECT
@@ -122,7 +144,7 @@ def get_ken_burns_filter(duration: float, variation: str = "in") -> str:
     - pan_left: Zoom in + pan left
     - pan_right: Zoom in + pan right
     """
-    frames = int(duration * 25)  # 25 fps
+    frames = max(int(duration * 25), 1)  # 25 fps, minimum 1 frame
     
     if variation == "in":
         # Zoom in: center to center
@@ -160,14 +182,23 @@ def get_ken_burns_filter(duration: float, variation: str = "in") -> str:
 def image_to_prores(image: Path, duration: float, out: Path, ken_burns: str = "in"):
     """Convert image to ProRes video with Ken Burns effect"""
     
+    # Ensure minimum duration for Ken Burns effect
+    if duration < 0.1:
+        print(f"  ⚠️  Warning: Duration {duration:.3f}s too short for Ken Burns, using 0.1s minimum")
+        duration = 0.1
+    
     kb_filter = get_ken_burns_filter(duration, ken_burns)
     
     # Add white flash at the end (for hook transitions)
-    flash_start = duration - FLASH_DURATION
-    filters = [
-        kb_filter,
-        f"fade=t=out:st={flash_start:.3f}:d={FLASH_DURATION}:c=white"
-    ]
+    # Only add flash if duration is long enough
+    if duration > FLASH_DURATION:
+        flash_start = duration - FLASH_DURATION
+        filters = [
+            kb_filter,
+            f"fade=t=out:st={flash_start:.3f}:d={FLASH_DURATION}:c=white"
+        ]
+    else:
+        filters = [kb_filter]
     
     vf = ",".join(filters)
     
@@ -190,6 +221,15 @@ def image_to_prores(image: Path, duration: float, out: Path, ken_burns: str = "i
 
 def video_to_prores(video: Path, duration: float, out: Path):
     """Convert video to ProRes with proper scaling"""
+    
+    # Check actual video duration
+    try:
+        actual_duration = ffprobe_duration(video)
+        if actual_duration < duration:
+            print(f"  ⚠️  Warning: Video {video.name} is {actual_duration:.2f}s but needs {duration:.2f}s - using actual duration")
+            duration = actual_duration
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not probe {video.name} duration, proceeding anyway: {e}")
     
     filters = [
         f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease",
@@ -220,7 +260,7 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
     Hook images: No crossfade (flash transition already applied)
     Story videos: 0.2s crossfade
     
-    FIXED: xfade offset is relative to the START of each clip pair, not cumulative
+    FIXED: xfade offset must account for the OUTPUT duration of previous xfades
     """
     
     if len(clips) == 1:
@@ -254,20 +294,34 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
         # Multiple story videos - apply crossfades
         story_start = hook_count
         
-        # For xfade, the offset is when the SECOND clip starts in the FIRST clip's timeline
-        # Since we want overlap, offset = duration_of_first_clip - crossfade_duration
-        # This is NOT cumulative - each xfade creates a NEW output with its own timeline
+        # Key insight: When xfade combines two clips, the output duration is:
+        # duration_A + duration_B - crossfade_duration
+        # So each xfade "eats" crossfade_duration from the total
         
+        # Track the accumulated output duration as we chain xfades
+        accumulated_duration = 0.0
         prev_label = f"v{story_start}"
         
-        for i in range(story_start + 1, len(clips)):
-            # The offset for xfade is simply: duration of previous clip minus crossfade
-            # This makes the clips overlap by CROSSFADE_DURATION seconds
-            offset = durations[i-1] - CROSSFADE_DURATION
+        for idx, i in enumerate(range(story_start + 1, len(clips))):
+            # Ensure crossfade duration doesn't exceed clip durations
+            safe_crossfade = min(CROSSFADE_DURATION, durations[i] * 0.9, durations[i-1] * 0.9)
+            
+            if idx == 0:
+                # First xfade: offset is just duration of first clip minus crossfade
+                offset = durations[story_start] - safe_crossfade
+                accumulated_duration = durations[story_start] + durations[i] - safe_crossfade
+            else:
+                # Subsequent xfades: offset is the accumulated output duration minus crossfade
+                offset = accumulated_duration - safe_crossfade
+                accumulated_duration = accumulated_duration + durations[i] - safe_crossfade
+            
+            # Ensure offset is not negative
+            offset = max(0.0, offset)
+            
             current_label = f"cf{i}"
             
             filter_parts.append(
-                f"[{prev_label}][v{i}]xfade=transition=fade:duration={CROSSFADE_DURATION}:offset={offset:.3f}[{current_label}]"
+                f"[{prev_label}][v{i}]xfade=transition=fade:duration={safe_crossfade:.3f}:offset={offset:.3f}[{current_label}]"
             )
             
             prev_label = current_label
@@ -295,9 +349,20 @@ def main():
     if not AUDIO_FILE.exists():
         die("final_audio.wav missing")
     
-    beats = json.loads(BEATS_FILE.read_text()).get("beats")
+    try:
+        beats_data = json.loads(BEATS_FILE.read_text())
+    except json.JSONDecodeError as e:
+        die(f"Invalid JSON in beats.json: {e}")
+    
+    beats = beats_data.get("beats")
     if not beats:
         die("No beats found in beats.json")
+    
+    if not isinstance(beats, list):
+        die("beats must be a list in beats.json")
+    
+    if len(beats) == 0:
+        die("beats list is empty in beats.json")
     
     audio_duration = ffprobe_duration(AUDIO_FILE)
     print(f"🎵 Audio duration: {audio_duration:.2f}s")
@@ -318,13 +383,26 @@ def main():
     print("="*70)
     
     for i, beat in enumerate(beats, start=1):
+        # Validate beat structure
+        if not isinstance(beat, dict):
+            die(f"Beat {i} is not a dictionary")
+        
+        if "asset_file" not in beat:
+            die(f"Beat {i} missing 'asset_file' field")
+        
+        if "type" not in beat:
+            die(f"Beat {i} missing 'type' field")
+        
+        if beat["type"] not in ["image", "video"]:
+            die(f"Beat {i} has invalid type '{beat['type']}' (must be 'image' or 'video')")
+        
         asset_path = ASSET_DIR / beat["asset_file"]
         
         if not asset_path.exists():
-            die(f"Missing asset: {asset_path}")
+            die(f"Missing asset for beat {i}: {asset_path}")
         
         if "duration" not in beat or beat["duration"] <= 0:
-            die(f"Beat {i} missing valid duration")
+            die(f"Beat {i} missing valid duration (got: {beat.get('duration', 'N/A')})")
         
         out_clip = temp_dir / f"prores_{i:03d}.mov"
         duration = beat["duration"]
@@ -374,16 +452,29 @@ def main():
         
         print(f"  🔗 Concatenating {len(prores_clips)} clips with transitions...")
         
-        run([
-            "ffmpeg", "-y",
-            *input_args,
-            "-filter_complex", complex_filter,
-            "-map", "[out]",
-            "-c:v", "prores_ks",
-            "-profile:v", PRORES_PROFILE,
-            "-pix_fmt", PRORES_PIX_FMT,
-            str(merged)
-        ], silent=True)
+        # Debug: print the filter for inspection
+        if len(complex_filter) > 1000:
+            print(f"  📝 Filter length: {len(complex_filter)} chars")
+        
+        try:
+            run([
+                "ffmpeg", "-y",
+                *input_args,
+                "-filter_complex", complex_filter,
+                "-map", "[out]",
+                "-c:v", "prores_ks",
+                "-profile:v", PRORES_PROFILE,
+                "-pix_fmt", PRORES_PIX_FMT,
+                str(merged)
+            ], silent=True, show_on_error=True)
+        except subprocess.CalledProcessError:
+            print("\n🔍 DEBUG INFO:", file=sys.stderr)
+            print(f"  Number of clips: {len(prores_clips)}", file=sys.stderr)
+            print(f"  Hook count: {hook_count}", file=sys.stderr)
+            print(f"  Story count: {len(prores_clips) - hook_count}", file=sys.stderr)
+            print(f"  Durations: {durations}", file=sys.stderr)
+            print(f"\n  Filter complex:\n{complex_filter}", file=sys.stderr)
+            raise
     
     print(f"✅ Merged video created")
     
@@ -451,7 +542,11 @@ def main():
     # COMPLETE
     # --------------------------------------------------
     
-    final_duration = ffprobe_duration(OUTPUT)
+    try:
+        final_duration = ffprobe_duration(OUTPUT)
+    except Exception as e:
+        print(f"⚠️  Warning: Could not probe output duration: {e}")
+        final_duration = audio_duration
     
     print("\n" + "="*70)
     print("✅ VIDEO BUILD COMPLETE!")
