@@ -434,6 +434,105 @@ def main():
     
     print(f"\n✅ Created {len(prores_clips)} ProRes clips ({hook_count} hooks, {len(prores_clips)-hook_count} videos)")
     
+    # Check if total video duration matches audio
+    total_video_duration = sum(durations)
+    duration_shortfall = audio_duration - total_video_duration
+    
+    if abs(duration_shortfall) > 0.1:
+        if duration_shortfall > 0:
+            # Video is too short - extend the last clip
+            print(f"\n📏 Video duration adjustment needed:")
+            print(f"   Audio duration: {audio_duration:.2f}s")
+            print(f"   Video duration: {total_video_duration:.2f}s")
+            print(f"   Shortfall: {duration_shortfall:.2f}s")
+            
+            # Get the last video clip (not hook image)
+            last_video_idx = None
+            for i in range(len(beats) - 1, -1, -1):
+                if beats[i]["type"] == "video":
+                    last_video_idx = i
+                    break
+            
+            if last_video_idx is not None:
+                last_asset = ASSET_DIR / beats[last_video_idx]["asset_file"]
+                actual_video_duration = ffprobe_duration(last_asset)
+                
+                print(f"\n🔄 Extending last video clip to fill gap:")
+                print(f"   Last video: {beats[last_video_idx]['asset_file']}")
+                print(f"   Current duration in timeline: {durations[last_video_idx]:.2f}s")
+                print(f"   Actual video file duration: {actual_video_duration:.2f}s")
+                
+                # Calculate how much we can extend
+                if actual_video_duration > durations[last_video_idx]:
+                    # Video file is longer - we can use more of it
+                    additional_available = actual_video_duration - durations[last_video_idx]
+                    extend_by = min(duration_shortfall, additional_available)
+                    
+                    print(f"   Can extend by: {extend_by:.2f}s (using more of the actual video)")
+                    
+                    # Recreate the last ProRes clip with extended duration
+                    extended_duration = durations[last_video_idx] + extend_by
+                    out_clip = temp_dir / f"prores_{last_video_idx + 1:03d}.mov"
+                    
+                    print(f"   Recreating with duration: {extended_duration:.2f}s")
+                    video_to_prores(last_asset, extended_duration, out_clip)
+                    
+                    durations[last_video_idx] = extended_duration
+                    duration_shortfall -= extend_by
+                
+                # If still short, loop the video
+                if duration_shortfall > 0.1:
+                    print(f"\n🔁 Still need {duration_shortfall:.2f}s - will loop the last video")
+                    
+                    # Create looped version
+                    loop_count = int(duration_shortfall / actual_video_duration) + 2
+                    total_needed = durations[last_video_idx] + duration_shortfall
+                    
+                    looped_clip = temp_dir / f"prores_looped_{last_video_idx + 1:03d}.mov"
+                    
+                    print(f"   Looping {loop_count} times to get {total_needed:.2f}s")
+                    
+                    run([
+                        "ffmpeg", "-y",
+                        "-stream_loop", str(loop_count),
+                        "-i", str(last_asset),
+                        "-t", f"{total_needed:.6f}",
+                        "-vf", f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-c:v", "prores_ks",
+                        "-profile:v", PRORES_PROFILE,
+                        "-pix_fmt", PRORES_PIX_FMT,
+                        "-r", "25",
+                        str(looped_clip)
+                    ], silent=True)
+                    
+                    prores_clips[last_video_idx] = looped_clip
+                    durations[last_video_idx] = total_needed
+                    
+                    print(f"   ✅ Extended last video to {total_needed:.2f}s")
+                    
+            else:
+                # No video clips, add black screen
+                print(f"\n⚫ No video clips found - adding black screen for {duration_shortfall:.2f}s")
+                black_clip = temp_dir / f"prores_black.mov"
+                
+                run([
+                    "ffmpeg", "-y",
+                    "-f", "lavfi",
+                    "-i", f"color=c=black:s={TARGET_W}x{TARGET_H}:r=25",
+                    "-t", f"{duration_shortfall:.6f}",
+                    "-c:v", "prores_ks",
+                    "-profile:v", PRORES_PROFILE,
+                    "-pix_fmt", PRORES_PIX_FMT,
+                    str(black_clip)
+                ], silent=True)
+                
+                prores_clips.append(black_clip)
+                durations.append(duration_shortfall)
+        
+        else:
+            # Video is too long - will be trimmed by -t flag in final encode
+            print(f"\n✂️  Video is {abs(duration_shortfall):.2f}s longer than audio - will trim in final encode")
+    
     # --------------------------------------------------
     # STEP 2: Concatenate with crossfades
     # --------------------------------------------------
@@ -515,10 +614,11 @@ def main():
     print(f"     - Sharpening: Enabled")
     print(f"     - Curves: Strong contrast preset")
     
-    print(f"\n  🎧 Muxing audio (locked to {audio_duration:.2f}s)")
+    print(f"\n  🎧 Muxing audio (duration: {audio_duration:.2f}s)")
     print(f"  💎 Encoding at CRF {FINAL_CRF} (maximum quality)")
     
-    run([
+    # Build ffmpeg command
+    ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-i", str(merged),
         "-i", str(AUDIO_FILE),
@@ -538,13 +638,17 @@ def main():
         "-c:a", "aac",
         "-b:a", "192k",
         "-ar", "48000",
-        # Duration locked to audio
+        # Duration locked to audio - use -t to force exact duration
         "-t", f"{audio_duration:.6f}",
-        "-shortest",
         # Optimize for streaming
         "-movflags", "+faststart",
         str(OUTPUT)
-    ], silent=False)
+    ]
+    
+    # Note: We use -t (duration) instead of -shortest to ensure
+    # the output is EXACTLY audio_duration, whether video is longer or shorter
+    
+    run(ffmpeg_cmd, silent=False)
     
     # --------------------------------------------------
     # COMPLETE
