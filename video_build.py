@@ -195,10 +195,14 @@ def image_to_prores(image: Path, duration: float, out: Path, ken_burns: str = "i
         flash_start = duration - FLASH_DURATION
         filters = [
             kb_filter,
-            f"fade=t=out:st={flash_start:.3f}:d={FLASH_DURATION}:c=white"
+            f"fade=t=out:st={flash_start:.3f}:d={FLASH_DURATION}:c=white",
+            "setsar=1:1"  # Force SAR 1:1 to match video clips
         ]
     else:
-        filters = [kb_filter]
+        filters = [
+            kb_filter,
+            "setsar=1:1"  # Force SAR 1:1 to match video clips
+        ]
     
     vf = ",".join(filters)
     
@@ -233,7 +237,8 @@ def video_to_prores(video: Path, duration: float, out: Path):
     
     filters = [
         f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease",
-        f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black"
+        f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black",
+        "setsar=1:1"  # Force SAR 1:1 for consistency with images
     ]
     
     vf = ",".join(filters)
@@ -497,7 +502,7 @@ def main():
                         "-stream_loop", str(loop_count),
                         "-i", str(last_asset),
                         "-t", f"{total_needed:.6f}",
-                        "-vf", f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-vf", f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1:1",
                         "-c:v", "prores_ks",
                         "-profile:v", PRORES_PROFILE,
                         "-pix_fmt", PRORES_PIX_FMT,
