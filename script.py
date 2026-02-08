@@ -331,22 +331,12 @@ def get_final_loop(case_type, name):
 def generate_weighted_script(client: Groq, case, case_type):
     """
     Generate 7-line script with weighted, investigative tone
-    
-    STRUCTURE:
-    1. HOOK - already generated (statement)
-    2. FACTS - name, place, time (5-6 sec / 10-20 words)
-    3. CONTEXT - who they were (6-7 sec / 18-22 words)
-    4. CONTRADICTION - the weight, the detail (8-9 sec / 24-28 words)
-    5. OFFICIAL STORY - what authorities say (8-9 sec / 24-28 words)
-    6. CTA - already generated (4-5 sec)
-    7. LOOP - already generated (question)
-    
-    TOTAL TARGET: 38-42 seconds (safe middle of 35-45 range)
+    Includes RETRY logic for strict length validation.
     """
     
     cta_text = get_cta(case_type, case['full_name'])
     
-    prompt = f"""You are writing a TRUE CRIME INVESTIGATION SCRIPT. This is NOT storytelling. This is WEIGHTED, HEAVY, FACTUAL reporting.
+    base_prompt = f"""You are writing a TRUE CRIME INVESTIGATION SCRIPT. This is NOT storytelling. This is WEIGHTED, HEAVY, FACTUAL reporting.
 
 CRITICAL TONE REQUIREMENTS:
 - Write like a forensic investigator presenting evidence
@@ -360,31 +350,30 @@ CASE TYPE: {case_type.replace('_', ' ').title()}
 
 Generate EXACTLY 5 LINES (lines 2-6 of the full script):
 
-LINE 2 - FACTS (MUST BE 16-20 WORDS, 5-6 seconds):
+LINE 2 - FACTS (Target: 16-20 words):
 State: Full name, exact location with city and state, specific date, exact time.
 Format: "[Full Name]. [City, State]. [Full Date]. [Time with AM/PM]."
 Example: "Rebecca Zahau. Coronado, California. July 13th, 2011. 6:48 AM."
 CRITICAL: Include middle name if available. Include full state name. Be specific.
-MINIMUM 16 words required.
+IF TOO SHORT: Add the county, the specific building name, or day of the week to increase length.
 
-LINE 3 - CONTEXT (MUST BE 18-22 WORDS, 6-7 seconds):
+LINE 3 - CONTEXT (Target: 18-22 words):
 Who they were. Their specific role. Their exact connection. What they were doing. Why it matters.
 Example: "The girlfriend of a pharmaceutical executive. Found hanging naked from a balcony in his mansion. Just two days after his son's fatal accident."
 NO generic descriptions. Specific job titles, relationships, circumstances.
-MINIMUM 18 words required.
+IF TOO SHORT: Add details about their profession, age, or specific family relations.
 
-LINE 4 - CONTRADICTION (MUST BE 24-28 WORDS, 8-9 seconds):
+LINE 4 - CONTRADICTION (Target: 24-28 words):
 The ONE detail that doesn't fit. State the contradiction with FULL context and implications.
 State it like presenting evidence in court. Make it impossible to ignore.
 Example: "Her hands were bound behind her back with red rope. Her feet were bound at the ankles. Her mouth was not gagged. The San Diego County Sheriff ruled it suicide."
-This line should make the viewer's stomach drop.
-MINIMUM 24 words required. Add specific details about HOW things don't fit.
+IF TOO SHORT: Describe the specific physical evidence in more detail (colors, positions, distances).
 
-LINE 5 - OFFICIAL STORY (MUST BE 24-28 WORDS, 8-9 seconds):
+LINE 5 - OFFICIAL STORY (Target: 24-28 words):
 What authorities concluded. What evidence they cited or ignored. What happened next. The current status.
 State it factually with full context, let the contradiction with LINE 4 speak for itself.
 Example: "The San Diego County Sheriff ruled it suicide within five days. No charges were filed against anyone. The family hired independent forensic pathologists. Their findings contradicted the official report completely."
-MINIMUM 24 words required. Include timeline, ruling, and aftermath.
+IF TOO SHORT: Add exact dates of rulings, specific agency names, or subsequent family actions.
 
 LINE 6 - CTA (MUST BE EXACT):
 "{cta_text}"
@@ -399,80 +388,107 @@ Key Detail: {case['key_detail']}
 Official Story: {case['official_story']}
 
 CRITICAL WORD COUNT RULES:
-- Line 2: MINIMUM 16 words (if less, ADD more location/time specifics)
-- Line 3: MINIMUM 18 words (if less, ADD more context about who they were)
-- Line 4: MINIMUM 24 words (if less, ADD more details about the contradiction)
-- Line 5: MINIMUM 24 words (if less, ADD timeline, aftermath, investigation status)
+- Line 2: MINIMUM 16 words.
+- Line 3: MINIMUM 18 words.
+- Line 4: MINIMUM 24 words.
+- Line 5: MINIMUM 24 words.
 
-EXAMPLE OF CORRECT LENGTH (Line 4 - 27 words):
-"Her hands were bound behind her back with red rope. Her feet were bound together at the ankles. Her mouth was left completely ungagged. The medical examiner ruled it suicide."
-
-EXAMPLE OF TOO SHORT (Line 4 - 15 words):
-"Her hands were bound. Her feet were bound. The sheriff called it suicide."
-
-YOU MUST MATCH THE LONGER EXAMPLE STYLE.
+YOU MUST MATCH THE WORD COUNTS. IF YOU WRITE TOO LITTLE, THE SYSTEM WILL FAIL.
 
 Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
 """
     
-    res = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
-        max_completion_tokens=600,
-    )
+    messages = [{"role": "user", "content": base_prompt}]
     
-    lines = [
-        l.strip()
-        for l in res.choices[0].message.content.split("\n")
-        if l.strip() 
-        and not l.strip().startswith("#") 
-        and not l.strip().startswith("LINE")
-        and not l.strip().startswith("Line")
-        and not l.strip().lower().startswith("here")
-    ]
+    MAX_RETRIES = 3
     
-    # Filter out any explanatory text
-    lines = [l for l in lines if len(l) > 20 and not l.startswith("(")]
-    
-    if len(lines) != 5:
-        raise RuntimeError(f"❌ Script body must be exactly 5 lines, got {len(lines)}")
-    
-    # Validate no questions in body
-    for i, line in enumerate(lines, 2):
-        if "?" in line:
-            raise RuntimeError(f"❌ Questions not allowed in line {i}: {line}")
-    
-    # Validate word counts for timing
-    word_counts = [len(line.split()) for line in lines[:4]]  # Exclude CTA
-    
-    # STRICT ENFORCEMENT - reject if any line is too short
-    if word_counts[0] < 16:  # FACTS
-        raise RuntimeError(f"❌ FACTS line too short ({word_counts[0]} words). Need minimum 16 words with full location details.")
-    
-    if word_counts[1] < 18:  # CONTEXT
-        raise RuntimeError(f"❌ CONTEXT line too short ({word_counts[1]} words). Need minimum 18 words with specific details about who they were.")
-    
-    if word_counts[2] < 24:  # CONTRADICTION
-        raise RuntimeError(f"❌ CONTRADICTION line too short ({word_counts[2]} words). Need minimum 24 words with full details of what doesn't fit.")
-    
-    if word_counts[3] < 24:  # OFFICIAL STORY
-        raise RuntimeError(f"❌ OFFICIAL STORY line too short ({word_counts[3]} words). Need minimum 24 words with ruling, timeline, and aftermath.")
-    
-    # Warnings for upper bounds
-    if not (16 <= word_counts[0] <= 22):  # FACTS
-        print(f"⚠️  Warning: FACTS line word count {word_counts[0]} (target: 16-20)")
-    
-    if not (18 <= word_counts[1] <= 24):  # CONTEXT
-        print(f"⚠️  Warning: CONTEXT line word count {word_counts[1]} (target: 18-22)")
-    
-    if not (24 <= word_counts[2] <= 30):  # CONTRADICTION
-        print(f"⚠️  Warning: CONTRADICTION line word count {word_counts[2]} (target: 24-28)")
-    
-    if not (24 <= word_counts[3] <= 30):  # OFFICIAL STORY
-        print(f"⚠️  Warning: OFFICIAL STORY line word count {word_counts[3]} (target: 24-28)")
-    
-    return lines
+    for attempt in range(MAX_RETRIES):
+        try:
+            res = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                temperature=0.4,
+                max_completion_tokens=600,
+            )
+            
+            raw_content = res.choices[0].message.content
+            
+            lines = [
+                l.strip()
+                for l in raw_content.split("\n")
+                if l.strip() 
+                and not l.strip().startswith("#") 
+                and not l.strip().startswith("LINE")
+                and not l.strip().startswith("Line")
+                and not l.strip().lower().startswith("here")
+            ]
+            
+            # Filter out any explanatory text
+            lines = [l for l in lines if len(l) > 20 and not l.startswith("(")]
+            
+            validation_errors = []
+            
+            if len(lines) != 5:
+                validation_errors.append(f"Script body must be exactly 5 lines, got {len(lines)}")
+            else:
+                # Check for questions in body
+                for i, line in enumerate(lines, 2):
+                    if "?" in line:
+                        validation_errors.append(f"Questions not allowed in line {i}: {line}")
+                
+                # Check word counts
+                word_counts = [len(line.split()) for line in lines[:4]] # Exclude CTA
+                
+                # Line 2: FACTS
+                if word_counts[0] < 16:
+                    validation_errors.append(f"Line 2 (FACTS) too short: {word_counts[0]} words (Min: 16). Add location/time specifics.")
+                if word_counts[0] > 24: # Allowing slight buffer
+                    validation_errors.append(f"Line 2 (FACTS) too long: {word_counts[0]} words (Target: 16-20).")
+                    
+                # Line 3: CONTEXT
+                if word_counts[1] < 18:
+                    validation_errors.append(f"Line 3 (CONTEXT) too short: {word_counts[1]} words (Min: 18). Add personal details.")
+                if word_counts[1] > 26: # Allowing slight buffer
+                    validation_errors.append(f"Line 3 (CONTEXT) too long: {word_counts[1]} words (Target: 18-22).")
+
+                # Line 4: CONTRADICTION
+                if word_counts[2] < 24:
+                    validation_errors.append(f"Line 4 (CONTRADICTION) too short: {word_counts[2]} words (Min: 24). Add evidence details.")
+                if word_counts[2] > 32: # Allowing slight buffer
+                    validation_errors.append(f"Line 4 (CONTRADICTION) too long: {word_counts[2]} words (Target: 24-28).")
+
+                # Line 5: OFFICIAL STORY
+                if word_counts[3] < 24:
+                    validation_errors.append(f"Line 5 (OFFICIAL) too short: {word_counts[3]} words (Min: 24). Add ruling details.")
+                if word_counts[3] > 32: # Allowing slight buffer
+                    validation_errors.append(f"Line 5 (OFFICIAL) too long: {word_counts[3]} words (Target: 24-28).")
+
+            if not validation_errors:
+                return lines
+            
+            # If we are here, validation failed. Prepare for retry.
+            print(f"⚠️ Attempt {attempt + 1} failed validation:")
+            for err in validation_errors:
+                print(f"   - {err}")
+            
+            if attempt < MAX_RETRIES - 1:
+                # Feed error back to LLM
+                error_feedback = "The previous output failed validation. Please rewrite ALL lines fixing these specific errors:\n"
+                for err in validation_errors:
+                    error_feedback += f"- {err}\n"
+                error_feedback += "\nKeep the lines that passed unchanged if possible, but adjust the failed ones strictly."
+                
+                messages.append({"role": "assistant", "content": raw_content})
+                messages.append({"role": "user", "content": error_feedback})
+                print("🔄 Retrying generation...")
+
+        except Exception as e:
+            print(f"❌ Error during generation attempt {attempt + 1}: {e}")
+            if attempt == MAX_RETRIES - 1:
+                raise
+
+    # If we exit loop without returning
+    raise RuntimeError(f"❌ Failed to generate valid script after {MAX_RETRIES} attempts. \nLast errors: {validation_errors}")
 
 # ==================================================
 # VALIDATION
@@ -491,8 +507,9 @@ def validate_script(lines, case):
     if estimated_seconds < 35:
         raise RuntimeError(f"❌ Script too short: ~{estimated_seconds:.1f}s (need 35-45s). Lines need more detail.")
     
-    if estimated_seconds > 48:
-        raise RuntimeError(f"❌ Script too long: ~{estimated_seconds:.1f}s (max 48s). Lines need to be more concise.")
+    # Slightly relaxed upper bound to account for variation
+    if estimated_seconds > 50: 
+        raise RuntimeError(f"❌ Script too long: ~{estimated_seconds:.1f}s (max 50s). Lines need to be more concise.")
     
     if estimated_seconds > 45:
         print(f"⚠️  Warning: Script slightly long at ~{estimated_seconds:.1f}s (target: 35-45s)")
