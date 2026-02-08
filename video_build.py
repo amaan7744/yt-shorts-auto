@@ -219,6 +219,8 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
     Create complex filter for crossfading videos
     Hook images: No crossfade (flash transition already applied)
     Story videos: 0.2s crossfade
+    
+    FIXED: xfade offset is relative to the START of each clip pair, not cumulative
     """
     
     if len(clips) == 1:
@@ -252,21 +254,22 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
         # Multiple story videos - apply crossfades
         story_start = hook_count
         
-        # Build crossfade chain with cumulative offsets
-        cumulative_offset = 0.0
+        # For xfade, the offset is when the SECOND clip starts in the FIRST clip's timeline
+        # Since we want overlap, offset = duration_of_first_clip - crossfade_duration
+        # This is NOT cumulative - each xfade creates a NEW output with its own timeline
+        
         prev_label = f"v{story_start}"
         
         for i in range(story_start + 1, len(clips)):
-            # Each crossfade offset is cumulative
-            offset = cumulative_offset + durations[i-1] - CROSSFADE_DURATION
+            # The offset for xfade is simply: duration of previous clip minus crossfade
+            # This makes the clips overlap by CROSSFADE_DURATION seconds
+            offset = durations[i-1] - CROSSFADE_DURATION
             current_label = f"cf{i}"
             
             filter_parts.append(
                 f"[{prev_label}][v{i}]xfade=transition=fade:duration={CROSSFADE_DURATION}:offset={offset:.3f}[{current_label}]"
             )
             
-            # Update cumulative offset for next iteration
-            cumulative_offset = offset + CROSSFADE_DURATION
             prev_label = current_label
         
         # Combine hooks and crossfaded stories
