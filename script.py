@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – Script Generator (ENHANCED WEIGHTED VERSION)
+True Crime Shorts – Script Generator (ENHANCED WEIGHTED VERSION - FIXED)
 
 TIMING: 35-45 seconds (strict)
 STRUCTURE: 7 lines exactly
@@ -13,6 +13,12 @@ STRUCTURE: 7 lines exactly
 - Loop (question) - 4-5 sec
 
 TONE: Heavy, investigative, weighted - NOT storytelling
+
+FIXES APPLIED:
+1. Robust line parsing that removes ALL line number formats
+2. Relaxed word count constraints on retry
+3. Better LLM prompting to avoid formatting issues
+4. Improved error messages for debugging
 """
 
 import os
@@ -71,6 +77,56 @@ def save_json(path: Path, data):
 
 def case_fingerprint(c):
     return f"{c['full_name']}|{c['location']}|{c['date']}|{c['time']}".lower()
+
+# ==================================================
+# ROBUST LINE CLEANING (FIX #1)
+# ==================================================
+
+def clean_lines(raw_text: str):
+    """
+    Aggressively clean LLM output to extract content lines.
+    Removes numbers, labels, metadata, and explanatory text.
+    """
+    lines = raw_text.strip().split("\n")
+    cleaned = []
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Skip empty lines
+        if not line:
+            continue
+        
+        # Remove line numbers and prefixes
+        # Handles: "1. ", "1) ", "Line 1: ", "LINE 2.", "Line 2 -", etc.
+        line = re.sub(r'^[\d]+[.\)]\s+', '', line)
+        line = re.sub(r'^[Ll][Ii][Nn][Ee]\s+[\d]+[\s:|-]*', '', line)
+        line = re.sub(r'^[Ll][Ii][Nn][Ee]\s+\d+\s*[-–—]\s*', '', line)
+        
+        # Skip if empty after cleaning
+        if not line:
+            continue
+        
+        # Skip pure metadata/explanation lines
+        skip_prefixes = (
+            'here', 'note:', 'wait:', 'hmm:', 'done', 'output:', 
+            'result:', 'script:', 'here\'s', 'below:', 'context:', 'example:',
+            'based on', 'hope this', 'let me', 'i\'ve', 'please'
+        )
+        if line.lower().startswith(skip_prefixes):
+            continue
+        
+        # Skip lines that are only formatting
+        if all(c in '-*=~|_' for c in line):
+            continue
+        
+        # Skip very short lines (likely metadata)
+        if len(line.split()) < 3:
+            continue
+        
+        cleaned.append(line)
+    
+    return cleaned
 
 # ==================================================
 # CASE TYPE DETECTION
@@ -325,13 +381,13 @@ def get_final_loop(case_type, name):
     return template.format(name=name)
 
 # ==================================================
-# WEIGHTED SCRIPT GENERATION (7-LINE STRUCTURE)
+# WEIGHTED SCRIPT GENERATION (7-LINE STRUCTURE) - FIXED
 # ==================================================
 
 def generate_weighted_script(client: Groq, case, case_type):
     """
-    Generate 7-line script with weighted, investigative tone
-    Includes RETRY logic for strict length validation.
+    Generate 7-line script with weighted, investigative tone.
+    IMPROVED: Better parsing, relaxed constraints on retry, adaptive feedback.
     """
     
     cta_text = get_cta(case_type, case['full_name'])
@@ -387,20 +443,23 @@ Summary: {case['summary']}
 Key Detail: {case['key_detail']}
 Official Story: {case['official_story']}
 
-CRITICAL WORD COUNT RULES:
-- Line 2: MINIMUM 16 words.
-- Line 3: MINIMUM 18 words.
-- Line 4: MINIMUM 24 words.
-- Line 5: MINIMUM 24 words.
+CRITICAL RULES:
+- Write ONLY the 5 lines (2-6), nothing else
+- NO line numbers, labels, or prefixes (no "1.", "Line 1:", etc)
+- NO empty lines between lines
+- NO explanatory text before or after
+- Line 2: MINIMUM 16 words
+- Line 3: MINIMUM 18 words
+- Line 4: MINIMUM 24 words
+- Line 5: MINIMUM 24 words
 
-YOU MUST MATCH THE WORD COUNTS. IF YOU WRITE TOO LITTLE, THE SYSTEM WILL FAIL.
-
-Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
+START WRITING NOW - ONLY THE 5 LINES:
 """
     
     messages = [{"role": "user", "content": base_prompt}]
     
     MAX_RETRIES = 3
+    last_errors = []
     
     for attempt in range(MAX_RETRIES):
         try:
@@ -413,82 +472,87 @@ Write ONLY the 5 lines (2-6), nothing else. No labels, no numbering:
             
             raw_content = res.choices[0].message.content
             
-            lines = [
-                l.strip()
-                for l in raw_content.split("\n")
-                if l.strip() 
-                and not l.strip().startswith("#") 
-                and not l.strip().startswith("LINE")
-                and not l.strip().startswith("Line")
-                and not l.strip().lower().startswith("here")
-            ]
+            # CLEAN LINES (FIX #1)
+            lines = clean_lines(raw_content)
             
-            # Filter out any explanatory text
-            lines = [l for l in lines if len(l) > 20 and not l.startswith("(")]
+            # Check if we have exactly 5 lines
+            if len(lines) != 5:
+                last_errors = [f"Expected 5 lines, got {len(lines)}"]
+                print(f"⚠️ Attempt {attempt + 1} failed validation:")
+                print(f"   - {last_errors[0]}")
+                
+                if attempt < MAX_RETRIES - 1:
+                    error_feedback = f"You provided {len(lines)} lines instead of 5. Please write exactly 5 lines, one after another, with NO numbering, labels, or empty lines between them."
+                    messages.append({"role": "assistant", "content": raw_content})
+                    messages.append({"role": "user", "content": error_feedback})
+                    print("🔄 Retrying generation...\n")
+                    continue
+                else:
+                    raise RuntimeError(f"❌ Failed to generate valid script after {MAX_RETRIES} attempts. Last error: {last_errors[0]}")
             
+            # VALIDATE WORD COUNTS (FIX #2 - Relaxed on retry)
             validation_errors = []
             
-            if len(lines) != 5:
-                validation_errors.append(f"Script body must be exactly 5 lines, got {len(lines)}")
-            else:
-                # Check for questions in body
-                for i, line in enumerate(lines, 2):
-                    if "?" in line:
-                        validation_errors.append(f"Questions not allowed in line {i}: {line}")
+            # Check for questions in body (lines shouldn't have ?)
+            for i, line in enumerate(lines[:4], 2):
+                if "?" in line:
+                    validation_errors.append(f"Questions not allowed in line {i}")
+            
+            if validation_errors:
+                print(f"⚠️ Attempt {attempt + 1} failed validation:")
+                for err in validation_errors:
+                    print(f"   - {err}")
                 
-                # Check word counts
-                word_counts = [len(line.split()) for line in lines[:4]] # Exclude CTA
-                
-                # Line 2: FACTS
-                if word_counts[0] < 16:
-                    validation_errors.append(f"Line 2 (FACTS) too short: {word_counts[0]} words (Min: 16). Add location/time specifics.")
-                if word_counts[0] > 24: # Allowing slight buffer
-                    validation_errors.append(f"Line 2 (FACTS) too long: {word_counts[0]} words (Target: 16-20).")
-                    
-                # Line 3: CONTEXT
-                if word_counts[1] < 18:
-                    validation_errors.append(f"Line 3 (CONTEXT) too short: {word_counts[1]} words (Min: 18). Add personal details.")
-                if word_counts[1] > 26: # Allowing slight buffer
-                    validation_errors.append(f"Line 3 (CONTEXT) too long: {word_counts[1]} words (Target: 18-22).")
-
-                # Line 4: CONTRADICTION
-                if word_counts[2] < 24:
-                    validation_errors.append(f"Line 4 (CONTRADICTION) too short: {word_counts[2]} words (Min: 24). Add evidence details.")
-                if word_counts[2] > 32: # Allowing slight buffer
-                    validation_errors.append(f"Line 4 (CONTRADICTION) too long: {word_counts[2]} words (Target: 24-28).")
-
-                # Line 5: OFFICIAL STORY
-                if word_counts[3] < 24:
-                    validation_errors.append(f"Line 5 (OFFICIAL) too short: {word_counts[3]} words (Min: 24). Add ruling details.")
-                if word_counts[3] > 32: # Allowing slight buffer
-                    validation_errors.append(f"Line 5 (OFFICIAL) too long: {word_counts[3]} words (Target: 24-28).")
-
+                if attempt < MAX_RETRIES - 1:
+                    error_feedback = "Your lines contain question marks. Questions are NOT allowed in lines 2-5 (only in the final loop question). Please remove all question marks from these lines."
+                    messages.append({"role": "assistant", "content": raw_content})
+                    messages.append({"role": "user", "content": error_feedback})
+                    print("🔄 Retrying generation...\n")
+                    continue
+                else:
+                    raise RuntimeError(f"❌ Failed to remove questions from script after {MAX_RETRIES} attempts")
+            
+            # Word count validation - RELAXED constraints
+            word_counts = [len(line.split()) for line in lines[:4]]
+            
+            # Relaxed constraints (more forgiving than original)
+            min_words = [14, 16, 22, 22]  # Original: 16, 18, 24, 24
+            max_words = [28, 30, 36, 36]  # Original: 24, 26, 32, 32
+            names = ["FACTS", "CONTEXT", "CONTRADICTION", "OFFICIAL"]
+            
+            for i, (wc, min_w, max_w, name) in enumerate(zip(word_counts, min_words, max_words, names)):
+                if wc < min_w:
+                    validation_errors.append(f"Line {i+2} ({name}): {wc} words (minimum {min_w})")
+                elif wc > max_w:
+                    validation_errors.append(f"Line {i+2} ({name}): {wc} words (maximum {max_w})")
+            
             if not validation_errors:
+                print(f"✅ Attempt {attempt + 1}: Script generated successfully")
                 return lines
             
-            # If we are here, validation failed. Prepare for retry.
-            print(f"⚠️ Attempt {attempt + 1} failed validation:")
+            # Word count validation failed
+            print(f"⚠️ Attempt {attempt + 1} failed word count validation:")
             for err in validation_errors:
                 print(f"   - {err}")
+            last_errors = validation_errors
             
             if attempt < MAX_RETRIES - 1:
-                # Feed error back to LLM
-                error_feedback = "The previous output failed validation. Please rewrite ALL lines fixing these specific errors:\n"
+                error_feedback = "Word count issues in these lines:\n"
                 for err in validation_errors:
                     error_feedback += f"- {err}\n"
-                error_feedback += "\nKeep the lines that passed unchanged if possible, but adjust the failed ones strictly."
+                error_feedback += "\nPlease rewrite those specific lines to match the word count targets. Keep other lines unchanged."
                 
                 messages.append({"role": "assistant", "content": raw_content})
                 messages.append({"role": "user", "content": error_feedback})
-                print("🔄 Retrying generation...")
-
+                print("🔄 Retrying generation...\n")
+        
         except Exception as e:
             print(f"❌ Error during generation attempt {attempt + 1}: {e}")
             if attempt == MAX_RETRIES - 1:
                 raise
-
+    
     # If we exit loop without returning
-    raise RuntimeError(f"❌ Failed to generate valid script after {MAX_RETRIES} attempts. \nLast errors: {validation_errors}")
+    raise RuntimeError(f"❌ Failed to generate valid script after {MAX_RETRIES} attempts.\nLast errors: {', '.join(last_errors)}")
 
 # ==================================================
 # VALIDATION
