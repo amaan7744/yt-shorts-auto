@@ -260,7 +260,10 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
     Hook images: No crossfade (flash transition already applied)
     Story videos: 0.2s crossfade
     
-    FIXED: xfade offset must account for the OUTPUT duration of previous xfades
+    KEY INSIGHT: When chaining xfades:
+    - First xfade: [A][B]xfade outputs (A_dur + B_dur - fade_dur)
+    - Second xfade: [AB][C]xfade needs offset relative to AB's output duration
+    - The offset is ALWAYS: (previous_output_duration - fade_duration)
     """
     
     if len(clips) == 1:
@@ -294,35 +297,40 @@ def create_crossfade_complex_filter(clips: list, durations: list, hook_count: in
         # Multiple story videos - apply crossfades
         story_start = hook_count
         
-        # Key insight: When xfade combines two clips, the output duration is:
-        # duration_A + duration_B - crossfade_duration
-        # So each xfade "eats" crossfade_duration from the total
+        # Calculate safe crossfade duration (don't exceed 90% of any clip)
+        min_story_duration = min(durations[story_start:])
+        safe_crossfade = min(CROSSFADE_DURATION, min_story_duration * 0.9)
         
-        # Track the accumulated output duration as we chain xfades
-        accumulated_duration = 0.0
+        if safe_crossfade < CROSSFADE_DURATION:
+            print(f"  ⚠️  Reducing crossfade from {CROSSFADE_DURATION:.2f}s to {safe_crossfade:.2f}s (shortest clip is {min_story_duration:.2f}s)")
+        
+        # Build xfade chain
+        # Track the OUTPUT duration as we build the chain
+        output_duration = durations[story_start]  # Start with first clip's duration
         prev_label = f"v{story_start}"
         
-        for idx, i in enumerate(range(story_start + 1, len(clips))):
-            # Ensure crossfade duration doesn't exceed clip durations
-            safe_crossfade = min(CROSSFADE_DURATION, durations[i] * 0.9, durations[i-1] * 0.9)
+        print(f"  📊 Crossfade chain debug:")
+        print(f"     Initial clip: v{story_start}, duration: {output_duration:.3f}s")
+        
+        for idx in range(1, story_count):
+            current_clip_idx = story_start + idx
+            current_label = f"cf{current_clip_idx}"
             
-            if idx == 0:
-                # First xfade: offset is just duration of first clip minus crossfade
-                offset = durations[story_start] - safe_crossfade
-                accumulated_duration = durations[story_start] + durations[i] - safe_crossfade
-            else:
-                # Subsequent xfades: offset is the accumulated output duration minus crossfade
-                offset = accumulated_duration - safe_crossfade
-                accumulated_duration = accumulated_duration + durations[i] - safe_crossfade
+            # The offset for xfade is when the second clip starts in the first clip's timeline
+            # This is the output duration of the previous result minus the crossfade
+            offset = max(0.0, output_duration - safe_crossfade)
             
-            # Ensure offset is not negative
-            offset = max(0.0, offset)
-            
-            current_label = f"cf{i}"
+            print(f"     xfade {idx}: [{prev_label}][v{current_clip_idx}] offset={offset:.3f}s, new_clip_dur={durations[current_clip_idx]:.3f}s")
             
             filter_parts.append(
-                f"[{prev_label}][v{i}]xfade=transition=fade:duration={safe_crossfade:.3f}:offset={offset:.3f}[{current_label}]"
+                f"[{prev_label}][v{current_clip_idx}]xfade=transition=fade:duration={safe_crossfade:.3f}:offset={offset:.3f}[{current_label}]"
             )
+            
+            # Update output duration for next iteration
+            # New output = previous output + new clip - crossfade overlap
+            new_output_duration = output_duration + durations[current_clip_idx] - safe_crossfade
+            print(f"     → output_duration: {output_duration:.3f}s + {durations[current_clip_idx]:.3f}s - {safe_crossfade:.3f}s = {new_output_duration:.3f}s")
+            output_duration = new_output_duration
             
             prev_label = current_label
         
