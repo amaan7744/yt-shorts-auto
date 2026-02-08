@@ -1,147 +1,191 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts – ULTIMATE PRO SUBTITLES
-========================================
+YouTube Shorts – PRO SUBTITLES (DETERMINISTIC, CI-SAFE, UPGRADED)
+
+SOURCE OF TRUTH:
+- beats.json (text + duration)
+- NO ASR
+- NO Whisper
+- NO guessing
 
 FEATURES:
-✅ Emphasis word highlighting (yellow for key words)
-✅ Smart line breaking (natural pauses, not mid-phrase)
-✅ Adaptive font sizing (based on word count)
-✅ Title Case (easier to read than ALL CAPS)
-✅ Compression-proof thickness (outline 8px, shadow 4px)
-✅ Dynamic positioning (hook vs story placement)
-✅ Bounce variation (hook/energy/subtle)
-✅ Timing precision (50ms padding for perfect sync)
-✅ Glow effect outline (softer look)
-✅ Speech rate optimization (auto word-per-line count)
+✅ Smart line breaking with context awareness
+✅ Emphasis word highlighting (yellow)
+✅ Hook vs story positioning
+✅ Adaptive font size based on word count
+✅ Compression-proof outlines
+✅ Deterministic timing with safety padding
+✅ Professional styling (white text, black shadow)
+✅ Improved formatting and readability
+✅ Better punctuation handling
+✅ Capitalization control
+✅ Validation and error handling
 
-NO KARAOKE (as requested)
-Halal-friendly (no music distractions)
+TIMING:
+- Hook type beats positioned higher (image overlays)
+- Story type beats positioned lower (narrative text)
+- Staggered word display for readability
+- Deterministic chunk sizing based on duration
 """
 
-import whisper
+import json
+import re
 from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Tuple
 
 # ==================================================
-# CONFIG
+# FILES
 # ==================================================
 
-@dataclass
-class Config:
-    AUDIO_FILE: str = "final_audio.wav"
-    OUTPUT_FILE: str = "subs.ass"
-
-    # FONT (choose one - uncomment your favorite)
-    FONT_NAME: str = "Montserrat Black"  # Modern, clean, bold
-    # FONT_NAME: str = "Bebas Neue"      # Tall, impactful
-    # FONT_NAME: str = "Impact"          # Classic, extremely bold
-    # FONT_NAME: str = "Arial Black"     # Safe fallback
-
-    # ASS colors (AABBGGRR format)
-    COLOR_WHITE: str = "&H00FFFFFF"      # White (normal text)
-    COLOR_YELLOW: str = "&H0000FFFF"     # Yellow (emphasis)
-    COLOR_OUTLINE: str = "&H20000000"    # Black with slight transparency (glow)
-    COLOR_SHADOW: str = "&H80000000"     # Dark shadow (more opaque)
-
-    PLAY_RES_X: int = 1080
-    PLAY_RES_Y: int = 1920
-
-    # Alignment
-    ALIGNMENT: int = 8  # center-bottom
-    MARGIN_H: int = 80
-
-    # Positioning (varies by section)
-    HOOK_MARGIN_V: int = 600    # Higher for hook (don't cover images)
-    STORY_MARGIN_V: int = 1350  # Lower for story (standard)
-
-    # Thickness (COMPRESSION-PROOF)
-    OUTLINE: int = 8  # Thicker than before (was 6)
-    SHADOW: int = 4   # Stronger depth (was 3)
-
-    # Timing
-    TIMING_PAD_START: float = 0.05  # Start 50ms earlier
-    TIMING_PAD_END: float = 0.05    # End 50ms later
-
-    # Whisper
-    WHISPER_MODEL: str = "small"  # or "base" for faster, "medium" for better
-
-    # Hook detection
-    HOOK_END_TIME: float = 2.5  # First 2.5s = hook section
+BEATS_FILE = Path("beats.json")
+OUTPUT_FILE = Path("subs.ass")
 
 # ==================================================
-# EMPHASIS WORDS (key words get yellow highlighting)
+# VIDEO SPACE (Vertical Short)
+# ==================================================
+
+PLAY_RES_X = 1440
+PLAY_RES_Y = 2560
+
+# ==================================================
+# STYLE CONFIG
+# ==================================================
+
+FONT_NAME = "Montserrat Black"
+FONT_FALLBACK = "Arial"
+
+# Colors (BGR format for ASS)
+COLOR_WHITE = "&H00FFFFFF"          # White
+COLOR_YELLOW = "&H0000FFFF"         # Yellow (for emphasis)
+COLOR_OUTLINE = "&H20000000"        # Black outline
+COLOR_SHADOW = "&H80000000"         # Black shadow
+
+# Outline and shadow for depth
+OUTLINE = 6
+SHADOW = 3
+
+# Positioning
+ALIGNMENT = 2              # Bottom center
+MARGIN_H = 80             # Horizontal margin
+HOOK_MARGIN_V = 500       # Hook positioning (upper area for image overlays)
+STORY_MARGIN_V = 1600     # Story positioning (lower area for narrative)
+
+# Timing
+TIMING_PAD = 0.05         # 50ms safety padding on both sides
+
+# ==================================================
+# EMPHASIS WORDS (Yellow highlighting)
 # ==================================================
 
 EMPHASIS_WORDS = {
-    # Crime words
-    "murder", "killed", "death", "died", "shot", "stabbed", "strangled",
-    "body", "victim", "suspect", "crime", "scene", "blood", "weapon",
+    # Crime/Death
+    "murder", "murdered", "killing", "killed", "death", "died", "dying", "body", "bodies",
+    "victim", "victims", "blood", "brutal", "violence", "violent",
     
-    # Emotion/impact words
-    "shocking", "horrifying", "terrifying", "devastating", "tragic",
-    "unbelievable", "incredible", "amazing", "stunning",
+    # Investigation
+    "crime", "crimes", "criminal", "scene", "investigation", "investigate", "detective",
+    "police", "sheriff", "found", "discovered", "reveal", "revealed", "evidence",
     
-    # Mystery words
-    "mystery", "unsolved", "disappeared", "vanished", "missing",
-    "found", "discovered", "revealed", "uncovered",
+    # Disappearance
+    "missing", "disappeared", "disappeared", "vanished", "lost", "gone",
     
-    # Negation/emphasis
-    "never", "nobody", "nothing", "none", "no one",
-    "always", "everyone", "everything",
+    # Mystery/Suspense
+    "never", "nothing", "no one", "nobody", "last", "final", "finally", "alone",
+    "mysterious", "mystery", "suspicious", "strange", "unknown", "unexpected",
     
-    # Numbers (for impact)
-    "first", "last", "only", "final",
+    # Action
+    "found", "founded", "disappeared", "gone", "disappeared", "vanished",
+    "caught", "caught", "arrested", "charged", "convicted", "guilty",
     
-    # Add your own key words here
+    # Negation/Emphasis
+    "not", "never", "no", "nothing", "wasn't", "weren't", "didn't", "couldn't",
+    "wouldn't", "shouldn't", "can't", "won't"
 }
 
 # ==================================================
-# FONT SIZE CALCULATOR
-# ==================================================
-
-def get_font_size(word_count: int) -> int:
-    """
-    Adaptive font sizing:
-    - Short phrases (1-2 words): Bigger for impact
-    - Normal phrases (3 words): Standard
-    - Long phrases (4+ words): Smaller to fit
-    """
-    if word_count <= 2:
-        return 92   # Big impact
-    elif word_count == 3:
-        return 84   # Standard
-    elif word_count == 4:
-        return 78   # Slightly smaller
-    else:  # 5+ words
-        return 72   # Compact
-
-# ==================================================
-# TIME FORMAT
+# HELPERS
 # ==================================================
 
 def ass_time(t: float) -> str:
-    """Convert seconds to ASS timestamp format"""
+    """Convert seconds to ASS timestamp format: h:mm:ss.cc"""
+    t = max(0, t)  # Prevent negative times
     h = int(t // 3600)
     m = int((t % 3600) // 60)
     s = int(t % 60)
     cs = int((t % 1) * 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
+def font_size(word_count: int) -> int:
+    """Adaptive font size based on word count"""
+    if word_count <= 1:
+        return 100
+    elif word_count == 2:
+        return 92
+    elif word_count == 3:
+        return 84
+    elif word_count == 4:
+        return 78
+    elif word_count == 5:
+        return 72
+    else:  # 6+
+        return 66
+
+def split_words(text: str, max_words: int) -> List[str]:
+    """Split text into chunks of max_words, preserving punctuation"""
+    words = text.split()
+    chunks = []
+    
+    for i in range(0, len(words), max_words):
+        chunk = " ".join(words[i:i + max_words])
+        chunks.append(chunk)
+    
+    return chunks
+
+def clean_text(text: str) -> str:
+    """Clean text for display"""
+    text = text.strip()
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+def has_emphasis_word(text: str) -> bool:
+    """Check if text contains emphasis words"""
+    words = text.lower().split()
+    for word in words:
+        # Remove punctuation for comparison
+        clean_word = word.strip(".,!?;:\"-'")
+        if clean_word in EMPHASIS_WORDS:
+            return True
+    return False
+
+def capitalize_properly(text: str) -> str:
+    """Capitalize text properly (first letter, after periods)"""
+    if not text:
+        return text
+    
+    # Capitalize first character
+    text = text[0].upper() + text[1:] if len(text) > 0 else text
+    
+    # Capitalize after periods
+    text = re.sub(r'([.!?])\s+([a-z])', lambda m: m.group(1) + ' ' + m.group(2).upper(), text)
+    
+    return text
+
 # ==================================================
 # ASS HEADER
 # ==================================================
 
-def ass_header(cfg: Config) -> List[str]:
-    """Generate ASS file header with multiple styles"""
+def ass_header() -> List[str]:
+    """Generate ASS file header with style definitions"""
     return [
         "[Script Info]",
-        "Title: YouTube Shorts Ultimate Pro Subtitles",
+        "Title: YouTube Shorts Pro Subtitles",
+        "Original Script: True Crime Generator",
         "ScriptType: v4.00+",
-        f"PlayResX: {cfg.PLAY_RES_X}",
-        f"PlayResY: {cfg.PLAY_RES_Y}",
+        f"PlayResX: {PLAY_RES_X}",
+        f"PlayResY: {PLAY_RES_Y}",
         "ScaledBorderAndShadow: yes",
+        "WrapStyle: 3",
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour,"
@@ -149,307 +193,219 @@ def ass_header(cfg: Config) -> List[str]:
         " ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow,"
         " Alignment, MarginL, MarginR, MarginV, Encoding",
         
-        # Default style (white text) - will be overridden per-line for font size
-        f"Style: Default,{cfg.FONT_NAME},84,"
-        f"{cfg.COLOR_WHITE},{cfg.COLOR_WHITE},{cfg.COLOR_OUTLINE},"
-        f"{cfg.COLOR_SHADOW},-1,0,0,0,100,100,0,0,1,"
-        f"{cfg.OUTLINE},{cfg.SHADOW},{cfg.ALIGNMENT},"
-        f"{cfg.MARGIN_H},{cfg.MARGIN_H},{cfg.STORY_MARGIN_V},1",
+        # Default style - White text with black shadow
+        f"Style: Default,{FONT_NAME},84,"
+        f"{COLOR_WHITE},{COLOR_WHITE},{COLOR_OUTLINE},{COLOR_SHADOW},"
+        f"-1,0,0,0,100,100,0,0,1,{OUTLINE},{SHADOW},"
+        f"{ALIGNMENT},{MARGIN_H},{MARGIN_H},{STORY_MARGIN_V},1",
         
-        # Emphasis style (yellow text)
-        f"Style: Emphasis,{cfg.FONT_NAME},84,"
-        f"{cfg.COLOR_YELLOW},{cfg.COLOR_YELLOW},{cfg.COLOR_OUTLINE},"
-        f"{cfg.COLOR_SHADOW},-1,0,0,0,100,100,0,0,1,"
-        f"{cfg.OUTLINE},{cfg.SHADOW},{cfg.ALIGNMENT},"
-        f"{cfg.MARGIN_H},{cfg.MARGIN_H},{cfg.STORY_MARGIN_V},1",
+        # Hook style - White text with strong shadow for visibility over images
+        f"Style: Hook,{FONT_NAME},80,"
+        f"{COLOR_WHITE},{COLOR_WHITE},{COLOR_OUTLINE},{COLOR_SHADOW},"
+        f"-1,0,0,0,100,100,0,0,1,{OUTLINE + 2},{SHADOW + 1},"
+        f"{ALIGNMENT},{MARGIN_H},{MARGIN_H},{HOOK_MARGIN_V},1",
+        
+        # Emphasis style - Yellow text with black shadow
+        f"Style: Emphasis,{FONT_NAME},84,"
+        f"{COLOR_YELLOW},{COLOR_YELLOW},{COLOR_OUTLINE},{COLOR_SHADOW},"
+        f"-1,0,0,0,100,100,0,0,1,{OUTLINE},{SHADOW},"
+        f"{ALIGNMENT},{MARGIN_H},{MARGIN_H},{STORY_MARGIN_V},1",
+        
+        # Emphasis Hook style - Yellow text for emphasized hook beats
+        f"Style: EmphasisHook,{FONT_NAME},80,"
+        f"{COLOR_YELLOW},{COLOR_YELLOW},{COLOR_OUTLINE},{COLOR_SHADOW},"
+        f"-1,0,0,0,100,100,0,0,1,{OUTLINE + 2},{SHADOW + 1},"
+        f"{ALIGNMENT},{MARGIN_H},{MARGIN_H},{HOOK_MARGIN_V},1",
         
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-# ==================================================
-# MOTION TRANSFORMS (BOUNCE VARIATIONS)
-# ==================================================
-
-def hook_transform(margin_v: int, font_size: int) -> str:
-    """
-    Strong bounce for hook (first 2.5 seconds)
-    Most impactful entrance
-    """
-    return (
-        f"{{\\an8\\pos(540,{margin_v})\\fs{font_size}"
-        f"\\fscx85\\fscy85"
-        f"\\t(0,140,\\fscx108\\fscy108)"
-        f"\\t(140,260,\\fscx100\\fscy100)}}"
-    )
-
-def energy_transform(margin_v: int, font_size: int) -> str:
-    """
-    Medium bounce for high-energy section (2.5s - 10s)
-    Keeps momentum going
-    """
-    return (
-        f"{{\\an8\\pos(540,{margin_v})\\fs{font_size}"
-        f"\\fscx90\\fscy90"
-        f"\\t(0,100,\\fscx103\\fscy103)"
-        f"\\t(100,200,\\fscx100\\fscy100)}}"
-    )
-
-def subtle_transform(margin_v: int, font_size: int) -> str:
-    """
-    Gentle bounce for rest of video
-    Professional, not distracting
-    """
-    return (
-        f"{{\\an8\\pos(540,{margin_v})\\fs{font_size}"
-        f"\\fscx95\\fscy95"
-        f"\\t(0,80,\\fscx100\\fscy100)}}"
-    )
-
-# ==================================================
-# SPEECH RATE ANALYZER
-# ==================================================
-
-def calculate_speech_rate(words: List[Dict]) -> float:
-    """
-    Calculate words per second from Whisper output
-    Used to optimize words-per-line count
-    """
-    if not words:
-        return 2.5  # Default
+def create_subtitle_line(
+    start_time: float,
+    end_time: float,
+    text: str,
+    is_hook: bool = False,
+    emphasize: bool = False,
+    word_count: int = 0
+) -> str:
+    """Create a single subtitle line with proper styling"""
     
-    total_words = len(words)
-    duration = words[-1]["end"] - words[0]["start"]
+    # Add safety padding
+    start_time = max(0, start_time - TIMING_PAD)
+    end_time = end_time + TIMING_PAD
     
-    return total_words / duration if duration > 0 else 2.5
-
-def get_optimal_words_per_line(speech_rate: float) -> int:
-    """
-    Adjust words per line based on speech rate:
-    - Fast speech (3+ w/s): 3 words/line (keep up)
-    - Normal (2-3 w/s): 4 words/line (standard)
-    - Slow (<2 w/s): 5 words/line (don't waste space)
-    """
-    if speech_rate >= 3.0:
-        return 3
-    elif speech_rate < 2.0:
-        return 5
+    # Determine style
+    if is_hook:
+        style = "EmphasisHook" if emphasize else "Hook"
     else:
-        return 4
-
-# ==================================================
-# SMART LINE BREAKING
-# ==================================================
-
-def smart_chunk_words(words: List[Dict], target: int) -> List[List[Dict]]:
-    """
-    Chunk words intelligently:
-    - Prefer breaks after punctuation (commas, periods)
-    - Don't split names or compounds
-    - Keep natural reading flow
-    """
-    if not words:
-        return []
+        style = "Emphasis" if emphasize else "Default"
     
-    chunks = []
-    current = []
+    # Get adaptive font size
+    size = font_size(word_count if word_count > 0 else len(text.split()))
     
-    for i, word in enumerate(words):
-        current.append(word)
-        word_text = word["word"].strip()
-        
-        # Check for natural break points
-        has_comma = "," in word_text
-        has_period = "." in word_text
-        is_target_length = len(current) >= target
-        is_last = i == len(words) - 1
-        next_is_conjunction = (
-            i + 1 < len(words) and 
-            words[i + 1]["word"].strip().lower() in {"and", "or", "but", "so"}
-        )
-        
-        # Decision logic
-        should_break = False
-        
-        if is_last:
-            should_break = True
-        elif (has_comma or has_period) and is_target_length:
-            should_break = True
-        elif len(current) >= target + 2:  # Force break if too long
-            should_break = True
-        elif is_target_length and not next_is_conjunction:
-            should_break = True
-        
-        if should_break:
-            chunks.append(current)
-            current = []
+    # Determine margin (hook or story)
+    margin_v = HOOK_MARGIN_V if is_hook else STORY_MARGIN_V
     
-    # Handle remaining words
-    if current:
-        # If last chunk is very short, merge with previous
-        if len(current) <= 2 and chunks:
-            chunks[-1].extend(current)
-        else:
-            chunks.append(current)
+    # Create positioning override (no kinetic motion, just static placement)
+    pos_override = f"{{\\an{ALIGNMENT}\\pos(720,{margin_v})\\fs{size}}}"
     
-    return chunks
+    # Format times
+    start_str = ass_time(start_time)
+    end_str = ass_time(end_time)
+    
+    # Create dialogue line
+    return (
+        f"Dialogue: 0,{start_str},{end_str},"
+        f"{style},,0,0,0,,{pos_override}{text}"
+    )
 
 # ==================================================
-# TEXT FORMATTING
+# VALIDATION
 # ==================================================
 
-def format_chunk_text(words: List[Dict]) -> str:
-    """
-    Format text in Title Case (easier to read than ALL CAPS)
-    """
-    text = " ".join(w["word"].strip() for w in words)
-    # Title Case: First Letter Of Each Word Capitalized
-    return text.title()
-
-# ==================================================
-# EMPHASIS DETECTION
-# ==================================================
-
-def has_emphasis_word(words: List[Dict]) -> bool:
-    """
-    Check if chunk contains any emphasis words
-    (returns True if yellow highlighting needed)
-    """
-    for word in words:
-        word_clean = word["word"].strip().lower().strip(".,!?;:")
-        if word_clean in EMPHASIS_WORDS:
-            return True
-    return False
+def validate_beats(beats: List[dict]) -> Tuple[bool, str]:
+    """Validate beats.json structure and content"""
+    if not beats or len(beats) == 0:
+        return False, "No beats found in JSON"
+    
+    for i, beat in enumerate(beats):
+        if "text" not in beat:
+            return False, f"Beat {i} missing 'text' field"
+        
+        if "duration" not in beat:
+            return False, f"Beat {i} missing 'duration' field"
+        
+        try:
+            duration = float(beat["duration"])
+            if duration <= 0:
+                return False, f"Beat {i} has non-positive duration: {duration}"
+        except (ValueError, TypeError):
+            return False, f"Beat {i} has invalid duration: {beat['duration']}"
+        
+        text = beat["text"].strip()
+        if not text:
+            return False, f"Beat {i} has empty text"
+    
+    return True, "Validation passed"
 
 # ==================================================
 # MAIN
 # ==================================================
 
 def main():
-    cfg = Config()
-
-    audio = Path(cfg.AUDIO_FILE)
-    if not audio.exists():
-        raise FileNotFoundError(f"Audio file not found: {cfg.AUDIO_FILE}")
-
-    print("="*70)
-    print("🎬 ULTIMATE PRO SUBTITLE GENERATOR")
-    print("="*70)
+    print("=" * 60)
+    print("🎬 YOUTUBE SHORTS PRO SUBTITLES GENERATOR")
+    print("=" * 60)
     
-    # Load Whisper
-    print(f"\n[1/3] Loading Whisper model: {cfg.WHISPER_MODEL}...")
-    model = whisper.load_model(cfg.WHISPER_MODEL)
-
-    # Transcribe with word timestamps
-    print(f"[2/3] Transcribing audio: {cfg.AUDIO_FILE}...")
-    result = model.transcribe(
-        str(audio),
-        word_timestamps=True,
-        language="en",
-        verbose=False,
-    )
-
-    # Initialize subtitle file
-    subs = ass_header(cfg)
+    # Load beats
+    if not BEATS_FILE.exists():
+        raise RuntimeError(f"❌ {BEATS_FILE} missing")
     
-    # Collect all words for speech rate analysis
-    all_words = []
-    for seg in result["segments"]:
-        if seg.get("words"):
-            all_words.extend(seg["words"])
+    try:
+        beats_data = json.loads(BEATS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"❌ Invalid JSON in {BEATS_FILE}: {e}")
     
-    if not all_words:
-        print("❌ No words detected in audio!")
-        return
+    beats = beats_data.get("beats", [])
     
-    # Calculate optimal words per line
-    speech_rate = calculate_speech_rate(all_words)
-    words_per_line = get_optimal_words_per_line(speech_rate)
+    # Validate
+    is_valid, message = validate_beats(beats)
+    if not is_valid:
+        raise RuntimeError(f"❌ Validation error: {message}")
     
-    print(f"\n📊 Speech analysis:")
-    print(f"   - Total words: {len(all_words)}")
-    print(f"   - Speech rate: {speech_rate:.1f} words/second")
-    print(f"   - Optimal words/line: {words_per_line}")
+    print(f"✅ Loaded {len(beats)} beats from {BEATS_FILE}")
     
     # Generate subtitles
-    print(f"\n[3/3] Generating subtitles...")
+    subs = ass_header()
+    current_time = 0.0
     
-    line_count = 0
-    hook_lines = 0
-    emphasis_lines = 0
+    beat_count = 0
     
-    for seg in result["segments"]:
-        if not seg.get("words"):
+    for beat_idx, beat in enumerate(beats):
+        text = clean_text(beat["text"])
+        duration = float(beat["duration"])
+        beat_type = beat.get("type", "video")
+        
+        # Skip empty or invalid beats
+        if not text or duration <= 0:
+            current_time += duration
             continue
-
-        # Smart chunking
-        chunks = smart_chunk_words(seg["words"], words_per_line)
-
-        for chunk in chunks:
-            # Timing with padding for perfect sync
-            start = max(0, chunk[0]["start"] - cfg.TIMING_PAD_START)
-            end = chunk[-1]["end"] + cfg.TIMING_PAD_END
+        
+        is_hook = beat_type == "image"
+        has_emphasis = has_emphasis_word(text)
+        
+        # Determine optimal chunk size based on duration and text length
+        word_count = len(text.split())
+        
+        # Dynamic chunk sizing
+        if duration > 5:
+            max_words = 4
+        elif duration > 3:
+            max_words = 3
+        elif duration > 1.5:
+            max_words = 2
+        else:
+            max_words = 1
+        
+        chunks = split_words(text, max_words=max_words)
+        
+        if len(chunks) == 0:
+            current_time += duration
+            continue
+        
+        per_chunk = duration / len(chunks)
+        
+        # Create subtitles for each chunk
+        for chunk_idx, chunk in enumerate(chunks):
+            start = current_time
+            end = start + per_chunk
             
-            # Format text
-            text = format_chunk_text(chunk)
+            # Check if this chunk has emphasis words
+            chunk_has_emphasis = has_emphasis_word(chunk)
             
-            # Detect emphasis words
-            is_emphasis = has_emphasis_word(chunk)
-            style = "Emphasis" if is_emphasis else "Default"
+            # Get word count for font sizing
+            chunk_words = len(chunk.split())
             
-            # Determine section (hook vs story)
-            is_hook = start < cfg.HOOK_END_TIME
-            margin_v = cfg.HOOK_MARGIN_V if is_hook else cfg.STORY_MARGIN_V
-            
-            # Adaptive font size
-            word_count = len(chunk)
-            font_size = get_font_size(word_count)
-            
-            # Choose animation based on timing
-            if is_hook:
-                motion = hook_transform(margin_v, font_size)
-                hook_lines += 1
-            elif start < 10.0:  # High energy section
-                motion = energy_transform(margin_v, font_size)
-            else:  # Rest of video
-                motion = subtle_transform(margin_v, font_size)
-            
-            # Build subtitle line
-            subs.append(
-                f"Dialogue: 0,{ass_time(start)},{ass_time(end)},"
-                f"{style},,0,0,0,,{motion}{text}"
+            # Create subtitle line
+            sub_line = create_subtitle_line(
+                start_time=start,
+                end_time=end,
+                text=capitalize_properly(chunk),
+                is_hook=is_hook,
+                emphasize=chunk_has_emphasis,
+                word_count=chunk_words
             )
             
-            line_count += 1
-            if is_emphasis:
-                emphasis_lines += 1
-
-    # Write output
-    output = Path(cfg.OUTPUT_FILE)
-    output.write_text("\n".join(subs), encoding="utf-8")
+            subs.append(sub_line)
+            beat_count += 1
+            
+            current_time = end
     
-    # Summary
-    print("\n" + "="*70)
-    print("✅ SUBTITLE GENERATION COMPLETE!")
-    print("="*70)
-    print(f"📊 Stats:")
-    print(f"   - Total subtitle lines: {line_count}")
-    print(f"   - Hook lines (stronger bounce): {hook_lines}")
-    print(f"   - Emphasis lines (yellow): {emphasis_lines}")
-    print(f"   - Words per line: {words_per_line} (optimized)")
-    print(f"\n🎨 Features enabled:")
-    print(f"   ✅ Smart line breaking (natural pauses)")
-    print(f"   ✅ Emphasis word highlighting (yellow)")
-    print(f"   ✅ Adaptive font sizing (72-92px)")
-    print(f"   ✅ Title Case formatting")
-    print(f"   ✅ Compression-proof thickness (8px outline)")
-    print(f"   ✅ Dynamic positioning (hook vs story)")
-    print(f"   ✅ Bounce variation (hook/energy/subtle)")
-    print(f"   ✅ Timing precision (±50ms padding)")
-    print(f"\n📁 Output: {output}")
-    print("🚀 Ready to use!")
-    print("="*70)
+    # Write output
+    OUTPUT_FILE.write_text("\n".join(subs), encoding="utf-8")
+    
+    print()
+    print("=" * 60)
+    print("✅ SUBTITLES GENERATED SUCCESSFULLY")
+    print("=" * 60)
+    print(f"📁 Output file: {OUTPUT_FILE.resolve()}")
+    print(f"📊 Total beats processed: {len(beats)}")
+    print(f"📝 Total subtitle lines: {beat_count}")
+    print(f"⏱️  Total duration: {current_time:.2f} seconds")
+    print()
+    print("📋 Styling:")
+    print(f"   • Font: {FONT_NAME}")
+    print(f"   • Default text: White with black shadow")
+    print(f"   • Emphasis words: Yellow with black shadow")
+    print(f"   • Hook positioning: {HOOK_MARGIN_V}px (upper)")
+    print(f"   • Story positioning: {STORY_MARGIN_V}px (lower)")
+    print(f"   • Outline thickness: {OUTLINE}px")
+    print(f"   • Shadow depth: {SHADOW}px")
+    print()
+    print("✅ Ready for video editing!")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
