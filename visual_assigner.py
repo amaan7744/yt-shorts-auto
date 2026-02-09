@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-Visual Assigner — CONTENT ONLY (SPEECH-LOCKED PIPELINE)
-======================================================
+Visual Assigner — SCRIPT-LOCKED (NO TIME GUESSING)
+=================================================
 
-RESPONSIBILITY:
-✔ Assign visuals to script lines
-✔ Preserve hook → story structure
-✔ Never assign durations
-✔ Never reuse assets
-✔ Never add filler
-✔ Never drop lines
+RULES:
+- Script structure is the source of truth
+- 2 images for hook (line 1)
+- 1 video per remaining script line
+- No fillers, no reuse, no duration math
+- Timing is handled downstream (speech-locked)
 
-Timing is handled STRICTLY by the video builder.
+This file ONLY assigns WHAT appears, not WHEN.
 """
 
 import json
 import sys
-import subprocess
 from pathlib import Path
 
 from assets import (
@@ -29,8 +27,7 @@ from assets import (
 # ==================================================
 
 SCRIPT_FILE = Path("script.txt")
-AUDIO_FILE = Path("final_audio.wav")
-OUTPUT_BEATS = Path("beats.json")
+OUTPUT_FILE = Path("beats.json")
 
 ASSET_DIR = Path("asset")
 HOOK_DIR = ASSET_DIR / "hook_static"
@@ -43,103 +40,72 @@ def die(msg):
     print(f"\n❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
-def get_audio_duration(path: Path) -> float:
-    r = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path)
-        ],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    return float(r.stdout.strip())
-
 # ==================================================
-# LOAD INPUTS
+# LOAD SCRIPT
 # ==================================================
 
 if not SCRIPT_FILE.exists():
-    die("script.txt missing")
-
-if not AUDIO_FILE.exists():
-    die("final_audio.wav missing")
+    die("script.txt not found")
 
 lines = [l.strip() for l in SCRIPT_FILE.read_text().splitlines() if l.strip()]
 
-if len(lines) < 2:
-    die("Script too short (need hook + story)")
+if len(lines) != 7:
+    die(f"Script must contain exactly 7 lines, got {len(lines)}")
 
 HOOK_LINE = lines[0]
-STORY_LINES = lines[1:]
-
-audio_duration = get_audio_duration(AUDIO_FILE)
+STORY_LINES = lines[1:]  # body + CTA + loop
 
 print("=" * 70)
-print("📋 VISUAL ASSIGNER — CONTENT ONLY")
+print("🎬 VISUAL ASSIGNER — SCRIPT LOCKED")
 print("=" * 70)
-print(f"🎵 Audio duration: {audio_duration:.2f}s")
-print(f"📝 Script lines: {len(lines)} (1 hook + {len(STORY_LINES)} story)")
+print(f"📝 Script lines: {len(lines)} (1 hook + 6 story)")
 
 # ==================================================
-# HOOK IMAGE SELECTION
+# HOOK IMAGE SELECTION (DETERMINISTIC)
 # ==================================================
 
-def select_hook_images(text: str, max_images: int = 2) -> list:
+def select_hook_images(text: str, count: int = 2) -> list:
     words = [
         w.strip(".,!?\"'").lower()
         for w in text.split()
         if len(w) > 3
     ]
 
-    matched = []
+    selected = []
     used = set()
 
-    print("\n🔍 Selecting hook images:")
-
+    # Keyword match first
     for word in words:
-        if len(matched) >= max_images:
-            break
-
-        best_img = None
-        best_score = 0
-
         for img, keywords in HOOK_IMAGE_CATEGORIES.items():
             if img in used:
                 continue
-
-            score = sum(1 for kw in keywords if kw in word or word in kw)
-            if score > best_score:
-                best_score = score
-                best_img = img
-
-        if best_img:
-            matched.append(best_img)
-            used.add(best_img)
-            print(f"  ✓ '{word}' → {best_img}")
-
-    # Fallback if weak keyword match
-    if len(matched) < max_images:
-        for img in HOOK_IMAGE_CATEGORIES:
-            if img not in used and len(matched) < max_images:
-                matched.append(img)
+            if any(kw in word or word in kw for kw in keywords):
+                selected.append(img)
                 used.add(img)
-                print(f"  + [fallback] → {img}")
+                break
+        if len(selected) == count:
+            break
 
-    return matched
+    # Deterministic fallback
+    if len(selected) < count:
+        for img in sorted(HOOK_IMAGE_CATEGORIES.keys()):
+            if img not in used:
+                selected.append(img)
+            if len(selected) == count:
+                break
+
+    if len(selected) != count:
+        die("Not enough hook images available")
+
+    return selected
 
 hook_images = select_hook_images(HOOK_LINE)
 
-if not hook_images:
-    die("No hook images selected")
-
 # ==================================================
-# VIDEO SELECTION
+# VIDEO SELECTION (ONE LINE = ONE VIDEO)
 # ==================================================
 
-def select_video(text: str, used: set) -> str:
+def select_video_for_line(text: str, used: set) -> str:
     text_lower = text.lower()
     best_video = None
     best_score = 0
@@ -147,79 +113,74 @@ def select_video(text: str, used: set) -> str:
     for video, keywords in VIDEO_ASSET_KEYWORDS.items():
         if video in used:
             continue
-
         score = sum(1 for kw in keywords if kw in text_lower)
         if score > best_score:
             best_score = score
             best_video = video
 
+    # Deterministic fallback
     if not best_video:
-        for video in VIDEO_ASSET_KEYWORDS:
+        for video in sorted(VIDEO_ASSET_KEYWORDS.keys()):
             if video not in used:
                 best_video = video
                 break
 
     if not best_video:
-        die("Ran out of videos — add more assets")
+        die("Ran out of available videos")
 
     if not (ASSET_DIR / best_video).exists():
-        die(f"Missing video file: {best_video}")
+        die(f"Missing video asset: {best_video}")
 
     return best_video
 
 # ==================================================
-# BUILD BEATS (NO DURATIONS)
+# BUILD BEATS (ORDER ONLY, NO TIMING)
 # ==================================================
 
 beats = []
 beat_id = 1
 used_videos = set()
 
-print("\n" + "=" * 70)
-print("BUILDING BEATS (NO TIMING)")
-print("=" * 70)
-
-# ---- HOOK ----
-print("\n📍 HOOK:")
+print("\n📍 HOOK VISUALS")
 for img in hook_images:
     beats.append({
         "beat_id": beat_id,
         "type": "image",
         "asset_file": f"hook_static/{img}",
+        "script_line": 1,
         "role": "hook"
     })
     print(f"  [{beat_id:02d}] 🖼️  hook_static/{img}")
     beat_id += 1
 
-# ---- STORY ----
-print("\n📍 STORY:")
-for line in STORY_LINES:
-    video = select_video(line, used_videos)
+print("\n📍 STORY VISUALS")
+for idx, line in enumerate(STORY_LINES, start=2):
+    video = select_video_for_line(line, used_videos)
     used_videos.add(video)
 
     beats.append({
         "beat_id": beat_id,
         "type": "video",
         "asset_file": video,
-        "text": line,
-        "role": "story"
+        "script_line": idx,
+        "role": "story",
+        "text": line
     })
 
-    print(f"  [{beat_id:02d}] 🎞️  {video} — {line[:50]}...")
+    print(f"  [{beat_id:02d}] 🎞️  {video} — line {idx}")
     beat_id += 1
 
 # ==================================================
-# OUTPUT
+# SAVE OUTPUT
 # ==================================================
 
-OUTPUT_BEATS.write_text(json.dumps({"beats": beats}, indent=2))
+OUTPUT_FILE.write_text(json.dumps({"beats": beats}, indent=2))
 
 print("\n" + "=" * 70)
-print("✅ BEATS GENERATED (CONTENT-LOCKED)")
+print("✅ VISUAL ASSIGNMENT COMPLETE")
 print("=" * 70)
-print(f"📊 Total beats: {len(beats)}")
 print(f"🖼️  Hook images: {len(hook_images)}")
 print(f"🎞️  Story videos: {len(used_videos)}")
-print(f"⏱️  Timing: deferred to video builder")
-print(f"\n💾 Saved: {OUTPUT_BEATS}")
+print(f"📦 Total beats: {len(beats)}")
+print(f"💾 Saved to: {OUTPUT_FILE}")
 print("=" * 70)
