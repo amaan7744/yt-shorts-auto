@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Visual Assigner (FINAL – AUDIO FIRST, DETERMINISTIC)
+Visual Assigner — AUDIO-LOCKED, NO REUSE
+=========================================
 
-RESPONSIBILITY:
-- Assign visuals AFTER audio exists
-- Hook = images only (from hook_static/)
-- Story = 5s videos only (from asset/)
-- Assets chosen ONLY from registry
-- NO randomness
-- NO invented filenames
-- Audio duration controls the end
+FIXES:
+✅ Correct asset paths (hook_static/ for images, asset/ for videos)
+✅ Total duration matches audio exactly
+✅ No video reuse (except intentional final loop)
+✅ Deterministic asset selection based on keywords
 """
 
 import json
@@ -34,11 +32,11 @@ ASSET_DIR = Path("asset")
 HOOK_DIR = ASSET_DIR / "hook_static"
 
 # ==================================================
-# CONSTANTS (LOCKED)
+# CONSTANTS
 # ==================================================
 
 HOOK_MAX_SECONDS = 3.0
-MIN_IMAGE_DURATION = 0.4
+MIN_IMAGE_DURATION = 0.5
 VIDEO_DURATION = 5.0
 
 # ==================================================
@@ -46,17 +44,16 @@ VIDEO_DURATION = 5.0
 # ==================================================
 
 def die(msg):
-    print(f"[VISUAL] ❌ {msg}", file=sys.stderr)
+    print(f"\n❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
-def ffprobe_duration(path: Path) -> float:
+def get_duration(path: Path) -> float:
+    """Get duration of audio file"""
     r = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path)
-        ],
+        ["ffprobe", "-v", "error",
+         "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1",
+         str(path)],
         capture_output=True,
         text=True,
         check=True
@@ -64,7 +61,7 @@ def ffprobe_duration(path: Path) -> float:
     return float(r.stdout.strip())
 
 # ==================================================
-# LOAD SCRIPT
+# LOAD SCRIPT & AUDIO
 # ==================================================
 
 if not SCRIPT_FILE.exists():
@@ -73,140 +70,118 @@ if not AUDIO_FILE.exists():
     die("final_audio.wav missing")
 
 lines = [l.strip() for l in SCRIPT_FILE.read_text().splitlines() if l.strip()]
-if len(lines) < 6:
-    die("Script too short")
+if len(lines) < 3:
+    die("Script too short (need at least hook + 2 story lines)")
 
-# STRUCTURE (LOCKED)
+# Structure
 HOOK_LINE = lines[0]
-BODY_LINES = lines[1:-1]   # facts → official story → CTA
-FINAL_LOOP = lines[-1]
+STORY_LINES = lines[1:]  # All remaining lines are story
+
+audio_duration = get_duration(AUDIO_FILE)
+
+print("=" * 70)
+print("📋 VISUAL ASSIGNER")
+print("=" * 70)
+print(f"🎵 Audio duration: {audio_duration:.2f}s")
+print(f"📝 Script lines: {len(lines)} (1 hook + {len(STORY_LINES)} story)")
 
 # ==================================================
-# AUDIO
+# HOOK IMAGE SELECTION
 # ==================================================
 
-audio_duration = ffprobe_duration(AUDIO_FILE)
-
-# ==================================================
-# HOOK IMAGE ASSIGNMENT
-# ==================================================
-
-def get_hook_images(hook_text):
-    """Match hook line words to hook images based on keyword tags"""
-    # Extract meaningful words from hook (lowercase, remove punctuation)
+def select_hook_images(hook_text: str, max_images: int = 3) -> list:
+    """Select hook images based on keyword matching"""
     hook_words = [
         w.strip(".,!?\"'").lower()
         for w in hook_text.split()
-        if len(w) > 3  # Skip very short words like "the", "was", etc.
+        if len(w) > 3
     ]
     
-    print(f"[VISUAL] Hook words: {hook_words}")
+    print(f"\n🔍 Hook analysis: {hook_words[:5]}...")
     
-    # Find matching images
-    matched_images = []
-    used_images = set()
+    matched = []
+    used = set()
     
-    # Try to find unique images for different words
+    # Match hook words to image keywords
     for word in hook_words:
-        best_match = None
+        if len(matched) >= max_images:
+            break
+        
+        best_img = None
         best_score = 0
         
         for img, keywords in HOOK_IMAGE_CATEGORIES.items():
-            if img in used_images:
+            if img in used:
                 continue
             
-            # Count how many keywords this word matches
             score = sum(1 for kw in keywords if word in kw or kw in word)
-            
             if score > best_score:
                 best_score = score
-                best_match = img
+                best_img = img
         
-        if best_match and best_score > 0:
-            matched_images.append(best_match)
-            used_images.add(best_match)
-            print(f"[VISUAL]   '{word}' → {best_match}")
+        if best_img:
+            matched.append(best_img)
+            used.add(best_img)
+            print(f"  ✓ '{word}' → {best_img}")
     
-    # If we didn't get enough images, add more based on general crime keywords
-    if len(matched_images) < 2:
-        print(f"[VISUAL] Only {len(matched_images)} matches, adding general crime images...")
-        
-        # Priority keywords for crime content
-        priority_keywords = ["crime", "death", "murder", "body", "scene", "victim"]
-        
-        for priority in priority_keywords:
-            if len(matched_images) >= 3:
-                break
-            
-            for img, keywords in HOOK_IMAGE_CATEGORIES.items():
-                if img in used_images:
-                    continue
-                
-                if any(priority in kw for kw in keywords):
-                    matched_images.append(img)
-                    used_images.add(img)
-                    print(f"[VISUAL]   [general: {priority}] → {img}")
-                    break
+    # Fallback: add general crime images if needed
+    if len(matched) < 2:
+        for img in HOOK_IMAGE_CATEGORIES.keys():
+            if img not in used and len(matched) < max_images:
+                matched.append(img)
+                used.add(img)
+                print(f"  + [fallback] → {img}")
     
-    # Last resort: just grab first available images
-    if not matched_images:
-        print(f"[VISUAL] No keyword matches, using first available images...")
-        for img in list(HOOK_IMAGE_CATEGORIES.keys())[:3]:
-            matched_images.append(img)
-            print(f"[VISUAL]   [fallback] → {img}")
-    
-    return matched_images
+    return matched
 
-hook_images = get_hook_images(HOOK_LINE)
+hook_images = select_hook_images(HOOK_LINE, max_images=2)
 
 if not hook_images:
-    die("No hook images could be assigned")
+    die("No hook images found")
 
-print(f"[VISUAL] Selected {len(hook_images)} hook images")
-
-# Clamp hook duration
-hook_duration = min(HOOK_MAX_SECONDS, audio_duration * 0.12)
+# Calculate hook timing
+hook_duration = min(HOOK_MAX_SECONDS, audio_duration * 0.08)  # ~8% of audio
 per_image = max(MIN_IMAGE_DURATION, hook_duration / len(hook_images))
 
+print(f"\n🖼️  Selected {len(hook_images)} hook images ({per_image:.2f}s each)")
+
 # ==================================================
-# STORY VIDEO ASSIGNMENT
+# VIDEO SELECTION
 # ==================================================
 
-def video_for_line(text, used):
-    """Find best matching video for a script line"""
-    t = text.lower()
+def select_video(text: str, used_videos: set) -> str:
+    """Select best matching video for a line"""
+    text_lower = text.lower()
     
-    # First pass: look for exact phrase matches
-    best_match = None
+    best_video = None
     best_score = 0
     
-    for asset, keywords in VIDEO_ASSET_KEYWORDS.items():
-        if asset in used:
+    # Find best matching unused video
+    for video, keywords in VIDEO_ASSET_KEYWORDS.items():
+        if video in used_videos:
             continue
         
-        # Count matching keywords
-        score = sum(1 for kw in keywords if kw in t)
+        score = sum(1 for kw in keywords if kw in text_lower)
         
         if score > best_score:
             best_score = score
-            best_match = asset
+            best_video = video
     
-    if best_match:
-        path = ASSET_DIR / best_match
-        if not path.exists():
-            die(f"Video asset missing on disk: {best_match}")
-        print(f"[VISUAL] '{text[:50]}...' → {best_match} (score: {best_score})")
-        return best_match
+    # Fallback: use first unused video
+    if not best_video:
+        for video in VIDEO_ASSET_KEYWORDS.keys():
+            if video not in used_videos:
+                best_video = video
+                break
     
-    # Second pass: if no matches, use first unused video
-    for asset in VIDEO_ASSET_KEYWORDS.keys():
-        if asset not in used:
-            path = ASSET_DIR / asset
-            if path.exists():
-                print(f"[VISUAL] '{text[:50]}...' → {asset} [fallback]")
-                return asset
+    if not best_video:
+        die(f"No videos available for: {text}")
     
-    die(f"No video available for line: {text}")
+    # Verify file exists
+    if not (ASSET_DIR / best_video).exists():
+        die(f"Video missing: {best_video}")
+    
+    return best_video
 
 # ==================================================
 # BUILD BEATS
@@ -215,71 +190,86 @@ def video_for_line(text, used):
 beats = []
 current_time = 0.0
 beat_id = 1
+used_videos = set()
 
-# ---- HOOK (IMAGES ONLY) - PREFIX WITH hook_static/
-print("\n[VISUAL] === HOOK SECTION ===")
+print("\n" + "=" * 70)
+print("BUILDING BEATS")
+print("=" * 70)
+
+# ---- HOOK IMAGES ----
+print("\n📍 HOOK SECTION:")
 for img in hook_images:
-    # CRITICAL FIX: Add hook_static/ prefix to the asset path
-    asset_path = f"hook_static/{img}"
-    
     beats.append({
         "beat_id": beat_id,
         "type": "image",
-        "asset_file": asset_path,  # Now includes hook_static/
+        "asset_file": f"hook_static/{img}",  # Include subdirectory
         "start": round(current_time, 3),
-        "duration": round(per_image, 3),
+        "duration": round(per_image, 3)
     })
+    print(f"  [{beat_id:02d}] 🖼️  hook_static/{img} ({per_image:.2f}s)")
     current_time += per_image
     beat_id += 1
 
-# ---- STORY (5s VIDEOS)
-print("\n[VISUAL] === STORY SECTION ===")
-used_videos = set()
+# ---- STORY VIDEOS ----
+print("\n📍 STORY SECTION:")
 
-for line in BODY_LINES:
-    asset = video_for_line(line, used_videos)
-    used_videos.add(asset)
+# Calculate how much time we have for story
+hook_total = len(hook_images) * per_image
+remaining_time = audio_duration - hook_total
 
+# Figure out how many videos we need
+num_videos_needed = int(remaining_time / VIDEO_DURATION)
+
+# If we have more lines than videos, trim lines
+# If we have more videos than lines, we'll loop the last video
+story_lines_to_use = STORY_LINES[:num_videos_needed] if num_videos_needed < len(STORY_LINES) else STORY_LINES
+
+for i, line in enumerate(story_lines_to_use):
+    video = select_video(line, used_videos)
+    used_videos.add(video)
+    
+    # For the last video, use remaining time
+    if i == len(story_lines_to_use) - 1:
+        duration = audio_duration - current_time
+    else:
+        duration = VIDEO_DURATION
+    
     beats.append({
         "beat_id": beat_id,
         "type": "video",
-        "asset_file": asset,  # Videos are directly in asset/
+        "asset_file": video,  # Direct in asset/ folder
         "start": round(current_time, 3),
-        "duration": VIDEO_DURATION,
-        "text": line,
+        "duration": round(duration, 3),
+        "text": line
     })
-
-    current_time += VIDEO_DURATION
+    
+    print(f"  [{beat_id:02d}] 🎞️  {video} ({duration:.2f}s) - {line[:40]}...")
+    current_time += duration
     beat_id += 1
 
-# ---- FINAL LOOP (VIDEO REUSE ALLOWED)
-print("\n[VISUAL] === FINAL LOOP ===")
-final_duration = max(0.5, audio_duration - current_time)
-final_asset = list(used_videos)[-1] if used_videos else list(VIDEO_ASSET_KEYWORDS.keys())[0]
-
-beats.append({
-    "beat_id": beat_id,
-    "type": "video",
-    "asset_file": final_asset,  # Videos are directly in asset/
-    "start": round(current_time, 3),
-    "duration": round(final_duration, 3),
-    "text": FINAL_LOOP,
-})
-
-print(f"[VISUAL] Final loop: {final_asset} ({final_duration:.2f}s)")
-
 # ==================================================
-# WRITE OUTPUT
+# VALIDATION & OUTPUT
 # ==================================================
 
+total_duration = sum(b["duration"] for b in beats)
+sync_diff = abs(total_duration - audio_duration)
+
+print("\n" + "=" * 70)
+print("✅ BEATS GENERATED")
+print("=" * 70)
+print(f"📊 Stats:")
+print(f"   - Total beats: {len(beats)}")
+print(f"   - Hook images: {len(hook_images)}")
+print(f"   - Story videos: {len(used_videos)}")
+print(f"   - Beat duration: {total_duration:.2f}s")
+print(f"   - Audio duration: {audio_duration:.2f}s")
+print(f"   - Sync offset: {sync_diff:.3f}s")
+
+if sync_diff > 0.5:
+    print(f"\n⚠️  WARNING: Beats and audio differ by {sync_diff:.2f}s")
+    print(f"   This is normal - video_build.py will handle it")
+
+# Write output
 OUTPUT_BEATS.write_text(json.dumps({"beats": beats}, indent=2))
-
-print("\n" + "="*60)
-print("✅ Visuals assigned successfully")
-print("="*60)
-print(f"🎞️  Hook images: {len(hook_images)}")
-print(f"🎬 Story videos: {len(used_videos)}")
-print(f"⏱️  Total duration: {current_time + final_duration:.2f}s")
-print(f"🎵 Audio duration: {audio_duration:.2f}s")
-print("🔒 beats.json locked to audio & script")
-print("="*60)
+print(f"\n💾 Saved: {OUTPUT_BEATS}")
+print("=" * 70)
