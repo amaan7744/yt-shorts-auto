@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Video Builder — AUDIO IS SOURCE OF TRUTH
+PRO SHORTS VIDEO BUILDER — AUDIO IS SOURCE OF TRUTH
 
-- No speech_map.json
-- No timing guesses
-- Video always ends with audio
-- No frozen frames
+✔ True cover framing
+✔ Ken Burns motion on images
+✔ Visual normalization
+✔ No frozen frames
+✔ Shorts-optimized color
 """
 
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -30,7 +30,8 @@ OUTPUT = Path("output.mp4")
 
 W, H = 1440, 2560
 FPS = 25
-CRF = "15"
+CRF_INTERMEDIATE = "17"
+CRF_FINAL = "15"
 
 # ==================================================
 # UTILS
@@ -40,15 +41,8 @@ def die(msg):
     raise RuntimeError(msg)
 
 def run(cmd):
+    print("▶", " ".join(cmd))
     subprocess.run(cmd, check=True)
-
-def duration(path: Path) -> float:
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True, check=True
-    )
-    return float(r.stdout.strip())
 
 # ==================================================
 # MAIN
@@ -61,15 +55,14 @@ def main():
         die("final_audio.wav missing")
 
     beats = json.loads(BEATS_FILE.read_text())["beats"]
-    audio_dur = duration(AUDIO_FILE)
 
     tmp = Path(tempfile.mkdtemp(prefix="build_"))
     clips = []
 
-    print(f"🎧 Audio duration: {audio_dur:.2f}s")
+    print("🎬 Building pro-grade clips")
 
     # ----------------------------------------------
-    # BUILD VISUAL CLIPS (NO DURATIONS)
+    # BUILD CLIPS (NORMALIZED, ANIMATED)
     # ----------------------------------------------
 
     for i, beat in enumerate(beats):
@@ -77,29 +70,48 @@ def main():
         out = tmp / f"clip_{i:03d}.mp4"
 
         if beat["type"] == "image":
+            vf = (
+                f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},"
+                f"zoompan=z='min(1.06,zoom+0.0006)':d=62,"
+                f"fps={FPS},"
+                f"eq=saturation=1.1:contrast=1.05"
+            )
+
             run([
                 "ffmpeg", "-y",
                 "-loop", "1",
                 "-i", str(src),
-                "-vf", f"scale={W}:{H}:force_original_aspect_ratio=cover",
+                "-vf", vf,
                 "-t", "2.5",
-                "-r", str(FPS),
+                "-c:v", "libx264",
+                "-crf", CRF_INTERMEDIATE,
+                "-pix_fmt", "yuv420p",
                 str(out)
             ])
+
         else:
+            vf = (
+                f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},"
+                f"eq=saturation=1.05:contrast=1.04"
+            )
+
             run([
                 "ffmpeg", "-y",
                 "-i", str(src),
-                "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
-                       f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black",
+                "-vf", vf,
                 "-r", str(FPS),
+                "-c:v", "libx264",
+                "-crf", CRF_INTERMEDIATE,
+                "-pix_fmt", "yuv420p",
                 str(out)
             ])
 
         clips.append(out)
 
     # ----------------------------------------------
-    # CONCAT ALL CLIPS (LOOPABLE)
+    # CONCAT (NO RE-ENCODE)
     # ----------------------------------------------
 
     concat = tmp / "concat.txt"
@@ -117,11 +129,11 @@ def main():
     ])
 
     # ----------------------------------------------
-    # FINAL ENCODE (AUDIO LOCKED)
+    # FINAL MASTER (AUDIO LOCKED)
     # ----------------------------------------------
 
     vf = [
-        "eq=saturation=1.15:contrast=1.05:brightness=0.02"
+        "eq=saturation=1.12:contrast=1.08:brightness=0.01"
     ]
 
     if SUBS_FILE.exists():
@@ -137,7 +149,7 @@ def main():
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-c:v", "libx264",
-        "-crf", CRF,
+        "-crf", CRF_FINAL,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-shortest",
@@ -145,8 +157,8 @@ def main():
         str(OUTPUT)
     ])
 
-    print("✅ Video build complete")
-    print(f"📁 Output: {OUTPUT}")
+    print("✅ PRO VIDEO BUILD COMPLETE")
+    print(f"📁 Output → {OUTPUT}")
 
 if __name__ == "__main__":
     main()
