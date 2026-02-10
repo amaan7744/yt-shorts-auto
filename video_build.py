@@ -1,197 +1,136 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Video Builder — RETENTION SAFE (FINAL)
-====================================================
+Video Builder — SPEECH LOCKED (FINAL)
 
-GUARANTEES:
-✔ Speech-locked visuals
-✔ No frozen frames
-✔ No filler
-✔ No reuse
-✔ Subtle cinematic motion
-✔ Single final encode (no quality loss)
-✔ Ends EXACTLY with audio
+RULES:
+- speech_map.json is the ONLY timing source
+- One visual per script line
+- Video always ends exactly with audio
 """
 
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-# ==================================================
-# FILES
-# ==================================================
-
 BEATS_FILE = Path("beats.json")
 SPEECH_FILE = Path("speech_map.json")
-ASSET_DIR = Path("asset")
 AUDIO_FILE = Path("final_audio.wav")
-SUBS_FILE = Path("subs.ass")
 OUTPUT = Path("output.mp4")
-
-# ==================================================
-# VIDEO SETTINGS
-# ==================================================
+ASSET_DIR = Path("asset")
 
 W, H = 1440, 2560
 FPS = 25
 CRF = "15"
-PRESET = "slow"
 
-# Motion / polish
-ZOOM_END = 1.08
-VIDEO_MOTION = 0.0015
-
-# Color
-SAT = 1.15
-CON = 1.06
-BRI = 0.02
-SHARP = "unsharp=3:3:0.4"
-
-# ==================================================
-# UTILS
-# ==================================================
 
 def die(msg):
-    print(f"\n❌ {msg}", file=sys.stderr)
-    sys.exit(1)
+    raise RuntimeError(msg)
+
 
 def run(cmd):
     subprocess.run(cmd, check=True)
 
-def duration(path: Path) -> float:
-    r = subprocess.run(
-        ["ffprobe", "-v", "error",
-         "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1",
-         str(path)],
-        capture_output=True, text=True, check=True
-    )
-    return float(r.stdout.strip())
-
-# ==================================================
-# FILTERS
-# ==================================================
-
-def image_filter(dur):
-    frames = int(dur * FPS)
-    return (
-        f"scale=1600:2840,"
-        f"zoompan=z='min(zoom+0.0015,{ZOOM_END})':d={frames}:"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"s={W}x{H}"
-    )
-
-def video_filter():
-    return (
-        f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
-        f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,"
-        f"zoompan=z='min(zoom+{VIDEO_MOTION},1.02)':d=1:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)"
-    )
-
-# ==================================================
-# MAIN
-# ==================================================
 
 def main():
-    for f in [BEATS_FILE, SPEECH_FILE, AUDIO_FILE]:
-        if not f.exists():
-            die(f"{f.name} missing")
+    if not BEATS_FILE.exists():
+        die("beats.json missing")
+
+    if not SPEECH_FILE.exists():
+        die("speech_map.json missing")
+
+    if not AUDIO_FILE.exists():
+        die("final_audio.wav missing")
 
     beats = json.loads(BEATS_FILE.read_text())["beats"]
-    speech = {s["line"]: s for s in json.loads(SPEECH_FILE.read_text())}
+    speech_map = json.loads(SPEECH_FILE.read_text())
 
-    tmp = Path(tempfile.mkdtemp(prefix="clips_"))
+    # 🔒 Validate speech map schema
+    if not isinstance(speech_map, list):
+        die("speech_map.json must be a list")
+
+    speech = {}
+    for s in speech_map:
+        if not isinstance(s, dict):
+            die("speech_map entries must be objects")
+        if not all(k in s for k in ("line", "start", "end")):
+            die(f"Invalid speech_map entry: {s}")
+        speech[s["line"]] = s
+
+    tmp = Path(tempfile.mkdtemp(prefix="video_build_"))
     clips = []
 
-    print("\n🎬 Building speech-locked clips")
+    print("🎬 Building clips (speech-locked)")
 
-    for i, beat in enumerate(beats):
-        seg = speech[beat["script_line"]]
-        dur = seg["duration"]
+    for beat in beats:
+        line_no = beat["script_line"]
+        if line_no not in speech:
+            die(f"No speech timing for line {line_no}")
 
-        src = ASSET_DIR / beat["asset_file"]
-        out = tmp / f"clip_{i:03d}.mp4"
+        seg = speech[line_no]
+        duration = max(0.05, seg["end"] - seg["start"])
+
+        asset = ASSET_DIR / beat["asset_file"]
+        out = tmp / f"clip_{line_no:02d}.mp4"
 
         if beat["type"] == "image":
             run([
                 "ffmpeg", "-y",
                 "-loop", "1",
-                "-i", src,
-                "-vf", image_filter(dur),
-                "-t", f"{dur}",
+                "-i", str(asset),
+                "-t", f"{duration:.3f}",
+                "-vf",
+                f"scale=1600:2840,zoompan=z='min(zoom+0.0015,1.08)':d={int(duration*FPS)}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}",
                 "-r", str(FPS),
-                out
+                str(out)
             ])
         else:
-            src_dur = duration(src)
-            if src_dur >= dur:
-                run([
-                    "ffmpeg", "-y",
-                    "-i", src,
-                    "-t", f"{dur}",
-                    "-vf", video_filter(),
-                    "-r", str(FPS),
-                    out
-                ])
-            else:
-                run([
-                    "ffmpeg", "-y",
-                    "-stream_loop", "-1",
-                    "-i", src,
-                    "-t", f"{dur}",
-                    "-vf", video_filter(),
-                    "-r", str(FPS),
-                    out
-                ])
+            run([
+                "ffmpeg", "-y",
+                "-i", str(asset),
+                "-t", f"{duration:.3f}",
+                "-vf",
+                f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black",
+                "-r", str(FPS),
+                str(out)
+            ])
 
         clips.append(out)
 
-    concat = tmp / "list.txt"
-    concat.write_text("\n".join(f"file '{c.absolute()}'" for c in clips))
+    # concat
+    concat = tmp / "concat.txt"
+    concat.write_text("\n".join(f"file '{c}'" for c in clips))
 
     merged = tmp / "merged.mp4"
-
     run([
         "ffmpeg", "-y",
         "-f", "concat",
         "-safe", "0",
-        "-i", concat,
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        merged
+        "-i", str(concat),
+        "-c", "copy",
+        str(merged)
     ])
 
-    vf = [
-        f"eq=saturation={SAT}:contrast={CON}:brightness={BRI}",
-        SHARP
-    ]
-
-    if SUBS_FILE.exists():
-        sub = str(SUBS_FILE.absolute()).replace("\\", "/").replace(":", "\\:")
-        vf.append(f"ass={sub}")
-
+    # final mux
     run([
         "ffmpeg", "-y",
-        "-i", merged,
-        "-i", AUDIO_FILE,
-        "-vf", ",".join(vf),
+        "-i", str(merged),
+        "-i", str(AUDIO_FILE),
         "-map", "0:v",
         "-map", "1:a",
         "-c:v", "libx264",
         "-crf", CRF,
-        "-preset", PRESET,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        "-b:a", "192k",
         "-shortest",
         "-movflags", "+faststart",
-        OUTPUT
+        str(OUTPUT)
     ])
 
-    print("\n✅ FINAL VIDEO BUILT — NO FREEZE, FULLY LOCKED")
-    print(f"📁 Output: {OUTPUT}")
+    print("✅ Video built successfully")
+
 
 if __name__ == "__main__":
     main()
