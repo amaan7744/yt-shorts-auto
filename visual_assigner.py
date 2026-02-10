@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 """
-Visual Assigner v4 — SCRIPT INTENT LOCKED
-========================================
+Visual Assigner — STRICT MODE (PRODUCTION SAFE)
+===============================================
 
-RULES:
-- Script structure is the source of truth
-- 2 hook images for line 1
-- 1 unique video per remaining script line
-- NO random choice
-- NO reuse
-- Uses ONLY assets declared in asset registry
-- Keyword + intent weighted selection
-- NO duration logic (speech-locked downstream)
+RULES (NON-NEGOTIABLE):
+- Script is the ONLY source of truth
+- 1 visual per script line
+- NO video reuse in the same output
+- Semantic keyword scoring (no randomness)
+- Deterministic fallback (still no reuse)
+- NO timing, NO duration, NO audio logic
+
+This file answers ONE question:
+➡️ What visual appears for each script line
 """
 
 import json
 import sys
 from pathlib import Path
-from collections import defaultdict
 
-from assets import (
-    VIDEO_ASSET_KEYWORDS,
-    HOOK_IMAGE_CATEGORIES,
-)
+from assets import VIDEO_ASSET_KEYWORDS, HOOK_IMAGE_CATEGORIES
 
 # ==================================================
 # FILES
@@ -32,6 +29,7 @@ SCRIPT_FILE = Path("script.txt")
 OUTPUT_FILE = Path("beats.json")
 
 ASSET_DIR = Path("asset")
+HOOK_DIR = ASSET_DIR / "hook_static"
 
 # ==================================================
 # UTILS
@@ -41,67 +39,60 @@ def die(msg):
     print(f"\n❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
+def tokenize(text: str) -> set:
+    return {
+        w.strip(".,!?\"'():").lower()
+        for w in text.split()
+        if len(w) > 3
+    }
+
 # ==================================================
 # LOAD SCRIPT
 # ==================================================
 
 if not SCRIPT_FILE.exists():
-    die("script.txt not found")
+    die("script.txt missing")
 
 lines = [l.strip() for l in SCRIPT_FILE.read_text().splitlines() if l.strip()]
 
-if len(lines) != 7:
-    die(f"Script must contain exactly 7 lines, got {len(lines)}")
+if len(lines) < 2:
+    die("Script too short")
 
 HOOK_LINE = lines[0]
-STORY_LINES = lines[1:]  # lines 2–7
+STORY_LINES = lines[1:]
 
 print("=" * 70)
-print("🎬 VISUAL ASSIGNER v4 — SCRIPT INTENT LOCKED")
+print("🎬 VISUAL ASSIGNER — STRICT SEMANTIC MODE")
 print("=" * 70)
+print(f"📝 Script lines: {len(lines)}")
 
 # ==================================================
-# SCRIPT INTENT CLASSIFICATION
-# ==================================================
-
-def classify_line_intent(text: str) -> str:
-    t = text.lower()
-
-    if "?" in t:
-        return "question"
-    if any(w in t for w in ["police", "investigation", "official", "authorities"]):
-        return "investigation"
-    if any(w in t for w in ["found", "discovered", "body", "dead", "death"]):
-        return "discovery"
-    if any(w in t for w in ["child", "boy", "girl"]):
-        return "child"
-    if any(w in t for w in ["car", "road", "drive", "vehicle"]):
-        return "vehicle"
-    if any(w in t for w in ["room", "bedroom", "bathroom", "apartment"]):
-        return "interior"
-    return "generic"
-
-# ==================================================
-# HOOK IMAGE SELECTION (STRICT, NO RANDOM)
+# HOOK IMAGE SELECTION (KEYWORD SCORING)
 # ==================================================
 
 def select_hook_images(text: str, count: int = 2) -> list:
-    words = {w.strip(".,!?\"'").lower() for w in text.split() if len(w) > 3}
+    words = tokenize(text)
 
     scored = []
     for img, keywords in HOOK_IMAGE_CATEGORIES.items():
-        score = len(words.intersection(keywords))
-        if score > 0:
-            scored.append((score, img))
+        score = sum(1 for k in keywords if k in words)
+        scored.append((score, img))
 
     scored.sort(reverse=True)
 
-    selected = [img for _, img in scored[:count]]
+    selected = []
+    for score, img in scored:
+        if score <= 0:
+            break
+        if (HOOK_DIR / img).exists():
+            selected.append(img)
+        if len(selected) == count:
+            break
 
-    # Deterministic fallback (first N declared)
+    # Deterministic fallback (still no randomness)
     if len(selected) < count:
-        for img in HOOK_IMAGE_CATEGORIES.keys():
-            if img not in selected:
+        for img in sorted(HOOK_IMAGE_CATEGORIES.keys()):
+            if img not in selected and (HOOK_DIR / img).exists():
                 selected.append(img)
             if len(selected) == count:
                 break
@@ -111,70 +102,45 @@ def select_hook_images(text: str, count: int = 2) -> list:
 
     return selected
 
-# ==================================================
-# VIDEO POOL PREPARATION
-# ==================================================
-
-unused_videos = set(VIDEO_ASSET_KEYWORDS.keys())
-
-def score_video(text: str, video: str) -> int:
-    text_words = set(text.lower().split())
-    keywords = set(VIDEO_ASSET_KEYWORDS[video])
-    return len(text_words.intersection(keywords))
+hook_images = select_hook_images(HOOK_LINE)
 
 # ==================================================
-# VIDEO SELECTION (NO REUSE, NO RANDOM)
+# VIDEO SELECTION — SEMANTIC + NO REUSE
 # ==================================================
 
-def select_video_for_line(text: str) -> str:
-    global unused_videos
-
-    intent = classify_line_intent(text)
+def select_video_for_line(text: str, used: set) -> str:
+    words = tokenize(text)
 
     scored = []
-    for video in unused_videos:
-        score = score_video(text, video)
-        scored.append((score, video))
+    for video, keywords in VIDEO_ASSET_KEYWORDS.items():
+        if video in used:
+            continue
 
-    scored.sort(reverse=True)
+        score = sum(1 for k in keywords if k in words)
+        if score > 0:
+            scored.append((score, video))
 
-    # Prefer keyword matches
-    if scored and scored[0][0] > 0:
-        chosen = scored[0][1]
-    else:
-        # Intent-based fallback (rotation, not alphabetical)
-        for video in unused_videos:
-            kws = VIDEO_ASSET_KEYWORDS[video]
-            if intent == "discovery" and "body" in kws:
-                chosen = video
-                break
-            if intent == "investigation" and "evidence" in kws:
-                chosen = video
-                break
-            if intent == "interior" and "room" in kws:
-                chosen = video
-                break
-            if intent == "vehicle" and "car" in kws:
-                chosen = video
-                break
-        else:
-            # Final fallback: first unused (only if absolutely needed)
-            chosen = next(iter(unused_videos))
+    # Highest semantic match wins
+    if scored:
+        scored.sort(reverse=True)
+        return scored[0][1]
 
-    unused_videos.remove(chosen)
-    return chosen
+    # Deterministic fallback: first unused, sorted
+    for video in sorted(VIDEO_ASSET_KEYWORDS.keys()):
+        if video not in used:
+            return video
+
+    die("Ran out of video assets — increase asset pool")
 
 # ==================================================
-# BUILD BEATS
+# BUILD BEATS (ORDER ONLY)
 # ==================================================
 
 beats = []
 beat_id = 1
+used_videos = set()
 
-# ---- HOOK ----
 print("\n📍 HOOK VISUALS")
-hook_images = select_hook_images(HOOK_LINE)
-
 for img in hook_images:
     beats.append({
         "beat_id": beat_id,
@@ -183,17 +149,18 @@ for img in hook_images:
         "script_line": 1,
         "role": "hook"
     })
-    print(f"  [{beat_id:02d}] 🖼️  {img}")
+    print(f"  [{beat_id:02d}] 🖼️ {img}")
     beat_id += 1
 
-# ---- STORY ----
 print("\n📍 STORY VISUALS")
 
 for idx, line in enumerate(STORY_LINES, start=2):
-    if not unused_videos:
-        die("Ran out of unique videos — add more assets")
+    video = select_video_for_line(line, used_videos)
 
-    video = select_video_for_line(line)
+    if not (ASSET_DIR / video).exists():
+        die(f"Missing video asset: {video}")
+
+    used_videos.add(video)
 
     beats.append({
         "beat_id": beat_id,
@@ -204,20 +171,20 @@ for idx, line in enumerate(STORY_LINES, start=2):
         "text": line
     })
 
-    print(f"  [{beat_id:02d}] 🎞️  {video}  ← line {idx}")
+    print(f"  [{beat_id:02d}] 🎞️ {video} (line {idx})")
     beat_id += 1
 
 # ==================================================
-# SAVE
+# SAVE OUTPUT
 # ==================================================
 
 OUTPUT_FILE.write_text(json.dumps({"beats": beats}, indent=2))
 
 print("\n" + "=" * 70)
-print("✅ VISUAL ASSIGNMENT COMPLETE (v4)")
+print("✅ VISUAL ASSIGNMENT COMPLETE")
 print("=" * 70)
-print(f"🖼️  Hook images: {len(hook_images)}")
-print(f"🎞️  Story videos: {len(beats) - len(hook_images)}")
+print(f"🖼️ Hook images: {len(hook_images)}")
+print(f"🎞️ Unique videos used: {len(used_videos)}")
 print(f"📦 Total beats: {len(beats)}")
 print(f"💾 Saved to: {OUTPUT_FILE}")
 print("=" * 70)
