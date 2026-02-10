@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – Script Generator (PRODUCTION LOCKED)
+True Crime Shorts – Script Generator (DURATION-LOCKED ONLY)
 
-GOALS:
-- Strong short hooks (not padded)
-- 30–50 seconds total duration
+RULES:
 - No question marks (XTTS safe)
-- Variable CTA + ending (no repetition)
-- Deterministic + CI safe
+- 7 lines exactly
+- Final duration MUST be 30–50 seconds
+- No per-line word limits
+- Strong hooks allowed
 """
 
 import os
@@ -23,18 +23,6 @@ from groq import Groq
 WORDS_PER_SECOND = 3.0
 MIN_SECONDS = 30
 MAX_SECONDS = 50
-
-HOOK_MIN = 8
-HOOK_MAX = 18
-
-BODY_MIN = 10
-BODY_MAX = 22
-
-CTA_MIN = 8
-CTA_MAX = 18
-
-END_MIN = 8
-END_MAX = 18
 
 # ==================================================
 # FILES
@@ -62,10 +50,7 @@ def load_json(p, default):
 def save_json(p, data):
     p.write_text(json.dumps(data, indent=2))
 
-def guard_line(line, lo, hi, label):
-    c = len(line.split())
-    if not (lo <= c <= hi):
-        raise RuntimeError(f"{label} word count invalid ({c}): {line}")
+def ensure_no_question(line, label):
     if "?" in line:
         raise RuntimeError(f"{label} contains question mark (XTTS unsafe): {line}")
 
@@ -73,15 +58,15 @@ def estimate_seconds(lines):
     return sum(len(l.split()) for l in lines) / WORDS_PER_SECOND
 
 # ==================================================
-# CASE LOAD
+# LOAD CASE
 # ==================================================
 
 case = json.loads(CASE_FILE.read_text())
 
 name = case["full_name"]
-summary = case["summary"]
-detail = case["key_detail"]
-official = case["official_story"]
+summary = case["summary"].strip()
+detail = case["key_detail"].strip()
+official = case["official_story"].strip()
 location = case["location"]
 date = case["date"]
 time = case["time"]
@@ -90,10 +75,10 @@ fingerprint = f"{name}|{location}|{date}|{time}".lower()
 used_cases = load_json(USED_CASES, [])
 
 if fingerprint in used_cases:
-    raise RuntimeError("Case already used")
+    raise RuntimeError("❌ Case already used")
 
 # ==================================================
-# HOOKS (SHORT + STRONG)
+# HOOKS (STRONG, SHORT, FACTUAL)
 # ==================================================
 
 HOOKS = [
@@ -105,24 +90,24 @@ HOOKS = [
 ]
 
 hook = random.choice(HOOKS)
-guard_line(hook, HOOK_MIN, HOOK_MAX, "Hook")
+ensure_no_question(hook, "Hook")
 
 # ==================================================
-# BODY (4 LINES, FACTUAL)
+# BODY (FACTUAL, UNRESTRICTED)
 # ==================================================
 
 body = [
     f"{name} was found in {location} on {date} at approximately {time}.",
-    summary.strip(),
-    detail.strip(),
-    official.strip()
+    summary,
+    detail,
+    official
 ]
 
-for i, line in enumerate(body):
-    guard_line(line, BODY_MIN, BODY_MAX, f"Body {i+1}")
+for i, line in enumerate(body, 1):
+    ensure_no_question(line, f"Body line {i}")
 
 # ==================================================
-# CTA (ROTATING, NO BEGGING)
+# CTA (ROTATING, NON-BEGGING)
 # ==================================================
 
 CTA_POOL = [
@@ -137,7 +122,7 @@ cta = next((c for c in CTA_POOL if c not in used_cta), CTA_POOL[0])
 used_cta.append(cta)
 save_json(USED_CTA, used_cta)
 
-guard_line(cta, CTA_MIN, CTA_MAX, "CTA")
+ensure_no_question(cta, "CTA")
 
 # ==================================================
 # ENDING (STATEMENT, NOT QUESTION)
@@ -155,7 +140,7 @@ ending = next((e for e in ENDINGS if e not in used_end), ENDINGS[0])
 used_end.append(ending)
 save_json(USED_END, used_end)
 
-guard_line(ending, END_MIN, END_MAX, "Ending")
+ensure_no_question(ending, "Ending")
 
 # ==================================================
 # FINAL SCRIPT
@@ -164,13 +149,15 @@ guard_line(ending, END_MIN, END_MAX, "Ending")
 script = [hook] + body + [cta, ending]
 
 seconds = estimate_seconds(script)
-if not (MIN_SECONDS <= seconds <= MAX_SECONDS):
-    raise RuntimeError(f"Script duration invalid: ~{seconds:.1f}s")
+if seconds < MIN_SECONDS:
+    raise RuntimeError(f"❌ Script too short: ~{seconds:.1f}s")
+if seconds > MAX_SECONDS:
+    raise RuntimeError(f"❌ Script too long: ~{seconds:.1f}s")
 
 SCRIPT_FILE.write_text("\n".join(script), encoding="utf-8")
 
 used_cases.append(fingerprint)
 save_json(USED_CASES, used_cases)
 
-print("✅ Script generated")
-print(f"⏱️ Duration ~{seconds:.1f}s")
+print("✅ Script generated successfully")
+print(f"⏱️ Estimated duration: ~{seconds:.1f} seconds")
