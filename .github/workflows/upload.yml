@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0
 
       # --------------------------------------------------
-      # FREE DISK (FFMPEG SAFETY)
+      # FREE DISK
       # --------------------------------------------------
       - name: Free disk space
         run: |
@@ -114,7 +114,16 @@ jobs:
           test -f final_audio.wav
 
       # --------------------------------------------------
-      # VISUAL ASSIGNMENT (SCRIPT-LOCKED)
+      # SPEECH MAP (CRITICAL FIX)
+      # --------------------------------------------------
+      - name: Build speech map
+        run: |
+          set -euo pipefail
+          python speech_map_build.py
+          test -f speech_map.json
+
+      # --------------------------------------------------
+      # VISUAL ASSIGNMENT
       # --------------------------------------------------
       - name: Assign visuals
         run: |
@@ -123,7 +132,7 @@ jobs:
           test -f beats.json
 
       # --------------------------------------------------
-      # SUBTITLES (SPEECH-MAPPED)
+      # SUBTITLES
       # --------------------------------------------------
       - name: Build subtitles
         run: |
@@ -132,7 +141,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD (SINGLE ENCODE)
+      # VIDEO BUILD
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -141,7 +150,7 @@ jobs:
           test -f output.mp4
 
       # --------------------------------------------------
-      # SPEECH-LOCK VALIDATION
+      # AV SYNC VALIDATION
       # --------------------------------------------------
       - name: Validate audio/video sync
         run: |
@@ -154,22 +163,19 @@ jobs:
           EOF
           )
 
-          echo "Audio: $AUDIO_DUR | Video: $VIDEO_DUR | Diff: $DIFF"
-
           python - <<EOF
-          d=float("$DIFF")
-          assert d < 0.05, f"AV desync too high: {d}s"
+          assert float("$DIFF") < 0.05
           EOF
 
       # --------------------------------------------------
-      # QUALITY VALIDATION (NO LOSS)
+      # QUALITY VALIDATION
       # --------------------------------------------------
       - name: Validate video quality
         run: |
           set -euo pipefail
           ffprobe -v error \
             -select_streams v:0 \
-            -show_entries stream=codec_name,width,height,avg_frame_rate,pix_fmt \
+            -show_entries stream=codec_name,width,height,pix_fmt \
             -of default=noprint_wrappers=1 output.mp4
 
       # --------------------------------------------------
