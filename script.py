@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – CLEAN SCRIPT GENERATOR (PRODUCTION SAFE)
+True Crime Shorts – HUMANIZED SCRIPT GENERATOR
+Stable, accusatory, XTTS-safe, algorithm-safe.
 
-RULES (ENFORCED):
-- EXACTLY 7 lines output
-- NO question marks anywhere (XTTS-safe)
-- No duration guessing
-- No word-count limits
-- Hook / CTA / Loop rotate every run
-- Audio pacing is source of truth
+OUTPUT RULES:
+- EXACTLY 7 lines
+- No question marks
+- Calm investigative tone
+- Hook, body, CTA, closing loop
 """
 
 import os
@@ -39,7 +38,7 @@ if not CASE_FILE.exists():
 
 CASE = json.loads(CASE_FILE.read_text(encoding="utf-8"))
 
-REQUIRED = [
+REQUIRED_FIELDS = [
     "full_name",
     "location",
     "date",
@@ -49,7 +48,7 @@ REQUIRED = [
     "official_story",
 ]
 
-for f in REQUIRED:
+for f in REQUIRED_FIELDS:
     if not CASE.get(f):
         raise RuntimeError(f"❌ Missing case field: {f}")
 
@@ -69,29 +68,38 @@ def fingerprint(case):
     return f"{case['full_name']}|{case['location']}|{case['date']}|{case['time']}".lower()
 
 # ==================================================
-# HOOK / CTA / LOOP POOLS (NO QUESTIONS)
+# ROTATING HOOKS (ACCUSATORY, HUMAN)
 # ==================================================
 
 HOOKS = [
-    "Police ruled it suicide, but the physical evidence contradicted that conclusion",
-    "The case was closed quickly, yet the scene told a different story",
-    "Authorities reached a conclusion before all the facts were examined",
-    "Investigators followed the report, not the evidence",
-    "The official explanation ignored a critical detail at the scene",
+    "Police reached a conclusion before all the evidence was reviewed.",
+    "The case was closed quickly, but the scene raised concerns.",
+    "Authorities accepted the report without addressing key details.",
+    "Investigators focused on an explanation that left gaps.",
+    "The official conclusion did not fully match the scene.",
+    "This case was resolved on paper, not through evidence.",
 ]
+
+# ==================================================
+# CTA (SUBTLE, NON-BEGGING)
+# ==================================================
 
 CTAS = [
-    "Like and subscribe so this case does not disappear",
-    "Follow for more cases that deserve real scrutiny",
-    "Share this story so the facts are not forgotten",
-    "Subscribe to keep cases like this in the public eye",
+    "Stories like this deserve continued attention.",
+    "Cases like this should not fade from memory.",
+    "Details matter when conclusions are rushed.",
+    "Public attention keeps cases from disappearing.",
 ]
 
-LOOPS = [
-    "The unanswered details remain hidden in plain sight",
-    "The evidence still speaks louder than the report",
-    "Some conclusions leave more questions than answers",
-    "This case remains unsettled beneath the official record",
+# ==================================================
+# CLOSING LINE (LOOP WITHOUT QUESTIONS)
+# ==================================================
+
+CLOSING_LINES = [
+    "The evidence still stands apart from the conclusion.",
+    "Some details remain unresolved beneath the report.",
+    "The record exists, but the truth feels incomplete.",
+    "The official story left important details behind.",
 ]
 
 # ==================================================
@@ -105,21 +113,21 @@ def init_client():
     return Groq(api_key=key)
 
 # ==================================================
-# BODY GENERATION (FACTUAL, NO QUESTIONS)
+# BODY GENERATION
 # ==================================================
 
 def generate_body(client: Groq, case):
     prompt = f"""
-Write EXACTLY 4 factual sentences for a true crime short.
+Write EXACTLY four factual sentences for a true crime short.
 
 Rules:
 - No questions
 - No emotional language
 - No speculation
-- Clear investigative tone
-- Each sentence on its own line
+- Calm investigative tone
+- One sentence per line
 
-Case details:
+Case:
 Name: {case['full_name']}
 Location: {case['location']}
 Date: {case['date']} at {case['time']}
@@ -127,13 +135,13 @@ Summary: {case['summary']}
 Key detail: {case['key_detail']}
 Official story: {case['official_story']}
 
-Return only 4 lines.
+Return only four lines.
 """
 
     res = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.25,
+        temperature=0.3,
         max_completion_tokens=300,
     )
 
@@ -148,7 +156,7 @@ Return only 4 lines.
 
     for l in lines:
         if "?" in l:
-            raise RuntimeError("❌ Question marks are not allowed in body")
+            raise RuntimeError("❌ Question marks are not allowed")
 
     return lines
 
@@ -164,13 +172,13 @@ def main():
     if cid in used_cases:
         raise RuntimeError("❌ Case already used")
 
-    # Rotate hook
-    hook_pool = [h for h in HOOKS if h not in used_hooks] or HOOKS
-    hook = random.choice(hook_pool)
+    # Rotate hook safely
+    available_hooks = [h for h in HOOKS if h not in used_hooks] or HOOKS
+    hook = random.choice(available_hooks)
     used_hooks.append(hook)
 
     cta = random.choice(CTAS)
-    loop = random.choice(LOOPS)
+    closing = random.choice(CLOSING_LINES)
 
     client = init_client()
     body = generate_body(client, CASE)
@@ -179,16 +187,11 @@ def main():
         hook,
         *body,
         cta,
-        loop,
+        closing,
     ]
 
-    # Final validation
     if len(script) != 7:
         raise RuntimeError(f"❌ Script must be exactly 7 lines, got {len(script)}")
-
-    for line in script:
-        if "?" in line:
-            raise RuntimeError("❌ Question marks are not allowed anywhere")
 
     SCRIPT_FILE.write_text("\n".join(script), encoding="utf-8")
 
@@ -197,8 +200,8 @@ def main():
     save_json(USED_HOOKS_FILE, used_hooks)
 
     print("✅ Script generated successfully\n")
-    for i, l in enumerate(script, 1):
-        print(f"{i}. {l}")
+    for i, line in enumerate(script, 1):
+        print(f"{i}. {line}")
 
 if __name__ == "__main__":
     main()
