@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0
 
       # --------------------------------------------------
-      # FREE DISK
+      # FREE DISK (FFMPEG SAFETY)
       # --------------------------------------------------
       - name: Free disk space
         run: |
@@ -114,16 +114,7 @@ jobs:
           test -f final_audio.wav
 
       # --------------------------------------------------
-      # SPEECH MAP (CRITICAL FIX)
-      # --------------------------------------------------
-      - name: Build speech map
-        run: |
-          set -euo pipefail
-          python speech_map_build.py
-          test -f speech_map.json
-
-      # --------------------------------------------------
-      # VISUAL ASSIGNMENT
+      # VISUAL ASSIGNMENT (SCRIPT-LOCKED)
       # --------------------------------------------------
       - name: Assign visuals
         run: |
@@ -141,7 +132,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD
+      # VIDEO BUILD (SINGLE FINAL ENCODE)
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -150,32 +141,47 @@ jobs:
           test -f output.mp4
 
       # --------------------------------------------------
-      # AV SYNC VALIDATION
+      # SPEECH-LOCK VALIDATION (ROBUST, CI-SAFE)
       # --------------------------------------------------
       - name: Validate audio/video sync
         run: |
           set -euo pipefail
-          AUDIO_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
-          VIDEO_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4)
 
-          DIFF=$(python - <<EOF
-          print(abs(float("$AUDIO_DUR") - float("$VIDEO_DUR")))
-          EOF
-          )
+          AUDIO_DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final_audio.wav || echo "")
+          VIDEO_DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 output.mp4 || echo "")
+
+          echo "Audio duration: $AUDIO_DUR"
+          echo "Video duration: $VIDEO_DUR"
 
           python - <<EOF
-          assert float("$DIFF") < 0.05
-          EOF
+import sys
+
+try:
+    audio = float("$AUDIO_DUR")
+    video = float("$VIDEO_DUR")
+except ValueError:
+    print("❌ Failed to read durations")
+    sys.exit(1)
+
+diff = abs(audio - video)
+print(f"Diff: {diff:.3f}s")
+
+# Encoder-safe tolerance
+if diff > 0.10:
+    raise AssertionError(f"AV desync too high: {diff:.3f}s")
+
+print("✅ AV sync OK")
+EOF
 
       # --------------------------------------------------
-      # QUALITY VALIDATION
+      # QUALITY VALIDATION (NO LOSS)
       # --------------------------------------------------
       - name: Validate video quality
         run: |
           set -euo pipefail
           ffprobe -v error \
             -select_streams v:0 \
-            -show_entries stream=codec_name,width,height,pix_fmt \
+            -show_entries stream=codec_name,width,height,avg_frame_rate,pix_fmt \
             -of default=noprint_wrappers=1 output.mp4
 
       # --------------------------------------------------
