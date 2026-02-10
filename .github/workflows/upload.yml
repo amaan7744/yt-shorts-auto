@@ -3,11 +3,14 @@ name: Auto YouTube Shorts – Crime (Production)
 on:
   workflow_dispatch:
   schedule:
-    # 🇺🇸 Morning Upload – 9:00 AM US Eastern
+    # 🇺🇸 Morning – 9:00 AM EST
     - cron: "0 14 * * *"
 
-    # 🇺🇸 Lunch Upload – 1:00 PM US Eastern
+    # 🇺🇸 Afternoon – 1:00 PM EST
     - cron: "0 18 * * *"
+
+    # 🇺🇸 Evening Prime – 7:00 PM EST
+    - cron: "0 0 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -26,7 +29,6 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
 
-      # 🔑 REQUIRED SECRETS
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -81,14 +83,11 @@ jobs:
       # --------------------------------------------------
       - name: Verify GROQ API key
         run: |
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "❌ GROQ_API_KEY missing"
-            exit 1
-          fi
+          test -n "$GROQ_API_KEY" || (echo "❌ GROQ_API_KEY missing" && exit 1)
           echo "✅ GROQ_API_KEY detected"
 
       # --------------------------------------------------
-      # CASE SELECTION (NON-REPEATING)
+      # CASE SELECTION
       # --------------------------------------------------
       - name: Select unused case
         run: |
@@ -97,7 +96,7 @@ jobs:
           test -f case.json
 
       # --------------------------------------------------
-      # SCRIPT (TEXT ONLY)
+      # SCRIPT
       # --------------------------------------------------
       - name: Generate script
         run: |
@@ -106,7 +105,7 @@ jobs:
           test -f script.txt
 
       # --------------------------------------------------
-      # VOICEOVER (AUDIO FIRST)
+      # VOICEOVER (SOURCE OF TRUTH)
       # --------------------------------------------------
       - name: Generate voiceover
         run: |
@@ -115,7 +114,7 @@ jobs:
           test -f final_audio.wav
 
       # --------------------------------------------------
-      # VISUAL ASSIGNMENT (AUDIO-AWARE)
+      # VISUAL ASSIGNMENT (SCRIPT-LOCKED)
       # --------------------------------------------------
       - name: Assign visuals
         run: |
@@ -124,7 +123,7 @@ jobs:
           test -f beats.json
 
       # --------------------------------------------------
-      # SUBTITLES
+      # SUBTITLES (SPEECH-MAPPED)
       # --------------------------------------------------
       - name: Build subtitles
         run: |
@@ -133,7 +132,7 @@ jobs:
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD (SINGLE FINAL ENCODE)
+      # VIDEO BUILD (SINGLE ENCODE)
       # --------------------------------------------------
       - name: Build Shorts video
         run: |
@@ -142,18 +141,39 @@ jobs:
           test -f output.mp4
 
       # --------------------------------------------------
-      # QUALITY VALIDATION (NO TRANSCODE)
+      # SPEECH-LOCK VALIDATION
+      # --------------------------------------------------
+      - name: Validate audio/video sync
+        run: |
+          set -euo pipefail
+          AUDIO_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
+          VIDEO_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4)
+
+          DIFF=$(python - <<EOF
+          print(abs(float("$AUDIO_DUR") - float("$VIDEO_DUR")))
+          EOF
+          )
+
+          echo "Audio: $AUDIO_DUR | Video: $VIDEO_DUR | Diff: $DIFF"
+
+          python - <<EOF
+          d=float("$DIFF")
+          assert d < 0.05, f"AV desync too high: {d}s"
+          EOF
+
+      # --------------------------------------------------
+      # QUALITY VALIDATION (NO LOSS)
       # --------------------------------------------------
       - name: Validate video quality
         run: |
           set -euo pipefail
           ffprobe -v error \
             -select_streams v:0 \
-            -show_entries stream=width,height,pix_fmt \
+            -show_entries stream=codec_name,width,height,avg_frame_rate,pix_fmt \
             -of default=noprint_wrappers=1 output.mp4
 
       # --------------------------------------------------
-      # UPLOAD TO YOUTUBE
+      # UPLOAD
       # --------------------------------------------------
       - name: Upload to YouTube Shorts
         run: |
@@ -161,7 +181,7 @@ jobs:
           python youtube_upload.py
 
       # --------------------------------------------------
-      # PERSIST MEMORY (NON-BLOCKING)
+      # PERSIST MEMORY
       # --------------------------------------------------
       - name: Persist memory
         if: always()
