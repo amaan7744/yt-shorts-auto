@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-PRO SHORTS VIDEO BUILDER — AUDIO IS SOURCE OF TRUTH
+PRO YOUTUBE SHORTS VIDEO BUILDER
+================================
 
-✔ True cover framing
-✔ Ken Burns motion on images
-✔ Visual normalization
+✔ Audio is source of truth
+✔ No timing guesses
 ✔ No frozen frames
-✔ Shorts-optimized color
+✔ True 9:16 enforcement
+✔ Shorts-safe encoding
+✔ Defensive validation
 """
 
 import json
@@ -25,7 +27,7 @@ SUBS_FILE = Path("subs.ass")
 OUTPUT = Path("output.mp4")
 
 # ==================================================
-# SETTINGS
+# VIDEO SETTINGS
 # ==================================================
 
 W, H = 1440, 2560
@@ -44,6 +46,24 @@ def run(cmd):
     print("▶", " ".join(cmd))
     subprocess.run(cmd, check=True)
 
+def probe_resolution(path: Path):
+    r = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            str(path)
+        ],
+        capture_output=True, text=True, check=True
+    )
+    return tuple(map(int, r.stdout.strip().split(",")))
+
+def assert_vertical(path: Path):
+    w, h = probe_resolution(path)
+    if h <= w:
+        die(f"❌ Output not vertical: {w}x{h}")
+
 # ==================================================
 # MAIN
 # ==================================================
@@ -55,14 +75,13 @@ def main():
         die("final_audio.wav missing")
 
     beats = json.loads(BEATS_FILE.read_text())["beats"]
-
     tmp = Path(tempfile.mkdtemp(prefix="build_"))
     clips = []
 
-    print("🎬 Building pro-grade clips")
+    print("🎬 Building normalized clips")
 
     # ----------------------------------------------
-    # BUILD CLIPS (NORMALIZED, ANIMATED)
+    # BUILD CLIPS (SAFE NORMALIZATION)
     # ----------------------------------------------
 
     for i, beat in enumerate(beats):
@@ -73,8 +92,9 @@ def main():
             vf = (
                 f"scale={W}:{H}:force_original_aspect_ratio=increase,"
                 f"crop={W}:{H},"
-                f"zoompan=z='min(1.06,zoom+0.0006)':d=62,"
+                f"zoompan=z='min(1.07,zoom+0.0007)':d=62,"
                 f"fps={FPS},"
+                f"setsar=1,"
                 f"eq=saturation=1.1:contrast=1.05"
             )
 
@@ -94,6 +114,7 @@ def main():
             vf = (
                 f"scale={W}:{H}:force_original_aspect_ratio=increase,"
                 f"crop={W}:{H},"
+                f"setsar=1,"
                 f"eq=saturation=1.05:contrast=1.04"
             )
 
@@ -111,12 +132,11 @@ def main():
         clips.append(out)
 
     # ----------------------------------------------
-    # CONCAT (NO RE-ENCODE)
+    # CONCAT (STREAM COPY ONLY)
     # ----------------------------------------------
 
     concat = tmp / "concat.txt"
     concat.write_text("\n".join(f"file '{c}'" for c in clips))
-
     merged = tmp / "merged.mp4"
 
     run([
@@ -129,26 +149,31 @@ def main():
     ])
 
     # ----------------------------------------------
-    # FINAL MASTER (AUDIO LOCKED)
+    # FINAL MASTER (AUDIO-LOCKED + GEOMETRY FORCED)
     # ----------------------------------------------
 
-    vf = [
+    vf_chain = [
+        f"scale={W}:{H}:force_original_aspect_ratio=increase",
+        f"crop={W}:{H}",
+        "setsar=1",
         "eq=saturation=1.12:contrast=1.08:brightness=0.01"
     ]
 
     if SUBS_FILE.exists():
         sub = str(SUBS_FILE.absolute()).replace("\\", "/").replace(":", "\\:")
-        vf.append(f"ass={sub}")
+        vf_chain.append(f"ass={sub}")
 
     run([
         "ffmpeg", "-y",
         "-stream_loop", "-1",
         "-i", str(merged),
         "-i", str(AUDIO_FILE),
-        "-vf", ",".join(vf),
+        "-vf", ",".join(vf_chain),
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-c:v", "libx264",
+        "-profile:v", "high",
+        "-level", "4.2",
         "-crf", CRF_FINAL,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
@@ -157,8 +182,18 @@ def main():
         str(OUTPUT)
     ])
 
-    print("✅ PRO VIDEO BUILD COMPLETE")
+    # ----------------------------------------------
+    # HARD VALIDATION (NO YT REJECTIONS)
+    # ----------------------------------------------
+
+    assert_vertical(OUTPUT)
+
+    print("✅ BUILD COMPLETE — SHORTS SAFE")
     print(f"📁 Output → {OUTPUT}")
+
+# ==================================================
+# ENTRY
+# ==================================================
 
 if __name__ == "__main__":
     main()
