@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Speech Map Builder
-------------------
-Creates speech_map.json mapping script lines → audio time.
-NO ASR. NO Whisper. Deterministic & CI-safe.
+Speech Map Builder — SOURCE OF TRUTH
+
+Generates speech_map.json from final_audio.wav
+One entry per script line
+STRICT format expected by video_build.py
 """
 
 import json
@@ -12,61 +13,73 @@ from pathlib import Path
 
 SCRIPT_FILE = Path("script.txt")
 AUDIO_FILE = Path("final_audio.wav")
-OUTPUT = Path("speech_map.json")
+OUTPUT_FILE = Path("speech_map.json")
 
-WORDS_PER_SECOND = 3.0
+WORDS_PER_SECOND = 3.0  # conservative, stable
+
+
+def die(msg):
+    raise RuntimeError(msg)
+
 
 def get_audio_duration(path: Path) -> float:
     r = subprocess.run(
         [
-            "ffprobe", "-v", "error",
+            "ffprobe",
+            "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path)
+            str(path),
         ],
         capture_output=True,
         text=True,
-        check=True
+        check=True,
     )
     return float(r.stdout.strip())
 
+
 def main():
     if not SCRIPT_FILE.exists():
-        raise RuntimeError("script.txt missing")
+        die("script.txt missing")
+
     if not AUDIO_FILE.exists():
-        raise RuntimeError("final_audio.wav missing")
+        die("final_audio.wav missing")
 
     lines = [l.strip() for l in SCRIPT_FILE.read_text().splitlines() if l.strip()]
+    if not lines:
+        die("script.txt empty")
+
     audio_duration = get_audio_duration(AUDIO_FILE)
 
-    total_words = sum(len(l.split()) for l in lines)
-    seconds_per_word = audio_duration / total_words
+    # Estimate durations per line by word count
+    word_counts = [len(l.split()) for l in lines]
+    total_words = sum(word_counts)
 
-    speech_map = []
-    current_time = 0.0
+    if total_words == 0:
+        die("No words detected")
 
-    for i, line in enumerate(lines, start=1):
-        words = len(line.split())
-        duration = words * seconds_per_word
+    timings = []
+    cursor = 0.0
 
-        entry = {
-            "line": i,
-            "text": line,
-            "start": round(current_time, 3),
-            "end": round(current_time + duration, 3),
-            "duration": round(duration, 3)
-        }
+    for idx, wc in enumerate(word_counts, start=1):
+        dur = (wc / total_words) * audio_duration
+        start = cursor
+        end = start + dur
 
-        speech_map.append(entry)
-        current_time += duration
+        timings.append({
+            "line": idx,
+            "start": round(start, 3),
+            "end": round(end, 3),
+        })
 
-    OUTPUT.write_text(json.dumps({
-        "audio_duration": round(audio_duration, 3),
-        "lines": speech_map
-    }, indent=2))
+        cursor = end
 
-    print("✅ speech_map.json generated")
-    print(f"⏱️ Audio duration: {audio_duration:.2f}s")
+    # Hard lock last end to audio duration
+    timings[-1]["end"] = round(audio_duration, 3)
+
+    OUTPUT_FILE.write_text(json.dumps(timings, indent=2))
+    print(f"✅ speech_map.json written ({len(timings)} lines)")
+
 
 if __name__ == "__main__":
     main()
