@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Shorts-Optimized XTTS Narration Generator
-Fast-paced, retention-focused, brand-consistent.
+Crime Whisper Mode + Adaptive Emotion (SAFE)
+
+- Single cloned voice only
+- No robotic pacing
+- No forced pauses
+- Emotion via delivery, not silence
 """
 
 import os
@@ -26,19 +31,23 @@ from pydub.effects import compress_dynamic_range
 # ==================================================
 
 VOICES_DIR = os.path.abspath("voices")
+
 DEFAULT_MODEL = os.environ.get(
     "TTS_MODEL_NAME",
     "tts_models/multilingual/multi-dataset/xtts_v2"
 )
 
-PLAYBACK_SPEED = 1.08        # Shorts pacing
-MAX_WORDS_PER_CHUNK = 22     # Rhythm control
-CROSSFADE_MS = 60            # No dead air
+PLAYBACK_SPEED = 1.06          # Natural, calm
+MAX_WORDS_NEUTRAL = 22
+MAX_WORDS_WHISPER = 16
+MAX_WORDS_FIRM = 20
+
+CROSSFADE_MS = 60              # Natural flow
 OUTPUT_RATE = 44100
 
 
 # ==================================================
-# UTILITIES
+# UTILS
 # ==================================================
 
 def log(msg: str) -> None:
@@ -49,22 +58,19 @@ def detect_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def read_script(path: Optional[str]) -> str:
+def read_script(path: Optional[str]) -> List[str]:
     script_path = path or "script.txt"
     if not os.path.isfile(script_path):
         log(f"ERROR: Script not found: {script_path}")
-        sys.exit(0)
+        sys.exit(1)
 
     with open(script_path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+        lines = [l.strip() for l in f.readlines() if l.strip()]
+
+    return lines
 
 
 def pick_voice() -> str:
-    if not os.path.isdir(VOICES_DIR):
-        os.makedirs(VOICES_DIR, exist_ok=True)
-        log(f"ERROR: Place reference voice files in {VOICES_DIR}")
-        sys.exit(0)
-
     voices = sorted([
         os.path.join(VOICES_DIR, f)
         for f in os.listdir(VOICES_DIR)
@@ -72,42 +78,71 @@ def pick_voice() -> str:
     ])
 
     if not voices:
-        log(f"ERROR: No voice files found in {VOICES_DIR}")
-        sys.exit(0)
+        log(f"ERROR: No cloned voices found in {VOICES_DIR}")
+        sys.exit(1)
 
-    choice = os.environ.get("TTS_VOICE") or voices[0]
-    log(f"Using reference voice: {os.path.basename(choice)}")
-    return os.path.abspath(choice)
+    voice = os.environ.get("TTS_VOICE") or voices[0]
+    log(f"Using cloned voice: {os.path.basename(voice)}")
+    return os.path.abspath(voice)
 
+
+# ==================================================
+# AUTO TAGGING
+# ==================================================
+
+def tag_line(line: str, index: int, total: int) -> str:
+    """
+    Auto-tag script lines:
+    - First line → WHISPER
+    - Evidence / contradiction → WHISPER
+    - Last line → FIRM
+    - Others → NEUTRAL
+    """
+    lower = line.lower()
+
+    if index == 0:
+        return "WHISPER"
+
+    if index == total - 1:
+        return "FIRM"
+
+    if any(k in lower for k in [
+        "but", "however", "did not", "no signs", "locked", "missing",
+        "never found", "didn't match", "inconsistent"
+    ]):
+        return "WHISPER"
+
+    return "NEUTRAL"
+
+
+# ==================================================
+# TEXT SPLITTING (PACE CONTROL)
+# ==================================================
 
 def split_text(text: str, max_words: int) -> List[str]:
-    text = re.sub(r"\s+", " ", text.strip())
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-
+    words = text.split()
     chunks = []
-    buffer = []
-    count = 0
+    buf = []
 
-    for s in sentences:
-        words = s.split()
-        if count + len(words) <= max_words:
-            buffer.append(s)
-            count += len(words)
-        else:
-            if buffer:
-                chunks.append(" ".join(buffer))
-            buffer = [s]
-            count = len(words)
+    for w in words:
+        buf.append(w)
+        if len(buf) >= max_words:
+            chunks.append(" ".join(buf))
+            buf = []
 
-    if buffer:
-        chunks.append(" ".join(buffer))
+    if buf:
+        chunks.append(" ".join(buf))
 
     return chunks
 
 
+# ==================================================
+# AUDIO POST
+# ==================================================
+
 def post_process(audio: AudioSegment) -> AudioSegment:
     audio = effects.normalize(audio)
-    audio = compress_dynamic_range(audio, threshold=-20.0, ratio=3.0)
+    audio = compress_dynamic_range(audio, threshold=-22.0, ratio=2.5)
     audio = effects.speedup(audio, playback_speed=PLAYBACK_SPEED)
     return audio.set_frame_rate(OUTPUT_RATE).set_channels(1)
 
@@ -120,51 +155,57 @@ def synthesize(
     model_name: str,
     device: str,
     voice: str,
-    text: str,
+    script_lines: List[str],
     output_path: str
 ) -> None:
 
-    log(f"Loading XTTS model on {device}...")
+    log(f"Loading XTTS on {device}")
     tts = TTS(model_name=model_name, progress_bar=False)
     tts.to(device)
-
-    chunks = split_text(text, MAX_WORDS_PER_CHUNK)
-    log(f"Text split into {len(chunks)} chunks")
 
     audio_parts: List[AudioSegment] = []
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        for i, chunk in enumerate(chunks, start=1):
-            tmp_wav = os.path.join(tmpdir, f"chunk_{i}.wav")
+        for idx, line in enumerate(script_lines):
+            tag = tag_line(line, idx, len(script_lines))
 
-            # Hook emphasis (subtle, safe)
-            if i == 1:
-                chunk = chunk.upper()
+            if tag == "WHISPER":
+                max_words = MAX_WORDS_WHISPER
+                line = line.lower()
+            elif tag == "FIRM":
+                max_words = MAX_WORDS_FIRM
+                line = line.upper()
+            else:
+                max_words = MAX_WORDS_NEUTRAL
 
-            log(f"Synthesizing chunk {i}/{len(chunks)}")
-            tts.tts_to_file(
-                text=chunk,
-                file_path=tmp_wav,
-                speaker_wav=voice,
-                language="en",
-                split_sentences=False
-            )
+            chunks = split_text(line, max_words)
 
-            if os.path.exists(tmp_wav):
+            for i, chunk in enumerate(chunks):
+                tmp_wav = os.path.join(tmpdir, f"seg_{idx}_{i}.wav")
+                log(f"{tag}: {chunk}")
+
+                tts.tts_to_file(
+                    text=chunk,
+                    file_path=tmp_wav,
+                    speaker_wav=voice,
+                    language="en",
+                    split_sentences=False
+                )
+
                 audio_parts.append(AudioSegment.from_file(tmp_wav))
 
     if not audio_parts:
-        log("ERROR: No audio generated")
-        sys.exit(0)
+        log("ERROR: No audio produced")
+        sys.exit(1)
 
-    final_audio = audio_parts[0]
+    final = audio_parts[0]
     for part in audio_parts[1:]:
-        final_audio = final_audio.append(part, crossfade=CROSSFADE_MS)
+        final = final.append(part, crossfade=CROSSFADE_MS)
 
-    final_audio = post_process(final_audio)
-    final_audio.export(output_path, format="wav")
+    final = post_process(final)
+    final.export(output_path, format="wav")
 
-    log(f"Success! Narration saved to {output_path}")
+    log(f"✅ Narration complete: {output_path}")
 
 
 # ==================================================
@@ -174,18 +215,18 @@ def synthesize(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--script", default="script.txt")
-    parser.add_argument("--output", default="narration.wav")
+    parser.add_argument("--output", default="final_audio.wav")
     args = parser.parse_args()
 
     device = detect_device()
-    script = read_script(args.script)
     voice = pick_voice()
+    script_lines = read_script(args.script)
 
     synthesize(
         model_name=DEFAULT_MODEL,
         device=device,
         voice=voice,
-        text=script,
+        script_lines=script_lines,
         output_path=args.output
     )
 
