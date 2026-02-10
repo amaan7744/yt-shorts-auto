@@ -5,8 +5,10 @@ on:
   schedule:
     # 🇺🇸 Morning – 9:00 AM EST
     - cron: "0 14 * * *"
+
     # 🇺🇸 Afternoon – 1:00 PM EST
     - cron: "0 18 * * *"
+
     # 🇺🇸 Evening – 7:00 PM EST
     - cron: "0 0 * * *"
 
@@ -16,6 +18,7 @@ concurrency:
 
 jobs:
   build-upload:
+    name: Build & Upload Crime Short
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -36,10 +39,13 @@ jobs:
       # --------------------------------------------------
       # CHECKOUT
       # --------------------------------------------------
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # --------------------------------------------------
-      # FREE DISK
+      # FREE DISK (FFMPEG SAFETY)
       # --------------------------------------------------
       - name: Free disk space
         run: |
@@ -62,6 +68,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg libass-dev
+          ffmpeg -version
 
       # --------------------------------------------------
       # PYTHON DEPENDENCIES
@@ -76,19 +83,23 @@ jobs:
       # --------------------------------------------------
       - name: Verify GROQ API key
         run: |
-          test -n "$GROQ_API_KEY" || exit 1
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY missing"
+            exit 1
+          fi
+          echo "✅ GROQ_API_KEY detected"
 
       # --------------------------------------------------
       # CASE SELECTION
       # --------------------------------------------------
-      - name: Select case
+      - name: Select unused case
         run: |
           set -e
           python case_search.py
           test -f case.json
 
       # --------------------------------------------------
-      # SCRIPT
+      # SCRIPT GENERATION
       # --------------------------------------------------
       - name: Generate script
         run: |
@@ -126,14 +137,14 @@ jobs:
       # --------------------------------------------------
       # VIDEO BUILD
       # --------------------------------------------------
-      - name: Build video
+      - name: Build Shorts video
         run: |
           set -e
           python video_build.py
           test -f output.mp4
 
       # --------------------------------------------------
-      # AUDIO / VIDEO SYNC CHECK (SAFE)
+      # AUDIO / VIDEO SYNC CHECK (YAML SAFE)
       # --------------------------------------------------
       - name: Validate AV sync
         run: |
@@ -142,40 +153,38 @@ jobs:
           AUDIO=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final_audio.wav)
           VIDEO=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 output.mp4)
 
-          python - <<EOF
-a=float("$AUDIO")
-v=float("$VIDEO")
-diff=abs(a-v)
-print(f"Audio={a:.2f}s Video={v:.2f}s Diff={diff:.3f}s")
-assert diff < 0.15
-EOF
+          echo "Audio duration: $AUDIO"
+          echo "Video duration: $VIDEO"
+
+          python -c "import sys; a=float('$AUDIO'); v=float('$VIDEO'); diff=abs(a-v); print(f'Diff={diff:.3f}s'); sys.exit(0 if diff < 0.15 else 1)"
 
       # --------------------------------------------------
-      # QUALITY CHECK
+      # QUALITY VALIDATION (NO TRANSCODE)
       # --------------------------------------------------
       - name: Validate video quality
         run: |
+          set -e
           ffprobe -v error \
             -select_streams v:0 \
             -show_entries stream=codec_name,width,height,pix_fmt \
             -of default=noprint_wrappers=1 output.mp4
 
       # --------------------------------------------------
-      # UPLOAD
+      # UPLOAD TO YOUTUBE
       # --------------------------------------------------
-      - name: Upload to YouTube
+      - name: Upload to YouTube Shorts
         run: |
           set -e
           python youtube_upload.py
 
       # --------------------------------------------------
-      # SAVE MEMORY
+      # PERSIST MEMORY
       # --------------------------------------------------
       - name: Persist memory
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add memory || true
-          git commit -m "update memory" || true
+          git add memory used_cases.json upload_meta.jsonl || true
+          git commit -m "chore: update memory [skip ci]" || true
           git push || true
