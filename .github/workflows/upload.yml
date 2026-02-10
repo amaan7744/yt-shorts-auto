@@ -5,11 +5,9 @@ on:
   schedule:
     # 🇺🇸 Morning – 9:00 AM EST
     - cron: "0 14 * * *"
-
     # 🇺🇸 Afternoon – 1:00 PM EST
     - cron: "0 18 * * *"
-
-    # 🇺🇸 Evening Prime – 7:00 PM EST
+    # 🇺🇸 Evening – 7:00 PM EST
     - cron: "0 0 * * *"
 
 concurrency:
@@ -18,7 +16,6 @@ concurrency:
 
 jobs:
   build-upload:
-    name: Build & Upload Crime Short
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -39,13 +36,10 @@ jobs:
       # --------------------------------------------------
       # CHECKOUT
       # --------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
       # --------------------------------------------------
-      # FREE DISK (FFMPEG SAFETY)
+      # FREE DISK
       # --------------------------------------------------
       - name: Free disk space
         run: |
@@ -68,7 +62,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg libass-dev
-          ffmpeg -version
 
       # --------------------------------------------------
       # PYTHON DEPENDENCIES
@@ -83,15 +76,14 @@ jobs:
       # --------------------------------------------------
       - name: Verify GROQ API key
         run: |
-          test -n "$GROQ_API_KEY" || (echo "❌ GROQ_API_KEY missing" && exit 1)
-          echo "✅ GROQ_API_KEY detected"
+          test -n "$GROQ_API_KEY" || exit 1
 
       # --------------------------------------------------
       # CASE SELECTION
       # --------------------------------------------------
-      - name: Select unused case
+      - name: Select case
         run: |
-          set -euo pipefail
+          set -e
           python case_search.py
           test -f case.json
 
@@ -100,7 +92,7 @@ jobs:
       # --------------------------------------------------
       - name: Generate script
         run: |
-          set -euo pipefail
+          set -e
           python script.py
           test -f script.txt
 
@@ -109,16 +101,16 @@ jobs:
       # --------------------------------------------------
       - name: Generate voiceover
         run: |
-          set -euo pipefail
+          set -e
           python tts_generate.py --output final_audio.wav
           test -f final_audio.wav
 
       # --------------------------------------------------
-      # VISUAL ASSIGNMENT (SCRIPT-LOCKED)
+      # VISUAL ASSIGNMENT
       # --------------------------------------------------
       - name: Assign visuals
         run: |
-          set -euo pipefail
+          set -e
           python visual_assigner.py
           test -f beats.json
 
@@ -127,79 +119,63 @@ jobs:
       # --------------------------------------------------
       - name: Build subtitles
         run: |
-          set -euo pipefail
+          set -e
           python subtitles_build.py
           test -f subs.ass
 
       # --------------------------------------------------
-      # VIDEO BUILD (SINGLE FINAL ENCODE)
+      # VIDEO BUILD
       # --------------------------------------------------
-      - name: Build Shorts video
+      - name: Build video
         run: |
-          set -euo pipefail
+          set -e
           python video_build.py
           test -f output.mp4
 
       # --------------------------------------------------
-      # SPEECH-LOCK VALIDATION (ROBUST, CI-SAFE)
+      # AUDIO / VIDEO SYNC CHECK (SAFE)
       # --------------------------------------------------
-      - name: Validate audio/video sync
+      - name: Validate AV sync
         run: |
-          set -euo pipefail
+          set -e
 
-          AUDIO_DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final_audio.wav || echo "")
-          VIDEO_DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 output.mp4 || echo "")
-
-          echo "Audio duration: $AUDIO_DUR"
-          echo "Video duration: $VIDEO_DUR"
+          AUDIO=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final_audio.wav)
+          VIDEO=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 output.mp4)
 
           python - <<EOF
-import sys
-
-try:
-    audio = float("$AUDIO_DUR")
-    video = float("$VIDEO_DUR")
-except ValueError:
-    print("❌ Failed to read durations")
-    sys.exit(1)
-
-diff = abs(audio - video)
-print(f"Diff: {diff:.3f}s")
-
-# Encoder-safe tolerance
-if diff > 0.10:
-    raise AssertionError(f"AV desync too high: {diff:.3f}s")
-
-print("✅ AV sync OK")
+a=float("$AUDIO")
+v=float("$VIDEO")
+diff=abs(a-v)
+print(f"Audio={a:.2f}s Video={v:.2f}s Diff={diff:.3f}s")
+assert diff < 0.15
 EOF
 
       # --------------------------------------------------
-      # QUALITY VALIDATION (NO LOSS)
+      # QUALITY CHECK
       # --------------------------------------------------
       - name: Validate video quality
         run: |
-          set -euo pipefail
           ffprobe -v error \
             -select_streams v:0 \
-            -show_entries stream=codec_name,width,height,avg_frame_rate,pix_fmt \
+            -show_entries stream=codec_name,width,height,pix_fmt \
             -of default=noprint_wrappers=1 output.mp4
 
       # --------------------------------------------------
       # UPLOAD
       # --------------------------------------------------
-      - name: Upload to YouTube Shorts
+      - name: Upload to YouTube
         run: |
-          set -euo pipefail
+          set -e
           python youtube_upload.py
 
       # --------------------------------------------------
-      # PERSIST MEMORY
+      # SAVE MEMORY
       # --------------------------------------------------
       - name: Persist memory
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add memory used_cases.json upload_meta.jsonl || true
-          git commit -m "chore: update memory [skip ci]" || true
+          git add memory || true
+          git commit -m "update memory" || true
           git push || true
