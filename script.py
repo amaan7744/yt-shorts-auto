@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
-True Crime Shorts – Script Generator (RETENTION ENGINE v4)
+True Crime Shorts – Script Generator (LOCKED v1.0)
 
-FEATURES:
-- Rotating HOOK styles (no repetition)
-- Rotating CTA intent (pressure / warning / accountability / curiosity)
-- Rotating LOOP question types (replay triggers)
-- Case-aware selection
-- Speech-locked (30–50s)
-- Pipeline safe (visuals, subs, beats)
+HARD CONTRACT (DO NOT BREAK):
+- EXACTLY 7 lines
+- Lines 1–6: 14–18 words each
+- Line 7 (loop): 8–14 words, MUST end with '?'
+- Estimated duration: ~30–45 seconds
+- ZERO tolerance for deviation (fails fast)
+
+STRUCTURE:
+1. Hook (contradiction / authority conflict)
+2. Facts (who, where, when)
+3. What happened
+4. Suspicious detail
+5. Official conclusion
+6. CTA (name-based, non-question)
+7. Loop question
 """
 
 import os
@@ -17,30 +25,30 @@ from pathlib import Path
 from groq import Groq
 
 # ==================================================
-# CONSTANTS
+# CONFIG
 # ==================================================
 
 WORDS_PER_SECOND = 3
-MIN_SECONDS = 30
-MAX_SECONDS = 50
 
-# ==================================================
-# FILES
-# ==================================================
+MIN_WORDS = 14
+MAX_WORDS = 18
+
+LOOP_MIN = 8
+LOOP_MAX = 14
 
 SCRIPT_FILE = Path("script.txt")
+CASE_FILE = Path("case.json")
+
 MEMORY_DIR = Path("memory")
+USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
+USED_HOOKS_FILE = MEMORY_DIR / "used_hooks.json"
+USED_CTAS_FILE = MEMORY_DIR / "used_ctas.json"
+USED_LOOPS_FILE = MEMORY_DIR / "used_loops.json"
+
 MEMORY_DIR.mkdir(exist_ok=True)
 
-USED_CASES_FILE = MEMORY_DIR / "used_cases.json"
-USED_HOOK_STYLE_FILE = MEMORY_DIR / "used_hook_styles.json"
-USED_CTA_STYLE_FILE = MEMORY_DIR / "used_cta_styles.json"
-USED_LOOP_STYLE_FILE = MEMORY_DIR / "used_loop_styles.json"
-
-CASE = json.loads(Path("case.json").read_text(encoding="utf-8"))
-
 # ==================================================
-# MEMORY HELPERS
+# HELPERS
 # ==================================================
 
 def load_json(path, default):
@@ -51,208 +59,172 @@ def load_json(path, default):
 def save_json(path, data):
     path.write_text(json.dumps(data, indent=2))
 
-def fingerprint(c):
-    return f"{c['full_name']}|{c['location']}|{c['date']}|{c['time']}".lower()
+def wc(line):
+    return len(line.split())
+
+def guard_line(line, min_w, max_w, label):
+    count = wc(line)
+    if count < min_w or count > max_w:
+        raise RuntimeError(f"{label} word count invalid ({count}): {line}")
 
 # ==================================================
-# CASE TYPE DETECTION
+# LOAD CASE
 # ==================================================
 
-def detect_case_type(c):
-    t = f"{c['summary']} {c['key_detail']} {c['official_story']}".lower()
-    if "suicide" in t:
-        return "suspicious_suicide"
-    if "murder" in t or "killed" in t:
-        return "murder"
-    if "missing" in t:
-        return "missing_found"
-    if "accident" in t:
-        return "suspicious_accident"
-    if "cold case" in t or "years later" in t:
-        return "cold_case"
-    return "mystery"
+if not CASE_FILE.exists():
+    raise RuntimeError("❌ case.json missing")
 
-# ==================================================
-# HOOK SYSTEM (STYLE ROTATION)
-# ==================================================
+case = json.loads(CASE_FILE.read_text(encoding="utf-8"))
 
-HOOK_STYLES = {
-    "contradiction": [
-        "Police reached a conclusion, but the evidence pointed elsewhere.",
-        "The report said one thing. The scene said another.",
-    ],
-    "impossibility": [
-        "The scene shouldn’t have been possible.",
-        "What investigators found shouldn’t have happened.",
-    ],
-    "timeline": [
-        "The timeline only works if one detail is ignored.",
-        "The clock didn’t agree with the official story.",
-    ],
-    "authority_conflict": [
-        "Authorities closed the case before all questions were answered.",
-        "Investigators ruled quickly, but the facts didn’t cooperate.",
-    ],
-    "evidence_focus": [
-        "One piece of evidence never fit the explanation.",
-        "The most important detail was treated as irrelevant.",
-    ],
-}
+required = ["full_name", "location", "date", "time", "summary", "key_detail", "official_story"]
+for f in required:
+    if not case.get(f):
+        raise RuntimeError(f"❌ Missing case field: {f}")
 
-def select_rotating_style(style_dict, memory_file):
-    used = load_json(memory_file, [])
-    styles = list(style_dict.keys())
+case_id = f"{case['full_name']}|{case['location']}|{case['date']}|{case['time']}".lower()
+used_cases = load_json(USED_CASES_FILE, [])
 
-    for s in styles:
-        if not used or s != used[-1]:
-            used.append(s)
-            save_json(memory_file, used)
-            return s
-
-    used.append(styles[0])
-    save_json(memory_file, used)
-    return styles[0]
-
-def select_hook(case_type):
-    style = select_rotating_style(HOOK_STYLES, USED_HOOK_STYLE_FILE)
-    return HOOK_STYLES[style][0]
-
-# ==================================================
-# CTA SYSTEM (INTENT ROTATION)
-# ==================================================
-
-CTA_STYLES = {
-    "pressure": [
-        "If no one keeps asking, {name}'s story ends here.",
-    ],
-    "warning": [
-        "Cases like {name}'s disappear when attention fades.",
-    ],
-    "accountability": [
-        "Someone is responsible for what happened to {name}.",
-    ],
-    "curiosity": [
-        "There’s more to {name}'s case than the report admits.",
-    ],
-}
-
-def select_cta(name):
-    style = select_rotating_style(CTA_STYLES, USED_CTA_STYLE_FILE)
-    return CTA_STYLES[style][0].format(name=name)
-
-# ==================================================
-# LOOP SYSTEM (REPLAY TRIGGERS)
-# ==================================================
-
-LOOP_STYLES = {
-    "contradiction": [
-        "So how does the official story explain that detail?",
-    ],
-    "timeline": [
-        "Where does the timeline stop making sense?",
-    ],
-    "motive": [
-        "Who benefited from what happened next?",
-    ],
-    "evidence": [
-        "Which piece of evidence would you want explained?",
-    ],
-}
-
-def select_loop():
-    style = select_rotating_style(LOOP_STYLES, USED_LOOP_STYLE_FILE)
-    return LOOP_STYLES[style][0]
+if case_id in used_cases:
+    raise RuntimeError("❌ Case already used")
 
 # ==================================================
 # AI CLIENT
 # ==================================================
 
-def client():
-    key = os.getenv("GROQ_API_KEY")
-    if not key:
-        raise RuntimeError("❌ GROQ_API_KEY missing")
-    return Groq(api_key=key)
+api_key = os.getenv("GROQ_API_KEY")
+if not api_key:
+    raise RuntimeError("❌ GROQ_API_KEY missing")
+
+client = Groq(api_key=api_key)
 
 # ==================================================
-# BODY GENERATION (FACTUAL, TENSION LADDER)
+# HOOKS / CTA / LOOP POOLS (ROTATED)
 # ==================================================
 
-def generate_body(c, case):
-    prompt = f"""
-Write 4–5 factual lines for a true crime short.
+HOOKS = [
+    "Police ruled it suicide, but the physical evidence immediately contradicted that conclusion.",
+    "Authorities closed the case quickly, yet multiple details refused to align logically.",
+    "Investigators reached a conclusion that the scene itself did not support.",
+    "The official report sounded simple, but the evidence told a different story.",
+]
 
-RULES:
-- No questions
-- One sentence per line
-- Investigative tone
-- Focus on facts and contradictions
+CTAS = [
+    "Like and subscribe so {name}'s case does not disappear into official silence.",
+    "Share this story to keep attention on what really happened to {name}.",
+    "Follow for more cases where the official explanation leaves unanswered questions.",
+]
 
-INCLUDE:
-- Identity + time/place
-- What was found
-- One inconsistency
-- Official conclusion
+LOOPS = [
+    "So what detail do you think investigators chose to ignore here?",
+    "Does the official explanation actually explain what happened to {name}?",
+    "Which part of this case feels the most intentionally overlooked?",
+]
 
-CASE:
+def rotate(pool, used_path):
+    used = load_json(used_path, [])
+    available = [x for x in pool if x not in used] or pool
+    choice = available[0]
+    used.append(choice)
+    save_json(used_path, used)
+    return choice
+
+# ==================================================
+# GENERATE BODY (4 LINES, HARD GUARDED)
+# ==================================================
+
+BODY_PROMPT = f"""
+Write EXACTLY 4 factual investigative lines for a true crime short.
+
+STRICT RULES:
+- Each line MUST be between {MIN_WORDS} and {MAX_WORDS} words
+- NO questions
+- NO emotional language
+- NO filler
+- Each line ONE sentence
+
+STRUCTURE:
+1. Establish who, where, when
+2. Describe what was found or discovered
+3. Present the single most suspicious detail
+4. State the official conclusion by authorities
+
+CASE DATA:
 Name: {case['full_name']}
 Location: {case['location']}
 Date: {case['date']} at {case['time']}
 Summary: {case['summary']}
-Key detail: {case['key_detail']}
-Official story: {case['official_story']}
+Key Detail: {case['key_detail']}
+Official Story: {case['official_story']}
 
-Return only the lines.
+Return ONLY the 4 lines separated by newlines.
 """
 
-    r = c.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.35,
-        max_completion_tokens=300,
-    )
+resp = client.chat.completions.create(
+    model="llama-3.3-70b-versatile",
+    messages=[{"role": "user", "content": BODY_PROMPT}],
+    temperature=0.25,
+    max_completion_tokens=400,
+)
 
-    lines = [l.strip() for l in r.choices[0].message.content.split("\n") if l.strip()]
-    return lines[:5]
+body = [l.strip() for l in resp.choices[0].message.content.split("\n") if l.strip()]
 
-# ==================================================
-# VALIDATION
-# ==================================================
+if len(body) != 4:
+    raise RuntimeError(f"❌ Body must be exactly 4 lines, got {len(body)}")
 
-def validate(lines):
-    seconds = sum(len(l.split()) for l in lines) / WORDS_PER_SECOND
-    if not (MIN_SECONDS <= seconds <= MAX_SECONDS):
-        raise RuntimeError(f"❌ Script duration {seconds:.1f}s out of bounds")
-    if not lines[-1].endswith("?"):
-        raise RuntimeError("❌ Final line must be a question")
+for i, line in enumerate(body, 1):
+    guard_line(line, MIN_WORDS, MAX_WORDS, f"Body line {i}")
+    if "?" in line:
+        raise RuntimeError(f"❌ Questions not allowed in body: {line}")
 
 # ==================================================
-# MAIN
+# ASSEMBLE SCRIPT
 # ==================================================
 
-def main():
-    used_cases = load_json(USED_CASES_FILE, [])
-    cid = fingerprint(CASE)
-    if cid in used_cases:
-        raise RuntimeError("❌ Case already used")
+hook = rotate(HOOKS, USED_HOOKS_FILE)
+guard_line(hook, MIN_WORDS, MAX_WORDS, "Hook")
 
-    c = client()
-    case_type = detect_case_type(CASE)
+cta = rotate(CTAS, USED_CTAS_FILE).format(name=case["full_name"])
+guard_line(cta, MIN_WORDS, MAX_WORDS, "CTA")
 
-    hook = select_hook(case_type)
-    body = generate_body(c, CASE)
-    cta = select_cta(CASE["full_name"])
-    loop = select_loop()
+loop = rotate(LOOPS, USED_LOOPS_FILE).format(name=case["full_name"])
+guard_line(loop, LOOP_MIN, LOOP_MAX, "Loop")
 
-    script = [hook] + body + [cta, loop]
-    validate(script)
+if not loop.endswith("?"):
+    raise RuntimeError("❌ Loop must end with a question mark")
 
-    SCRIPT_FILE.write_text("\n".join(script), encoding="utf-8")
-    used_cases.append(cid)
-    save_json(USED_CASES_FILE, used_cases)
+script = [
+    hook,
+    body[0],
+    body[1],
+    body[2],
+    body[3],
+    cta,
+    loop
+]
 
-    print("\n✅ SCRIPT GENERATED (ROTATION ACTIVE)\n")
-    for i, line in enumerate(script, 1):
-        print(f"{i}. {line}")
+if len(script) != 7:
+    raise RuntimeError("❌ Script must contain exactly 7 lines")
 
-if __name__ == "__main__":
-    main()
+# ==================================================
+# FINAL VALIDATION
+# ==================================================
+
+total_words = sum(wc(l) for l in script)
+duration = total_words / WORDS_PER_SECOND
+
+if duration < 30 or duration > 45:
+    raise RuntimeError(f"❌ Script duration invalid: ~{duration:.1f}s")
+
+# ==================================================
+# WRITE OUTPUT
+# ==================================================
+
+SCRIPT_FILE.write_text("\n".join(script), encoding="utf-8")
+used_cases.append(case_id)
+save_json(USED_CASES_FILE, used_cases)
+
+print("\n✅ SCRIPT GENERATED (LOCKED)")
+print(f"🕒 Estimated duration: ~{duration:.1f}s\n")
+
+for i, line in enumerate(script, 1):
+    print(f"{i}. ({wc(line)}w) {line}")
