@@ -3,9 +3,14 @@ name: Auto YouTube Shorts – Crime (Production)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 14 * * *"
-    - cron: "0 18 * * *"
-    - cron: "0 0 * * *"
+    # 🇺🇸 Late Morning Peak — 11 AM EST / 16:00 UTC
+    - cron: "0 16 * * *"
+
+    # 🇺🇸 Lunch Scroll Peak — 2 PM EST / 19:00 UTC
+    - cron: "0 19 * * *"
+
+    # 🇺🇸 Evening Binge Peak — 8 PM EST / 01:00 UTC
+    - cron: "0 1 * * *"
 
 concurrency:
   group: yt-shorts-upload
@@ -22,7 +27,6 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
-
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -30,121 +34,123 @@ jobs:
       YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
 
     steps:
-      # -------------------------
-      # CHECKOUT
-      # -------------------------
-      - uses: actions/checkout@v4
 
-      # -------------------------
+      # -----------------------------------
+      # CHECKOUT
+      # -----------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------
       # FREE DISK
-      # -------------------------
+      # -----------------------------------
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
           sudo rm -rf /usr/share/swift || true
           df -h
 
-      # -------------------------
+      # -----------------------------------
       # PYTHON
-      # -------------------------
-      - uses: actions/setup-python@v5
+      # -----------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # -------------------------
-      # DEPENDENCIES
-      # -------------------------
+      # -----------------------------------
+      # SYSTEM DEPENDENCIES
+      # -----------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg libass-dev
 
+      # -----------------------------------
+      # PYTHON DEPENDENCIES
+      # -----------------------------------
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # -------------------------
+      # -----------------------------------
       # VERIFY GROQ
-      # -------------------------
+      # -----------------------------------
       - name: Verify GROQ API key
         run: |
           if [ -z "$GROQ_API_KEY" ]; then
-            echo "GROQ_API_KEY missing"
+            echo "❌ GROQ_API_KEY missing"
             exit 1
           fi
+          echo "✅ GROQ_API_KEY detected"
 
-      # -------------------------
+      # -----------------------------------
       # CASE SELECTION
-      # -------------------------
+      # -----------------------------------
       - name: Select unused case
         run: python case_search.py
 
-      # -------------------------
-      # SCRIPT
-      # -------------------------
+      # -----------------------------------
+      # SCRIPT GENERATION
+      # -----------------------------------
       - name: Generate script
         run: python script.py
 
-      # -------------------------
+      # -----------------------------------
       # VOICEOVER
-      # -------------------------
+      # -----------------------------------
       - name: Generate voiceover
         run: python tts_generate.py --output final_audio.wav
 
-      # -------------------------
+      # -----------------------------------
       # VISUAL ASSIGNMENT
-      # -------------------------
+      # -----------------------------------
       - name: Assign visuals
         run: python visual_assigner.py
 
-      # -------------------------
+      # -----------------------------------
       # SUBTITLES
-      # -------------------------
+      # -----------------------------------
       - name: Build subtitles
         run: python subtitles_build.py
 
-      # -------------------------
+      # -----------------------------------
       # VIDEO BUILD
-      # -------------------------
+      # -----------------------------------
       - name: Build Shorts video
         run: |
           python video_build.py
-          ls -la output
+          echo "Checking output directory"
+          ls -la output || true
 
-      # -------------------------
-      # VERIFY OUTPUT EXISTS (FIXED)
-      # -------------------------
-      - name: Verify output file
+      # -----------------------------------
+      # VERIFY OUTPUT EXISTS
+      # -----------------------------------
+      - name: Verify output file exists
         run: |
           if [ ! -f output/shorts_4k.mp4 ]; then
-            echo "Video not created"
+            echo "❌ Video not created"
             exit 1
           fi
+          echo "✅ Video exists"
 
-      # -------------------------
-      # AV SYNC CHECK (SAFE)
-      # -------------------------
+      # -----------------------------------
+      # AUDIO / VIDEO SYNC CHECK
+      # -----------------------------------
       - name: Validate AV sync
         run: |
           AUDIO=$(ffprobe -v error -show_entries format=duration -of csv=p=0 final_audio.wav)
           VIDEO=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output/shorts_4k.mp4)
 
-          echo "Audio=$AUDIO"
-          echo "Video=$VIDEO"
+          echo "Audio duration: $AUDIO"
+          echo "Video duration: $VIDEO"
 
-          python - <<EOF
-import sys
-a=float("$AUDIO")
-v=float("$VIDEO")
-diff=abs(a-v)
-print("diff =", diff)
-sys.exit(0 if diff < 0.3 else 1)
-EOF
+          python -c "import sys; a=float('$AUDIO'); v=float('$VIDEO'); diff=abs(a-v); print('Diff=', diff); sys.exit(0 if diff < 0.3 else 1)"
 
-      # -------------------------
-      # QUALITY CHECK
-      # -------------------------
+      # -----------------------------------
+      # QUALITY VALIDATION
+      # -----------------------------------
       - name: Validate video quality
         run: |
           ffprobe -v error \
@@ -152,16 +158,16 @@ EOF
           -show_entries stream=codec_name,width,height,pix_fmt \
           -of default=noprint_wrappers=1 output/shorts_4k.mp4
 
-      # -------------------------
-      # UPLOAD
-      # -------------------------
+      # -----------------------------------
+      # UPLOAD TO YOUTUBE
+      # -----------------------------------
       - name: Upload to YouTube Shorts
         run: python youtube_upload.py
         continue-on-error: true
 
-      # -------------------------
-      # SAVE MEMORY
-      # -------------------------
+      # -----------------------------------
+      # PERSIST MEMORY
+      # -----------------------------------
       - name: Persist memory
         if: always()
         run: |
