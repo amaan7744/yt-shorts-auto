@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-VISUAL ASSIGNER — PRODUCTION TIMELINE MODE
-==========================================
+VISUAL ASSIGNER — STRICT NO-EXTENSION ENGINE
+===========================================
 
+RULES
 ✔ Script is source of truth
-✔ Semantic keyword scoring
-✔ No visual reuse
-✔ Deterministic fallback
-✔ Durations derived from audio
-✔ Total visual time == audio duration
-✔ Builder-ready timeline
-
-This file decides:
-- what visual appears
-- how long it stays
+✔ No visual duration extension
+✔ No frame freezing
+✔ No zoom/stretch
+✔ No reuse inside same video
+✔ Exact audio timeline match
+✔ Multiple visuals per narration segment if needed
+✔ Fail if asset pool insufficient
 """
 
 import json
@@ -24,10 +22,6 @@ from pathlib import Path
 from assets import VIDEO_ASSET_KEYWORDS, HOOK_IMAGE_CATEGORIES
 
 
-# ==========================================================
-# FILES
-# ==========================================================
-
 SCRIPT_FILE = Path("script.txt")
 AUDIO_FILE = Path("final_audio.wav")
 OUTPUT_FILE = Path("beats.json")
@@ -36,16 +30,16 @@ ASSET_DIR = Path("asset")
 HOOK_DIR = ASSET_DIR / "hook_static"
 
 
-# ==========================================================
+# ==================================================
 # UTILS
-# ==========================================================
+# ==================================================
 
 def die(msg):
     print(f"\n❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
 
-def tokenize(text: str) -> set:
+def tokenize(text):
     return {
         w.strip(".,!?\"'():").lower()
         for w in text.split()
@@ -53,32 +47,21 @@ def tokenize(text: str) -> set:
     }
 
 
-def get_audio_duration(path: Path) -> float:
-    """Get audio duration using ffprobe"""
-    if not path.exists():
-        die("Audio file missing")
-
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "csv=p=0",
-            str(path)
-        ],
-        capture_output=True,
-        text=True
+def get_media_duration(path: Path):
+    """Get video/audio duration using ffprobe"""
+    r = subprocess.run(
+        ["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",str(path)],
+        capture_output=True,text=True
     )
-
     try:
-        return float(result.stdout.strip())
+        return float(r.stdout.strip())
     except:
-        die("Could not detect audio duration")
+        die(f"Could not read duration for {path}")
 
 
-# ==========================================================
+# ==================================================
 # LOAD SCRIPT
-# ==========================================================
+# ==================================================
 
 if not SCRIPT_FILE.exists():
     die("script.txt missing")
@@ -91,74 +74,48 @@ if len(lines) < 2:
 HOOK_LINE = lines[0]
 STORY_LINES = lines[1:]
 
-print("=" * 70)
-print("🎬 VISUAL ASSIGNER — TIMELINE MODE")
-print("=" * 70)
-print(f"📝 Script lines: {len(lines)}")
+audio_duration = get_media_duration(AUDIO_FILE)
 
-# ==========================================================
-# AUDIO DURATION
-# ==========================================================
+print("="*70)
+print("🎬 VISUAL ASSIGNER — STRICT NO EXTENSION")
+print("="*70)
+print("🔊 Audio duration:", round(audio_duration,2))
 
-audio_duration = get_audio_duration(AUDIO_FILE)
-print(f"🔊 Audio duration: {audio_duration:.2f}s")
 
-# allocate duration by text length proportion
+# ==================================================
+# ALLOCATE TIMELINE FROM SCRIPT LENGTH
+# ==================================================
+
 weights = [len(l.split()) for l in lines]
 total_weight = sum(weights)
 
-durations = [
-    (w / total_weight) * audio_duration
-    for w in weights
-]
+segment_durations = [(w/total_weight)*audio_duration for w in weights]
 
-# rounding fix to ensure perfect total match
-diff = audio_duration - sum(durations)
-durations[-1] += diff
+# rounding fix
+segment_durations[-1] += audio_duration - sum(segment_durations)
 
 
-# ==========================================================
-# HOOK IMAGE SELECTION
-# ==========================================================
+# ==================================================
+# LOAD VIDEO DURATIONS
+# ==================================================
 
-def select_hook_images(text: str, count=2):
-    words = tokenize(text)
+VIDEO_DURATIONS = {}
 
-    scored = []
-    for img, keywords in HOOK_IMAGE_CATEGORIES.items():
-        score = sum(1 for k in keywords if k in words)
-        scored.append((score, img))
+for video in VIDEO_ASSET_KEYWORDS.keys():
+    path = ASSET_DIR / video
+    if not path.exists():
+        continue
+    VIDEO_DURATIONS[video] = get_media_duration(path)
 
-    scored.sort(reverse=True)
-
-    selected = []
-    for score, img in scored:
-        if score <= 0:
-            break
-        if (HOOK_DIR / img).exists():
-            selected.append(img)
-        if len(selected) == count:
-            break
-
-    # deterministic fallback
-    if len(selected) < count:
-        for img in sorted(HOOK_IMAGE_CATEGORIES.keys()):
-            if img not in selected and (HOOK_DIR / img).exists():
-                selected.append(img)
-            if len(selected) == count:
-                break
-
-    if len(selected) != count:
-        die("Not enough hook images")
-
-    return selected
+if not VIDEO_DURATIONS:
+    die("No video assets found")
 
 
-# ==========================================================
-# VIDEO SELECTION — NO REUSE
-# ==========================================================
+# ==================================================
+# SEMANTIC VIDEO SELECTION
+# ==================================================
 
-def select_video_for_line(text: str, used: set):
+def select_video(text, used):
     words = tokenize(text)
 
     scored = []
@@ -174,89 +131,110 @@ def select_video_for_line(text: str, used: set):
         scored.sort(reverse=True)
         return scored[0][1]
 
+    # deterministic fallback
     for video in sorted(VIDEO_ASSET_KEYWORDS.keys()):
         if video not in used:
             return video
 
-    die("Ran out of video assets")
+    return None
 
 
-# ==========================================================
+# ==================================================
+# HOOK IMAGE SELECTION
+# ==================================================
+
+def select_hook_images(text, count=2):
+    words = tokenize(text)
+
+    scored = []
+    for img, keywords in HOOK_IMAGE_CATEGORIES.items():
+        score = sum(1 for k in keywords if k in words)
+        scored.append((score, img))
+
+    scored.sort(reverse=True)
+
+    selected = []
+    for _, img in scored:
+        if (HOOK_DIR/img).exists():
+            selected.append(img)
+        if len(selected)==count:
+            break
+
+    if len(selected)!=count:
+        die("Not enough hook images")
+
+    return selected
+
+
+# ==================================================
 # BUILD TIMELINE
-# ==========================================================
+# ==================================================
 
-beats = []
-beat_id = 1
-used_videos = set()
+beats=[]
+used_videos=set()
+beat_id=1
 
 hook_images = select_hook_images(HOOK_LINE)
 
-print("\n📍 HOOK VISUALS")
-
-# split hook duration across hook images
-hook_duration = durations[0] / len(hook_images)
+# hook duration split
+hook_duration = segment_durations[0]/len(hook_images)
 
 for img in hook_images:
     beats.append({
-        "beat_id": beat_id,
-        "type": "image",
-        "asset_file": f"hook_static/{img}",
-        "duration": hook_duration,
-        "script_line": 1,
-        "role": "hook"
+        "beat_id":beat_id,
+        "type":"image",
+        "asset_file":f"hook_static/{img}",
+        "duration":hook_duration,
+        "role":"hook"
     })
-    print(f"  [{beat_id:02d}] 🖼️ {img} ({hook_duration:.2f}s)")
-    beat_id += 1
+    beat_id+=1
 
 
-print("\n📍 STORY VISUALS")
+print("\n📍 STORY TIMELINE")
 
-for idx, (line, duration) in enumerate(
-    zip(STORY_LINES, durations[1:]), start=2
-):
+for line, seg_duration in zip(STORY_LINES, segment_durations[1:]):
 
-    video = select_video_for_line(line, used_videos)
+    remaining = seg_duration
 
-    if not (ASSET_DIR / video).exists():
-        die(f"Missing video asset: {video}")
+    while remaining > 0.01:
 
-    used_videos.add(video)
+        video = select_video(line, used_videos)
 
-    beats.append({
-        "beat_id": beat_id,
-        "type": "video",
-        "asset_file": video,
-        "duration": duration,
-        "script_line": idx,
-        "role": "story",
-        "text": line
-    })
+        if not video:
+            die("Not enough unique video assets to cover timeline")
 
-    print(f"  [{beat_id:02d}] 🎞️ {video} ({duration:.2f}s)")
-    beat_id += 1
+        used_videos.add(video)
+
+        asset_duration = VIDEO_DURATIONS[video]
+
+        use_time = min(asset_duration, remaining)
+
+        beats.append({
+            "beat_id":beat_id,
+            "type":"video",
+            "asset_file":video,
+            "duration":use_time,
+            "text":line
+        })
+
+        print(f"[{beat_id:02d}] {video} ({use_time:.2f}s)")
+
+        beat_id+=1
+        remaining -= use_time
 
 
-# ==========================================================
+# ==================================================
 # FINAL VALIDATION
-# ==========================================================
+# ==================================================
 
-timeline_total = sum(b["duration"] for b in beats)
+timeline_total=sum(b["duration"] for b in beats)
 
-if abs(timeline_total - audio_duration) > 0.01:
-    die("Timeline duration mismatch with audio")
+if abs(timeline_total-audio_duration)>0.01:
+    die("Timeline does not match audio duration")
 
-print(f"\n⏱️ Timeline duration: {timeline_total:.2f}s (perfect match)")
+print("\n⏱️ Timeline:",round(timeline_total,2),"seconds")
 
-# ==========================================================
-# SAVE
-# ==========================================================
+OUTPUT_FILE.write_text(json.dumps({"beats":beats},indent=2))
 
-OUTPUT_FILE.write_text(json.dumps({"beats": beats}, indent=2))
-
-print("\n" + "=" * 70)
-print("✅ VISUAL TIMELINE READY")
-print("=" * 70)
-print(f"🎞️ Unique videos: {len(used_videos)}")
-print(f"📦 Beats: {len(beats)}")
-print(f"💾 Saved: {OUTPUT_FILE}")
-print("=" * 70)
+print("\n✅ Timeline ready")
+print("Unique videos used:",len(used_videos))
