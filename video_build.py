@@ -241,8 +241,11 @@ class ShortsBuilder:
         
     def __del__(self):
         """Cleanup temp files"""
-        if hasattr(self, 'temp_dir') and self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
+        try:
+            if hasattr(self, 'temp_dir') and self.temp_dir and self.temp_dir.exists():
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
+        except Exception:
+            pass  # Silently ignore cleanup errors
     
     def validate_inputs(self):
         """Validate all required files exist"""
@@ -565,10 +568,17 @@ class ShortsBuilder:
             
             return output
             
+        except KeyboardInterrupt:
+            print("\n" + "="*70)
+            log("⚠️", "BUILD CANCELLED BY USER")
+            print("="*70 + "\n")
+            raise
         except Exception as e:
             print("\n" + "="*70)
             log("❌", f"BUILD FAILED: {str(e)}")
             print("="*70 + "\n")
+            import traceback
+            traceback.print_exc()
             raise
 
 # ============================================================================
@@ -577,8 +587,16 @@ class ShortsBuilder:
 
 def main():
     """Entry point"""
-    builder = ShortsBuilder()
-    builder.build()
+    try:
+        builder = ShortsBuilder()
+        builder.build()
+        sys.exit(0)  # Explicit success exit
+    except KeyboardInterrupt:
+        log("⚠️", "Build cancelled by user")
+        sys.exit(130)
+    except Exception as e:
+        log("❌", f"Fatal error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
