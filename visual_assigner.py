@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-VISUAL ASSIGNER — STRICT SEMANTIC ENGINE (FULL REWRITE)
-=======================================================
+VISUAL ASSIGNER — PRODUCTION ENGINE
+===================================
 
-CORE GUARANTEES
-✔ Script = source of truth
-✔ No visual duration extension
-✔ No frame freezing
-✔ No zoom/stretch
-✔ No asset reuse inside same video
-✔ Exact audio timeline match
-✔ Semantic visual selection
-✔ Deterministic output
-✔ Multiple visuals per narration segment if needed
-✔ Hard fail if asset pool insufficient
-✔ Hard fail if no relevant asset exists
+BEHAVIOR
+✔ Script is source of truth
+✔ No asset reuse (global)
+✔ Exact audio match
+✔ No duration extension
+✔ Strong semantic matching
+✔ Always picks best possible visual
+✔ Deterministic selection
+✔ Multiple visuals per segment
+✔ Fail only when asset pool exhausted
+✔ Debug scoring output
+
+Requires:
+pip install scikit-learn
 """
 
 import json
@@ -26,7 +28,12 @@ from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from assets import VIDEO_ASSET_KEYWORDS, HOOK_IMAGE_CATEGORIES
+from assets import (
+    VIDEO_ASSET_KEYWORDS,
+    HOOK_IMAGE_CATEGORIES,
+    validate_video_assets,
+    validate_hook_images,
+)
 
 
 # ============================================================
@@ -40,30 +47,28 @@ OUTPUT_FILE = Path("beats.json")
 ASSET_DIR = Path("asset")
 HOOK_DIR = ASSET_DIR / "hook_static"
 
-SEMANTIC_THRESHOLD = 0.05
 TIMELINE_TOLERANCE = 0.01
+MIN_SIM_THRESHOLD = 0.01  # very low → always choose best match
 
 
 # ============================================================
 # UTILS
 # ============================================================
 
-def die(msg: str):
+def die(msg):
     print(f"\n❌ {msg}", file=sys.stderr)
     sys.exit(1)
 
 
-def tokenize(text: str):
-    """Clean word extraction"""
+def tokenize(text):
     text = text.lower()
     words = re.findall(r"[a-zA-Z']+", text)
-    return {w for w in words if len(w) > 2}
+    return " ".join(words)
 
 
 def get_media_duration(path: Path):
-    """Read media duration using ffprobe"""
     if not path.exists():
-        die(f"Missing media file: {path}")
+        die(f"Missing media: {path}")
 
     r = subprocess.run(
         [
@@ -79,8 +84,17 @@ def get_media_duration(path: Path):
 
     try:
         return float(r.stdout.strip())
-    except Exception:
+    except:
         die(f"Could not read duration for {path}")
+
+
+# ============================================================
+# VALIDATE ASSETS
+# ============================================================
+
+print("🔍 Validating assets...")
+validate_video_assets()
+validate_hook_images()
 
 
 # ============================================================
@@ -97,7 +111,7 @@ lines = [
 ]
 
 if len(lines) < 2:
-    die("Script must contain hook + story lines")
+    die("Script must contain hook + story")
 
 HOOK_LINE = lines[0]
 STORY_LINES = lines[1:]
@@ -110,27 +124,23 @@ STORY_LINES = lines[1:]
 audio_duration = get_media_duration(AUDIO_FILE)
 
 print("=" * 70)
-print("🎬 VISUAL ASSIGNER — STRICT SEMANTIC ENGINE")
+print("🎬 VISUAL ASSIGNER — PRODUCTION ENGINE")
 print("=" * 70)
 print("🔊 Audio duration:", round(audio_duration, 2), "seconds")
 
 
 # ============================================================
-# TIMELINE ALLOCATION FROM SCRIPT WEIGHT
+# TIMELINE WEIGHTING
 # ============================================================
 
-weights = [len(tokenize(l)) for l in lines]
+weights = [len(tokenize(l).split()) for l in lines]
 total_weight = sum(weights)
-
-if total_weight == 0:
-    die("Script contains no usable words")
 
 segment_durations = [
     (w / total_weight) * audio_duration
     for w in weights
 ]
 
-# rounding correction
 segment_durations[-1] += audio_duration - sum(segment_durations)
 
 
@@ -140,60 +150,60 @@ segment_durations[-1] += audio_duration - sum(segment_durations)
 
 VIDEO_FILES = []
 VIDEO_DURATIONS = {}
-VIDEO_KEYWORD_TEXT = []
+VIDEO_TEXT = []
 
-for video_name, keywords in VIDEO_ASSET_KEYWORDS.items():
-    path = ASSET_DIR / video_name
-
+for video, keywords in VIDEO_ASSET_KEYWORDS.items():
+    path = ASSET_DIR / video
     if not path.exists():
         continue
 
-    VIDEO_FILES.append(video_name)
-    VIDEO_DURATIONS[video_name] = get_media_duration(path)
-    VIDEO_KEYWORD_TEXT.append(" ".join(keywords))
+    VIDEO_FILES.append(video)
+    VIDEO_DURATIONS[video] = get_media_duration(path)
+
+    # include filename + keywords for stronger matching
+    corpus_text = video.replace("_", " ") + " " + " ".join(keywords)
+    VIDEO_TEXT.append(tokenize(corpus_text))
 
 if not VIDEO_FILES:
-    die("No video assets found in asset directory")
-
-if len(VIDEO_FILES) < len(STORY_LINES):
-    die("Not enough video assets for strict non-reuse")
+    die("No video assets found")
 
 
 # ============================================================
-# BUILD SEMANTIC MODEL (TF-IDF)
+# SEMANTIC MODEL
 # ============================================================
 
-vectorizer = TfidfVectorizer()
-video_vectors = vectorizer.fit_transform(VIDEO_KEYWORD_TEXT)
+vectorizer = TfidfVectorizer(stop_words="english")
+video_vectors = vectorizer.fit_transform(VIDEO_TEXT)
 
 
 def select_video(text, used_videos):
-    """
-    Select best unused video based on semantic similarity.
-    Hard fail if no meaningful match exists.
-    """
+    """Pick best unused video by semantic similarity"""
 
-    available_indices = [
+    available = [
         i for i, v in enumerate(VIDEO_FILES)
         if v not in used_videos
     ]
 
-    if not available_indices:
+    if not available:
         return None
 
-    query_vec = vectorizer.transform([text])
-    similarities = cosine_similarity(query_vec, video_vectors)[0]
+    query = tokenize(text)
+    query_vec = vectorizer.transform([query])
 
-    best_score = 0
-    best_video = None
+    sims = cosine_similarity(query_vec, video_vectors)[0]
 
-    for idx in available_indices:
-        if similarities[idx] > best_score:
-            best_score = similarities[idx]
-            best_video = VIDEO_FILES[idx]
+    # sort by score descending then filename (deterministic)
+    ranked = sorted(
+        [(sims[i], VIDEO_FILES[i]) for i in available],
+        key=lambda x: (-x[0], x[1])
+    )
 
-    if best_score < SEMANTIC_THRESHOLD:
-        return None
+    best_score, best_video = ranked[0]
+
+    print(f"   → match score {best_score:.3f} : {best_video}")
+
+    if best_score < MIN_SIM_THRESHOLD:
+        print("   ⚠ weak semantic match")
 
     return best_video
 
@@ -202,23 +212,36 @@ def select_video(text, used_videos):
 # HOOK IMAGE SELECTION
 # ============================================================
 
+HOOK_FILES = list(HOOK_IMAGE_CATEGORIES.keys())
+HOOK_TEXT = [
+    tokenize(img.replace("_", " ") + " " + " ".join(HOOK_IMAGE_CATEGORIES[img]))
+    for img in HOOK_FILES
+]
+
+hook_vectorizer = TfidfVectorizer(stop_words="english")
+hook_vectors = hook_vectorizer.fit_transform(HOOK_TEXT)
+
+
 def select_hook_images(text, count=2):
-    """Select most relevant hook images"""
+    query = tokenize(text)
+    query_vec = hook_vectorizer.transform([query])
+    sims = cosine_similarity(query_vec, hook_vectors)[0]
 
-    words = tokenize(text)
-    scored = []
+    ranked = sorted(
+        zip(sims, HOOK_FILES),
+        key=lambda x: (-x[0], x[1])
+    )
 
-    for img, keywords in HOOK_IMAGE_CATEGORIES.items():
-        score = sum(1 for k in keywords if k in words)
-        if score > 0 and (HOOK_DIR / img).exists():
-            scored.append((score, img))
+    selected = []
 
-    scored.sort(reverse=True)
-
-    selected = [img for _, img in scored[:count]]
+    for score, img in ranked:
+        if (HOOK_DIR / img).exists():
+            selected.append(img)
+        if len(selected) == count:
+            break
 
     if len(selected) != count:
-        die("Not enough relevant hook images")
+        die("Not enough hook images")
 
     return selected
 
@@ -258,10 +281,7 @@ for line, seg_duration in zip(STORY_LINES, segment_durations[1:]):
         video = select_video(line, used_videos)
 
         if not video:
-            die(
-                "No unused video semantically matches script.\n"
-                "Add more assets or improve asset keywords."
-            )
+            die("Asset pool exhausted. Need more videos.")
 
         used_videos.add(video)
 
@@ -289,9 +309,9 @@ for line, seg_duration in zip(STORY_LINES, segment_durations[1:]):
 timeline_total = sum(b["duration"] for b in beats)
 
 if abs(timeline_total - audio_duration) > TIMELINE_TOLERANCE:
-    die("Timeline does not match audio duration")
+    die("Timeline mismatch")
 
-print("\n⏱️ Timeline:", round(timeline_total, 2), "seconds")
+print("\n⏱️ Timeline:", round(timeline_total, 2))
 print("Unique videos used:", len(used_videos))
 
 OUTPUT_FILE.write_text(
