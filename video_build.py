@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-CINEMATIC PRO VIDEO BUILDER — STUDIO PIPELINE
+PRODUCTION SAFE CINEMATIC VIDEO BUILDER — FINAL
 
-PRODUCTION GUARANTEES
-✔ Cinematic motion engine
-✔ Professional color grading
-✔ Adaptive camera movement
-✔ No filter crashes
-✔ Identical clip specs for safe concat
-✔ Stream concatenation (NO quality loss)
-✔ Single final encode only
-✔ Exact audio sync
-✔ Deterministic output
+GUARANTEES
+✔ Always vertical 9:16 output
+✔ Cinematic motion
+✔ Professional film look
+✔ Stream concat (no quality loss)
+✔ Constant frame rate
+✔ Output validation
+✔ Faststart upload optimization
+✔ Bitrate control
+✔ Exact timeline sync
+✔ Single final encode
 ✔ Production pipeline stability
 """
 
@@ -35,6 +36,10 @@ FPS = 30
 VIDEO_CODEC = "libx264"
 PIX_FMT = "yuv420p"
 CRF = "18"
+
+# YouTube-friendly bitrate control
+MAXRATE = "25M"
+BUFSIZE = "50M"
 
 BEATS_FILE = Path("beats.json")
 ASSET_DIR = Path("asset")
@@ -63,6 +68,14 @@ def run(cmd, desc):
         return False
 
 
+def probe_json(path):
+    r = subprocess.run(
+        ["ffprobe","-v","quiet","-print_format","json","-show_streams","-show_format",str(path)],
+        capture_output=True,text=True
+    )
+    return json.loads(r.stdout)
+
+
 def get_audio_duration():
     r = subprocess.run(
         ["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",str(AUDIO_FILE)],
@@ -77,7 +90,7 @@ def deterministic_choice(key, options):
 
 
 # ==========================================================
-# CINEMATIC FILTER SYSTEM
+# FILTER SYSTEM
 # ==========================================================
 
 def base_scale_pad():
@@ -96,9 +109,7 @@ def film_look():
 
 
 def cinematic_motion(seed):
-    motion = deterministic_choice(seed, [
-        "push", "pan_left", "pan_right", "drift", "hold"
-    ])
+    motion = deterministic_choice(seed, ["push","pan_left","pan_right","drift","hold"])
 
     if motion == "push":
         return (
@@ -145,7 +156,7 @@ class Builder:
         return json.loads(BEATS_FILE.read_text())["beats"]
 
     # ------------------------------------------------------
-    # IMAGE → VIDEO
+    # IMAGE PROCESSING
     # ------------------------------------------------------
 
     def process_image(self, beat, i):
@@ -154,31 +165,33 @@ class Builder:
         duration = beat["duration"]
 
         vf = (
-            base_scale_pad() + "," +
-            cinematic_motion(src.name) + "," +
-            film_look() + "," +
+            base_scale_pad()+","+
+            cinematic_motion(src.name)+","+
+            film_look()+","+
             f"setsar=1,fps={FPS}"
         )
 
         cmd = [
             "ffmpeg","-y",
-            "-loop","1",
-            "-i",str(src),
+            "-loop","1","-i",str(src),
             "-t",str(duration),
             "-vf",vf,
+            "-r",str(FPS),
             "-c:v",VIDEO_CODEC,
             "-preset","slow",
             "-crf",CRF,
+            "-maxrate",MAXRATE,
+            "-bufsize",BUFSIZE,
             "-pix_fmt",PIX_FMT,
             "-an",
-            "-shortest",
+            "-movflags","+faststart",
             str(out)
         ]
 
-        return out if run(cmd, f"Image {i}") else None
+        return out if run(cmd,f"Image {i}") else None
 
     # ------------------------------------------------------
-    # VIDEO → VIDEO
+    # VIDEO PROCESSING
     # ------------------------------------------------------
 
     def process_video(self, beat, i):
@@ -186,64 +199,58 @@ class Builder:
         out = self.temp / f"clip_{i:03}.mp4"
         duration = beat["duration"]
 
-        vf = (
-            base_scale_pad() + "," +
-            film_look() + "," +
-            f"setsar=1,fps={FPS}"
-        )
+        vf = base_scale_pad()+","+film_look()+f",setsar=1,fps={FPS}"
 
         cmd = [
             "ffmpeg","-y",
             "-i",str(src),
             "-t",str(duration),
             "-vf",vf,
+            "-r",str(FPS),
             "-c:v",VIDEO_CODEC,
             "-preset","slow",
             "-crf",CRF,
+            "-maxrate",MAXRATE,
+            "-bufsize",BUFSIZE,
             "-pix_fmt",PIX_FMT,
             "-an",
+            "-movflags","+faststart",
             str(out)
         ]
 
-        return out if run(cmd, f"Video {i}") else None
+        return out if run(cmd,f"Video {i}") else None
 
     # ------------------------------------------------------
 
     def create_clips(self, beats):
-        log("🎬","Rendering cinematic clips")
+        log("🎬","Rendering clips")
 
-        for i, beat in enumerate(beats):
+        for i,beat in enumerate(beats):
             clip = self.process_image(beat,i) if beat["type"]=="image" else self.process_video(beat,i)
-
             if not clip:
                 return False
-
             self.clips.append(clip)
 
         return True
 
     # ------------------------------------------------------
-    # STREAM CONCAT (NO QUALITY LOSS)
+    # STREAM CONCAT
     # ------------------------------------------------------
 
     def concat_clips(self):
-        log("🔗","Concatenating clips (stream copy)")
+        log("🔗","Concatenating (no re-encode)")
 
-        if len(self.clips) == 1:
+        if len(self.clips)==1:
             return self.clips[0]
 
-        concat_file = self.temp / "concat.txt"
+        concat_file=self.temp/"concat.txt"
+        concat_file.write_text("\n".join(f"file '{c.resolve()}'" for c in self.clips))
 
-        concat_file.write_text(
-            "\n".join(f"file '{c.resolve()}'" for c in self.clips)
-        )
+        merged=self.temp/"merged.mp4"
 
-        merged = self.temp / "merged.mp4"
-
-        cmd = [
+        cmd=[
             "ffmpeg","-y",
-            "-f","concat",
-            "-safe","0",
+            "-f","concat","-safe","0",
             "-i",str(concat_file),
             "-c","copy",
             str(merged)
@@ -252,28 +259,35 @@ class Builder:
         return merged if run(cmd,"Stream merge") else None
 
     # ------------------------------------------------------
-    # FINAL RENDER (ONLY ENCODE ONCE)
+    # FINAL RENDER
     # ------------------------------------------------------
 
     def final_render(self, merged):
         OUTPUT_FILE.parent.mkdir(exist_ok=True)
 
-        vf = "setsar=1"
+        vf = (
+            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1"
+        )
+
         if SUB_FILE.exists():
             vf += f",ass={SUB_FILE}"
 
-        cmd = [
+        cmd=[
             "ffmpeg","-y",
             "-i",str(merged),
             "-i",str(AUDIO_FILE),
             "-vf",vf,
-            "-map","0:v",
-            "-map","1:a",
+            "-r",str(FPS),
             "-c:v",VIDEO_CODEC,
             "-preset","slow",
             "-crf",CRF,
-            "-c:a","aac",
-            "-b:a","320k",
+            "-maxrate",MAXRATE,
+            "-bufsize",BUFSIZE,
+            "-pix_fmt",PIX_FMT,
+            "-c:a","aac","-b:a","320k",
+            "-movflags","+faststart",
             "-shortest",
             str(OUTPUT_FILE)
         ]
@@ -281,38 +295,66 @@ class Builder:
         return run(cmd,"Final render")
 
     # ------------------------------------------------------
+    # OUTPUT VALIDATION (CRITICAL)
+    # ------------------------------------------------------
+
+    def validate_output(self):
+        log("🔍","Validating output")
+
+        data = probe_json(OUTPUT_FILE)
+
+        vstream = next(s for s in data["streams"] if s["codec_type"]=="video")
+        astream = next(s for s in data["streams"] if s["codec_type"]=="audio")
+
+        width=vstream["width"]
+        height=vstream["height"]
+
+        if height <= width:
+            log("❌","Output not vertical")
+            return False
+
+        if width!=WIDTH or height!=HEIGHT:
+            log("❌","Wrong resolution")
+            return False
+
+        log("✅","Output verified")
+        return True
+
+    # ------------------------------------------------------
 
     def validate_duration(self, beats):
-        audio = get_audio_duration()
-        timeline = sum(b["duration"] for b in beats)
+        audio=get_audio_duration()
+        timeline=sum(b["duration"] for b in beats)
 
         log("🔊",f"Audio: {audio:.2f}")
         log("🎬",f"Timeline: {timeline:.2f}")
 
-        return abs(audio - timeline) < 0.1
+        return abs(audio-timeline)<0.1
 
     # ------------------------------------------------------
 
     def build(self):
-        print("\n=== CINEMATIC VIDEO BUILDER — STUDIO PIPELINE ===\n")
+        print("\n=== PRODUCTION SAFE VIDEO BUILDER ===\n")
 
-        self.temp = Path(tempfile.mkdtemp())
+        self.temp=Path(tempfile.mkdtemp())
 
         try:
-            beats = self.load_beats()
+            beats=self.load_beats()
 
             if not self.validate_duration(beats):
-                log("❌","Timeline mismatch")
                 return False
 
             if not self.create_clips(beats):
                 return False
 
-            merged = self.concat_clips()
+            merged=self.concat_clips()
             if not merged:
                 return False
 
             if not self.final_render(merged):
+                return False
+
+            if not self.validate_output():
                 return False
 
             log("✅","Build complete")
@@ -325,6 +367,6 @@ class Builder:
 
 # ==========================================================
 
-if __name__ == "__main__":
-    builder = Builder()
+if __name__=="__main__":
+    builder=Builder()
     sys.exit(0 if builder.build() else 1)
