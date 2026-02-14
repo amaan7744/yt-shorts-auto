@@ -534,6 +534,10 @@ HOOK_IMAGE_CATEGORIES = {
         "arranged_room", "staged_scene", "organized_crime_scene"
     ],
 
+    "dark_anime_crime_illustration_perfectly_arranged_room.jpeg": [
+        "perfectly_arranged", "meticulous_staging", "organized_perfectly"
+    ],
+
 
     # ---------------------------------------------------------
     # INVESTIGATOR CLOSE-UPS
